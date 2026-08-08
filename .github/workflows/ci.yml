@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Lint
+        run: bun x @biomejs/biome@2.4.13 check src tests
+
+      - name: Test
+        run: bun test
+
+      - name: Build
+        run: bun run build
+
+      # bin points at dist/cli.js, so a build that produces an unrunnable file
+      # reaches the user's first install. Node runs it here, not Bun: the whole
+      # point of the build is that it works without Bun present.
+      - name: Run the built CLI under Node
+        run: |
+          node dist/cli.js version
+          node dist/cli.js --help > /dev/null
+          node dist/cli.js schema detect > /dev/null
+
+      # skills/ resolves relative to the entry point, which is exactly what a real
+      # install rearranges. Packing and installing is the only check that predicts it.
+      - name: Verify the packed tarball
+        run: |
+          npm pack
+          mkdir -p /tmp/install-check
+          cd /tmp/install-check
+          npm init -y > /dev/null
+          npm install "$GITHUB_WORKSPACE"/vcut-*.tgz
+          ./node_modules/.bin/vcut version
+          ./node_modules/.bin/vcut skills get vcut | head -1 | grep -q '^---$'
+          ./node_modules/.bin/vcut skills list --json | grep -q vcut

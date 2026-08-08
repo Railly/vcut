@@ -1,0 +1,99 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "package.json"
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      - name: Update npm for trusted publishing
+        run: npm install -g npm@latest
+
+      - name: Detect version change
+        id: version
+        run: |
+          LOCAL=$(jq -r .version package.json)
+          PUBLISHED=$(npm view vcut version 2>/dev/null || echo "0.0.0")
+          echo "local=$LOCAL" >> "$GITHUB_OUTPUT"
+          echo "published=$PUBLISHED" >> "$GITHUB_OUTPUT"
+          if [ "$LOCAL" != "$PUBLISHED" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "Version changed: $PUBLISHED -> $LOCAL"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Version unchanged ($LOCAL), skipping publish"
+          fi
+
+      - name: Install dependencies
+        if: steps.version.outputs.changed == 'true'
+        run: bun install --frozen-lockfile
+
+      - name: Lint
+        if: steps.version.outputs.changed == 'true'
+        run: bun x @biomejs/biome@2.4.13 check src tests
+
+      - name: Test
+        if: steps.version.outputs.changed == 'true'
+        run: bun test
+
+      - name: Build
+        if: steps.version.outputs.changed == 'true'
+        run: bun run build
+
+      # Publishing a package whose bin does not run is worse than not publishing.
+      # Node runs it here, not Bun: the build exists so it works without Bun.
+      - name: Verify the built CLI under Node
+        if: steps.version.outputs.changed == 'true'
+        run: |
+          node dist/cli.js version
+          node dist/cli.js schema detect > /dev/null
+
+      # skills/ resolves relative to the entry point, and a real install is what
+      # rearranges those paths. This is the gate that a repo checkout cannot fake.
+      - name: Verify the packed tarball installs and serves its skill
+        if: steps.version.outputs.changed == 'true'
+        run: |
+          npm pack
+          mkdir -p /tmp/install-check
+          cd /tmp/install-check
+          npm init -y > /dev/null
+          npm install "$GITHUB_WORKSPACE"/vcut-*.tgz
+          ./node_modules/.bin/vcut version
+          ./node_modules/.bin/vcut skills get vcut | head -1 | grep -q '^---$'
+
+      - name: Publish to npm
+        if: steps.version.outputs.changed == 'true'
+        run: npm publish --access public
+
+      - name: Tag and GitHub Release
+        if: steps.version.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.local }}
+        run: |
+          git tag "v$VERSION"
+          git push origin "v$VERSION"
+          gh release create "v$VERSION" --title "v$VERSION" --generate-notes
