@@ -392,7 +392,7 @@ const loadTranscript = (
   const transcript = parseSrt(readFileSync(path, 'utf8'))
   if (!transcript.wordLevel) {
     warnings.push(
-      'transcript is not word-level; filler detection skipped. Regenerate with whisper-cli --max-len 1 --split-on-word',
+      'transcript is not word-level; filler detection skipped. Regenerate with `trx transcribe <input> --words` or `whisper-cli --max-len 1 --output-srt`',
     )
   }
   return { transcript, path }

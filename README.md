@@ -93,14 +93,23 @@ Tune with `--min-silence` (seconds, default 0.3) and `--margin` (seconds, defaul
 
 ## Filler words
 
-Filler detection needs word-level timestamps. A normal SRT has one cue per sentence, which is not enough to cut a single word without guessing. vcut tells you when this is the case instead of silently reporting zero.
+Filler detection needs word-level timestamps: one cue per word. A normal SRT has one cue per sentence, which is not enough to cut a single word without guessing. vcut tells you when this is the case instead of silently reporting zero.
 
 ```bash
-whisper-cli --max-len 1 --split-on-word -f audio.wav
+# with trx, which wraps whisper and handles extraction
+trx transcribe recording.mp4 --words --language es
+
+# or with whisper-cli directly
+whisper-cli -m model.bin -f audio.wav --max-len 1 --output-srt
+```
+
+```bash
 vcut detect recording.mp4 --transcript words.srt --lang es
 ```
 
 Lists ship for `es`, `en`, and `pt`.
+
+A filler list matches tokens, not intent. Spanish `este` is a filler in "y este, entonces" and an ordinary demonstrative in "en este caso"; the detector cannot tell them apart. That is one reason every hit lands in the EDL as `proposed`: read them before approving.
 
 ## For agents
 

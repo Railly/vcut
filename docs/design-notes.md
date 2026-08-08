@@ -20,11 +20,23 @@ After rendering, vcut probes the file it just produced and compares it against t
 
 A render that silently produced 1446 frames where the EDL implies 1444 is a bug, and without this check it ships as a working file. The strictness is the point; when a mismatch appeared during development, the fix was to correct the boundaries upstream rather than widen the tolerance here.
 
-## Cuts snap to frame boundaries
+## Cuts land mid-frame, not on the frame edge
 
-Cut points arrive as milliseconds. Frames do not land on millisecond boundaries: at 60fps a frame is 16.67ms. Every `trim` gets rounded by ffmpeg to the nearest frame, and across a hundred segments those roundings accumulate into a duration that no longer matches the EDL.
+Cut points arrive as milliseconds. Frames do not land on millisecond boundaries: at 60fps a frame is 16.666...ms, so a frame edge rounded to a whole millisecond is never exactly on the edge. ffmpeg then rounds each `trim` to the nearest frame on its own, and near an edge that rounding can go either way.
 
-`snapToFrame` rounds each boundary to a whole frame before it reaches the EDL, so the arithmetic downstream is exact.
+The first version of `snapToFrame` aimed at the frame edge, which put every boundary at the exact point where ffmpeg's decision is least stable. It held for eight segments and broke at ten, when the accumulated drift crossed the renderer's one-frame tolerance. The bug was latent the whole time; a larger segment count only made it visible.
+
+Aiming at the middle of the frame puts every boundary as far as possible from that flip point, so the same frame is chosen regardless of segment count. Verified by rendering the same EDL at 5, 10, 20, 40, and 115 segments.
+
+The end of the source is clamped to the real duration rather than snapped: a segment must never claim material past the end of the file.
+
+## Measured silence outranks a transcript boundary
+
+Cuts are clamped so they never land inside a spoken word. That rule needs a caveat that only appears with a real word-level transcript.
+
+`whisper --max-len 1` stretches each cue to the start of the next word, so a word's range routinely swallows the pause that follows it. On a six-minute recording, 118 of 119 silences overlapped some word's range, and naive clamping erased 57 of them outright: removal collapsed from 10.5% to 2.7% purely because a better transcript was supplied.
+
+Silence measured from audio energy is stronger evidence than a transcript boundary inferred by a model. When clamping would shred a cut into a remainder shorter than the detector's own `--min-silence`, that remainder is overlap residue rather than a real pause, and the measured span wins.
 
 ## Silence detection needs the closing edge
 

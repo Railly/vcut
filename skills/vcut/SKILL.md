@@ -37,11 +37,16 @@ Presets carry thresholds proven in production. Do not invent new ones.
 
 Other flags: `--min-silence` (seconds, default 0.3), `--margin` (seconds, default 0.10), `--skip-video-scan` to skip black and frozen frame detection on long sources.
 
-**Filler cutting needs word-level timestamps.** A sentence-level SRT produces zero fillers and a warning rather than a guess. Generate a usable transcript with:
+**Filler cutting needs word-level timestamps**, meaning one cue per word. A sentence-level SRT produces zero fillers and a warning rather than a guess. Generate a usable transcript with either:
 
 ```bash
-whisper-cli --max-len 1 --split-on-word
+trx transcribe recording.mp4 --words --language es   # wraps whisper, handles extraction
+whisper-cli -m model.bin -f audio.wav --max-len 1 --output-srt
 ```
+
+Do not report zero fillers as a clean result when the warning is present. Regenerate the transcript and run detect again.
+
+**A filler list matches tokens, not intent.** Spanish `este` is a filler in "y este, entonces" and an ordinary demonstrative in "en este caso"; the detector cannot tell them apart, and cutting the second one mutilates the sentence. Read the filler hits before approving them. This is why they land as `proposed`.
 
 `review` entries (clipping, black frames, frozen frames) are candidates for a human to look at. They are never cut automatically.
 

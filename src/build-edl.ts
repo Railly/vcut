@@ -125,7 +125,7 @@ export const mergeIntervals = (intervals: Cut[]): Cut[] => {
 export const wordBoundaries = (transcript: Transcript): Interval[] =>
   transcript.words.map((word) => ({ startMs: word.startMs, endMs: word.endMs }))
 
-export const clampToWords = (cut: Cut, boundaries: Interval[]): Cut | null => {
+export const clampToWords = (cut: Cut, boundaries: Interval[], minCutMs: number): Cut | null => {
   let startMs = cut.startMs
   let endMs = cut.endMs
 
@@ -137,13 +137,33 @@ export const clampToWords = (cut: Cut, boundaries: Interval[]): Cut | null => {
       endMs = word.startMs
     }
   }
-  return endMs > startMs ? { ...cut, startMs, endMs } : null
+
+  // A word-level transcript stretches each cue to the start of the next word, so a
+  // spoken word's range routinely swallows the pause that follows it. Silence measured
+  // from audio energy is the better evidence. When clamping shreds a cut into a sliver
+  // shorter than the detector's own minimum, that remainder is overlap residue rather
+  // than a real pause: keep the measured span instead of dropping the cut.
+  if (endMs - startMs < minCutMs) {
+    return cut.endMs - cut.startMs >= minCutMs ? { ...cut } : null
+  }
+  return { ...cut, startMs, endMs }
 }
 
-export const snapToFrame = (milliseconds: number, fps: number): number =>
-  fps <= 0
-    ? Math.round(milliseconds)
-    : Math.round(Math.round((milliseconds * fps) / 1000) * (1000 / fps))
+// Frame boundaries are not whole milliseconds: at 60fps a frame is 16.666...ms, so
+// rounding a frame boundary back to an integer millisecond always lands slightly off
+// it. ffmpeg then rounds each trim to the nearest frame on its own, and with enough
+// segments those per-segment roundings accumulate past the renderer's one-frame
+// tolerance. Landing on the middle of the frame instead of its edge puts every
+// boundary as far as possible from the point where ffmpeg's rounding could flip,
+// so the same frame is chosen every time regardless of segment count.
+export const snapToFrame = (milliseconds: number, fps: number): number => {
+  if (fps <= 0) {
+    return Math.round(milliseconds)
+  }
+  const frameMs = 1000 / fps
+  const frame = Math.round(milliseconds / frameMs)
+  return Math.round(frame * frameMs + frameMs / 2)
+}
 
 export const invertToSegments = (
   cuts: Cut[],
@@ -339,7 +359,9 @@ export const buildEdlCommand = async (argv: string[]): Promise<void> => {
   const clamped =
     boundaries.length === 0
       ? cuts
-      : cuts.map((cut) => clampToWords(cut, boundaries)).filter((cut): cut is Cut => cut !== null)
+      : cuts
+          .map((cut) => clampToWords(cut, boundaries, report.minSilenceMs))
+          .filter((cut): cut is Cut => cut !== null)
 
   const probe = await probeSource(report.input)
   const video = probe.streams.find((stream) => stream.codec_type === 'video')

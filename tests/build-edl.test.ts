@@ -46,48 +46,97 @@ describe('clampToWords', () => {
     wordLevel: true,
   } as Transcript)
 
+  const MIN = 300
+
   test('pulls a cut start out of a spoken word', () => {
-    const clamped = clampToWords(silence(1000, 2000), boundaries)
+    const clamped = clampToWords(silence(1000, 2000), boundaries, MIN)
     expect(clamped?.startMs).toBe(1200)
     expect(clamped?.endMs).toBe(2000)
   })
 
   test('pulls a cut end out of a spoken word', () => {
-    const clamped = clampToWords(silence(1500, 3000), boundaries)
+    const clamped = clampToWords(silence(1500, 3000), boundaries, MIN)
     expect(clamped?.startMs).toBe(1500)
     expect(clamped?.endMs).toBe(2800)
   })
 
   test('leaves a cut that already sits between words untouched', () => {
-    const clamped = clampToWords(silence(1300, 2700), boundaries)
+    const clamped = clampToWords(silence(1300, 2700), boundaries, MIN)
     expect(clamped).toEqual(silence(1300, 2700))
   })
 
-  test('drops a cut that collapses to nothing after clamping', () => {
-    const inside = wordBoundaries({
+  test('keeps a measured cut that a swallowing cue would erase', () => {
+    // whisper --max-len 1 stretches a cue to the next word, so a word's range
+    // routinely covers the pause after it. ffmpeg measured a real silence here.
+    const swallowing = wordBoundaries({
+      words: [{ text: 'trabajando', startMs: 0, endMs: 5000 }],
+      wordLevel: true,
+    } as Transcript)
+    expect(clampToWords(silence(1000, 2000), swallowing, MIN)).toEqual(silence(1000, 2000))
+  })
+
+  test('drops a cut that was already shorter than the detector minimum', () => {
+    const swallowing = wordBoundaries({
       words: [{ text: 'larga', startMs: 0, endMs: 5000 }],
       wordLevel: true,
     } as Transcript)
-    expect(clampToWords(silence(1000, 2000), inside)).toBeNull()
+    expect(clampToWords(silence(1000, 1100), swallowing, MIN)).toBeNull()
+  })
+
+  test('drops a sliver left by clamping when the source cut was also short', () => {
+    const tight = wordBoundaries({
+      words: [
+        { text: 'uno', startMs: 900, endMs: 1150 },
+        { text: 'dos', startMs: 1200, endMs: 1500 },
+      ],
+      wordLevel: true,
+    } as Transcript)
+    expect(clampToWords(silence(1000, 1250), tight, MIN)).toBeNull()
   })
 })
 
 describe('snapToFrame', () => {
-  test('lands on a whole frame boundary at 60fps', () => {
-    expect(snapToFrame(1097, 60)).toBe(1100)
-    expect(snapToFrame(4634, 60)).toBe(4633)
+  const frameMs = 1000 / 60
+
+  test('lands mid-frame, away from the edge where rounding flips', () => {
+    // A frame boundary is not a whole millisecond at 60fps, so the value cannot sit
+    // exactly on it. Landing in the middle keeps ffmpeg's own rounding stable.
+    for (const input of [1097, 4634, 333, 15_833]) {
+      const snapped = snapToFrame(input, 60)
+      const offset = ((snapped % frameMs) + frameMs) % frameMs
+      expect(Math.abs(offset - frameMs / 2)).toBeLessThan(1)
+    }
+  })
+
+  test('stays within half a frame of the requested time', () => {
+    for (const input of [1097, 4634, 333, 15_833]) {
+      expect(Math.abs(snapToFrame(input, 60) - input)).toBeLessThanOrEqual(frameMs)
+    }
+  })
+
+  test('picks the same frame no matter how it is approached', () => {
+    const target = Math.round(120 * frameMs)
+    expect(snapToFrame(target - 3, 60)).toBe(snapToFrame(target + 3, 60))
   })
 
   test('leaves values untouched when fps is unknown', () => {
     expect(snapToFrame(1097, 0)).toBe(1097)
   })
 
-  test('keeps segment durations an exact frame multiple', () => {
-    const segments = invertToSegments([silence(2000, 3000)], 10_000, 'take-01', 100, 60)
-    const frameMs = 1000 / 60
+  test('resolves each boundary to an unambiguous frame index', () => {
+    const durationMs = 10_000
+    const segments = invertToSegments([silence(2000, 3000)], durationMs, 'take-01', 100, 60)
     for (const segment of segments) {
-      const frames = (segment.outMs - segment.inMs) / frameMs
-      expect(Math.abs(frames - Math.round(frames))).toBeLessThan(0.02)
+      for (const boundary of [segment.inMs, segment.outMs]) {
+        // The end of the source is clamped to the real duration, not snapped: a
+        // segment must never claim material past the end of the file.
+        if (boundary === durationMs) {
+          continue
+        }
+        // Everywhere else, mid-frame placement puts the fractional part near 0.5,
+        // so the frame ffmpeg resolves to is the same from either direction.
+        expect(Math.abs(((boundary / frameMs) % 1) - 0.5)).toBeLessThan(0.1)
+      }
     }
   })
 })
