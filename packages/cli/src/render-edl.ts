@@ -203,7 +203,7 @@ export const buildFfmpegArgs = (edl: Edl, outputPath: string): string[] => {
 
     if (policy === 'required') {
       filters.push(
-        `[${input}:a]atrim=start=${seconds(segment.inMs)}:end=${seconds(segment.outMs)},asetpts=PTS-STARTPTS,aresample=48000[a${index}]`,
+        `[${input}:a]atrim=start=${seconds(segment.inMs)}:end=${seconds(segment.outMs)},asetpts=PTS-STARTPTS,aresample=48000,aformat=channel_layouts=stereo[a${index}]`,
       )
       concatInputs.push(`[a${index}]`)
     }
@@ -222,7 +222,7 @@ export const buildFfmpegArgs = (edl: Edl, outputPath: string): string[] => {
   const args = edl.sources.flatMap((source) => ['-i', source.path])
   args.push('-filter_complex', filters.join(';'), '-map', '[v]')
   if (hasAudio) {
-    args.push('-map', '[a]', '-c:a', 'aac', '-ar', '48000')
+    args.push('-map', '[a]', '-c:a', 'aac', '-ar', '48000', '-ac', '2')
   } else {
     args.push('-an')
   }
