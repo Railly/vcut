@@ -84,9 +84,13 @@ jobs:
           ./node_modules/.bin/vcut version
           ./node_modules/.bin/vcut skills get vcut | head -1 | grep -q '^---$'
 
+      # access comes from publishConfig in package.json. Passing --access here too
+      # made npm retry and collide with its own successful write, reporting
+      # "cannot publish over previously published versions" for a version it had
+      # just published seconds earlier.
       - name: Publish to npm
         if: steps.version.outputs.changed == 'true'
-        run: npm publish --access public
+        run: npm publish
 
       - name: Tag and GitHub Release
         if: steps.version.outputs.changed == 'true'
@@ -94,6 +98,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.version.outputs.local }}
         run: |
-          git tag "v$VERSION"
+          # Annotated, because a repo that signs tags rejects a lightweight one
+          # with "no tag message" and the release never gets created.
+          git tag -a "v$VERSION" -m "v$VERSION"
           git push origin "v$VERSION"
           gh release create "v$VERSION" --title "v$VERSION" --generate-notes
