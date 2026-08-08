@@ -1,0 +1,332 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vcut.dev/schemas/edl.schema.json",
+  "title": "Video preprocessing edit decision list",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "campaignId",
+    "createdAt",
+    "timebase",
+    "sources",
+    "segments",
+    "audio",
+    "captions",
+    "output",
+    "approval"
+  ],
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "campaignId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "createdAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "timebase": {
+      "const": "milliseconds"
+    },
+    "sources": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/source"
+      }
+    },
+    "segments": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/segment"
+      }
+    },
+    "audio": {
+      "$ref": "#/$defs/audio"
+    },
+    "captions": {
+      "$ref": "#/$defs/captions"
+    },
+    "output": {
+      "$ref": "#/$defs/output"
+    },
+    "approval": {
+      "$ref": "#/$defs/approval"
+    }
+  },
+  "$defs": {
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "path", "sha256", "durationMs", "hasVideo", "hasAudio"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+        },
+        "path": {
+          "type": "string",
+          "pattern": "^/"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "durationMs": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "hasVideo": {
+          "type": "boolean"
+        },
+        "hasAudio": {
+          "type": "boolean"
+        },
+        "rotationDegrees": {
+          "type": "integer",
+          "enum": [0, 90, 180, 270]
+        },
+        "averageFrameRate": {
+          "type": "string",
+          "pattern": "^[0-9]+/[0-9]+$"
+        },
+        "variableFrameRate": {
+          "type": "boolean"
+        },
+        "sampleRateHz": {
+          "type": ["integer", "null"],
+          "minimum": 1
+        },
+        "channels": {
+          "type": ["integer", "null"],
+          "minimum": 1
+        }
+      }
+    },
+    "segment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "sourceId", "inMs", "outMs", "reason", "handlesMs", "approval"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^segment-[0-9]{3}$"
+        },
+        "sourceId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "inMs": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "outMs": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "handlesMs": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["before", "after"],
+          "properties": {
+            "before": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "after": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "approval": {
+          "enum": ["proposed", "approved", "rejected"]
+        },
+        "semanticRisk": {
+          "enum": ["none", "low", "material"]
+        },
+        "crop": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/crop"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "crop": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["x", "y", "width", "height"],
+      "properties": {
+        "x": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "y": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "width": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 1
+        },
+        "height": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 1
+        }
+      }
+    },
+    "audio": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "speechTargetLufs",
+        "truePeakMaxDbtp",
+        "noiseReduction",
+        "externalAudioSourceId",
+        "syncOffsetMs"
+      ],
+      "properties": {
+        "speechTargetLufs": {
+          "type": "number",
+          "minimum": -30,
+          "maximum": -8
+        },
+        "truePeakMaxDbtp": {
+          "type": "number",
+          "minimum": -6,
+          "maximum": 0
+        },
+        "noiseReduction": {
+          "enum": ["off", "light", "manual"]
+        },
+        "externalAudioSourceId": {
+          "type": ["string", "null"]
+        },
+        "syncOffsetMs": {
+          "type": "integer"
+        }
+      }
+    },
+    "captions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "language",
+        "rawTranscriptPath",
+        "timedTokensPath",
+        "correctedTranscriptPath",
+        "dictionaryPath",
+        "burnedDerivative"
+      ],
+      "properties": {
+        "language": {
+          "type": "string",
+          "minLength": 2
+        },
+        "rawTranscriptPath": {
+          "type": "string",
+          "pattern": "^/"
+        },
+        "timedTokensPath": {
+          "type": "string",
+          "pattern": "^/"
+        },
+        "correctedTranscriptPath": {
+          "type": "string",
+          "pattern": "^/"
+        },
+        "dictionaryPath": {
+          "type": "string",
+          "pattern": "^/"
+        },
+        "burnedDerivative": {
+          "type": "boolean"
+        }
+      }
+    },
+    "output": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "width",
+        "height",
+        "fps",
+        "videoCodec",
+        "pixelFormat",
+        "colorSpace",
+        "audioTrackPolicy",
+        "overwrite"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "pattern": "^/"
+        },
+        "width": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "fps": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "videoCodec": {
+          "enum": ["h264", "hevc"]
+        },
+        "pixelFormat": {
+          "type": "string",
+          "minLength": 1
+        },
+        "colorSpace": {
+          "type": "string",
+          "minLength": 1
+        },
+        "audioTrackPolicy": {
+          "enum": ["required", "forbidden", "explicit-silence"]
+        },
+        "overwrite": {
+          "const": false
+        }
+      }
+    },
+    "approval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "approvedAt", "approvedBy"],
+      "properties": {
+        "status": {
+          "enum": ["draft", "approved", "rejected"]
+        },
+        "approvedAt": {
+          "type": ["string", "null"],
+          "format": "date-time"
+        },
+        "approvedBy": {
+          "type": ["string", "null"]
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,137 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vcut.dev/schemas/caption-qa.schema.json",
+  "title": "Caption quality report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "artifact",
+    "language",
+    "videoDurationMs",
+    "cueCount",
+    "overlapCount",
+    "invalidDurationCount",
+    "firstStartMs",
+    "finalEndMs",
+    "tailGapMs",
+    "warningThresholds",
+    "observed",
+    "technicalTerms",
+    "status",
+    "notes"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "0.1"
+    },
+    "artifact": {
+      "type": "string",
+      "minLength": 1
+    },
+    "language": {
+      "type": "string",
+      "minLength": 2
+    },
+    "videoDurationMs": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "cueCount": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "overlapCount": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "invalidDurationCount": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "firstStartMs": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "finalEndMs": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "tailGapMs": {
+      "type": "integer"
+    },
+    "warningThresholds": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["charactersPerSecond", "charactersPerLine", "linesPerCue"],
+      "properties": {
+        "charactersPerSecond": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "charactersPerLine": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "linesPerCue": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "observed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "maxCharactersPerSecond",
+        "maxCharactersPerLine",
+        "maxLinesPerCue",
+        "cuesAboveCharactersPerSecond",
+        "cuesAboveCharactersPerLine",
+        "cuesAboveDoubleLineCapacity"
+      ],
+      "properties": {
+        "maxCharactersPerSecond": {
+          "type": "number",
+          "minimum": 0
+        },
+        "maxCharactersPerLine": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "maxLinesPerCue": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "cuesAboveCharactersPerSecond": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "cuesAboveCharactersPerLine": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "cuesAboveDoubleLineCapacity": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "technicalTerms": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "boolean"
+      }
+    },
+    "status": {
+      "enum": ["pass", "warning", "fail"]
+    },
+    "notes": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  }
+}

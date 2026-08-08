@@ -1,0 +1,44 @@
+{
+  "version": 2,
+  "sessionId": "2026-01-15-face-batch-01",
+  "createdAt": "2026-01-15T18:00:00Z",
+  "status": "planned",
+  "rootPath": "/path/to/recording-sessions/2026-01-15-face-batch-01",
+  "setup": {
+    "camera": "phone main camera",
+    "microphone": "external lavalier",
+    "orientation": "vertical",
+    "targetWidth": 1080,
+    "targetHeight": 1920,
+    "targetFps": 30,
+    "roomToneSourceId": null,
+    "lightingNote": "fixed key light",
+    "backgroundNote": "desk setup"
+  },
+  "privacy": {
+    "recordingEnvironment": "private",
+    "otherPeople": "none",
+    "consentStatus": "not-required",
+    "consentReceiptPaths": [],
+    "screenPrivacyReview": "pending",
+    "previewPrivacyReview": "pending",
+    "disclosureRisks": []
+  },
+  "retention": {
+    "rawPolicy": "retain-until-campaign-closed",
+    "deleteAfter": null,
+    "archivePath": null,
+    "deletionStatus": "not-scheduled",
+    "deletionReceipt": null,
+    "holdReason": null
+  },
+  "campaigns": [
+    {
+      "campaignId": "example-campaign",
+      "scriptVersion": "v03",
+      "plannedFullTakes": 2,
+      "screenProofRequired": true
+    }
+  ],
+  "sources": []
+}

@@ -1,0 +1,37 @@
+{
+  "schemaVersion": "0.1",
+  "artifact": "/path/to/campaign/media/captions.srt",
+  "language": "en",
+  "videoDurationMs": 381683,
+  "cueCount": 109,
+  "overlapCount": 0,
+  "invalidDurationCount": 0,
+  "firstStartMs": 0,
+  "finalEndMs": 380500,
+  "tailGapMs": 1183,
+  "warningThresholds": {
+    "charactersPerSecond": 20,
+    "charactersPerLine": 42,
+    "linesPerCue": 2
+  },
+  "observed": {
+    "maxCharactersPerSecond": 31.03,
+    "maxCharactersPerLine": 103,
+    "maxLinesPerCue": 1,
+    "cuesAboveCharactersPerSecond": 16,
+    "cuesAboveCharactersPerLine": 77,
+    "cuesAboveDoubleLineCapacity": 14
+  },
+  "technicalTerms": {
+    "PostgreSQL": true,
+    "webhook": true,
+    "localhost": true,
+    "human-in-the-loop": true
+  },
+  "status": "warning",
+  "notes": [
+    "The SRT is structurally valid and has no overlap.",
+    "Readability thresholds are configurable production warnings, not platform-ranking rules.",
+    "Long captions are a warning, not a failure. A human decides whether to reflow them."
+  ]
+}

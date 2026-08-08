@@ -1,0 +1,411 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vcut.dev/schemas/session.schema.json",
+  "title": "Face-video recording session",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "sessionId",
+    "createdAt",
+    "status",
+    "rootPath",
+    "setup",
+    "privacy",
+    "retention",
+    "campaigns",
+    "sources"
+  ],
+  "properties": {
+    "version": {
+      "const": 2
+    },
+    "sessionId": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+    },
+    "createdAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "status": {
+      "enum": ["planned", "recording", "ingested", "reviewed", "closed"]
+    },
+    "rootPath": {
+      "type": "string",
+      "pattern": "^/"
+    },
+    "setup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "camera",
+        "microphone",
+        "orientation",
+        "targetWidth",
+        "targetHeight",
+        "targetFps",
+        "roomToneSourceId"
+      ],
+      "properties": {
+        "camera": {
+          "type": "string",
+          "minLength": 1
+        },
+        "microphone": {
+          "type": "string",
+          "minLength": 1
+        },
+        "orientation": {
+          "enum": ["vertical", "horizontal"]
+        },
+        "targetWidth": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "targetHeight": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "targetFps": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "roomToneSourceId": {
+          "type": ["string", "null"]
+        },
+        "lightingNote": {
+          "type": ["string", "null"]
+        },
+        "backgroundNote": {
+          "type": ["string", "null"]
+        }
+      }
+    },
+    "privacy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "recordingEnvironment",
+        "otherPeople",
+        "consentStatus",
+        "consentReceiptPaths",
+        "screenPrivacyReview",
+        "previewPrivacyReview",
+        "disclosureRisks"
+      ],
+      "properties": {
+        "recordingEnvironment": {
+          "enum": ["private", "shared", "public"]
+        },
+        "otherPeople": {
+          "enum": ["none", "incidental", "participant"]
+        },
+        "consentStatus": {
+          "enum": ["not-required", "pending", "recorded", "blocked"]
+        },
+        "consentReceiptPaths": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "screenPrivacyReview": {
+          "enum": ["pending", "passed", "failed"]
+        },
+        "previewPrivacyReview": {
+          "enum": ["pending", "passed", "failed"]
+        },
+        "disclosureRisks": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "otherPeople": {
+                "const": "none"
+              }
+            },
+            "required": ["otherPeople"]
+          },
+          "then": {
+            "properties": {
+              "consentStatus": {
+                "const": "not-required"
+              },
+              "consentReceiptPaths": {
+                "type": "array",
+                "maxItems": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "consentStatus": {
+                "const": "recorded"
+              }
+            },
+            "required": ["consentStatus"]
+          },
+          "then": {
+            "properties": {
+              "otherPeople": {
+                "enum": ["incidental", "participant"]
+              },
+              "consentReceiptPaths": {
+                "type": "array",
+                "minItems": 1
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "consentStatus": {
+                "const": "not-required"
+              }
+            },
+            "required": ["consentStatus"]
+          },
+          "then": {
+            "properties": {
+              "otherPeople": {
+                "const": "none"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "retention": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "rawPolicy",
+        "deleteAfter",
+        "archivePath",
+        "deletionStatus",
+        "deletionReceipt",
+        "holdReason"
+      ],
+      "properties": {
+        "rawPolicy": {
+          "enum": ["retain-until-campaign-closed", "retain-until-date", "retain-manually"]
+        },
+        "deleteAfter": {
+          "type": ["string", "null"],
+          "format": "date"
+        },
+        "archivePath": {
+          "type": ["string", "null"],
+          "pattern": "^/"
+        },
+        "deletionStatus": {
+          "enum": ["not-scheduled", "scheduled", "completed", "held"]
+        },
+        "deletionReceipt": {
+          "type": ["string", "null"]
+        },
+        "holdReason": {
+          "type": ["string", "null"]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "rawPolicy": {
+                "const": "retain-until-date"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "deleteAfter": {
+                "type": "string",
+                "format": "date"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "deletionStatus": {
+                "const": "completed"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "deletionReceipt": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "deletionStatus": {
+                "const": "held"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "holdReason": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      ]
+    },
+    "campaigns": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["campaignId", "scriptVersion", "plannedFullTakes", "screenProofRequired"],
+        "properties": {
+          "campaignId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "scriptVersion": {
+            "type": "string",
+            "minLength": 1
+          },
+          "plannedFullTakes": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 3
+          },
+          "screenProofRequired": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "campaignId", "scriptVersion", "takeNumber", "kind", "path", "sha256"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "campaignId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "scriptVersion": {
+            "type": "string",
+            "minLength": 1
+          },
+          "takeNumber": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "kind": {
+            "enum": ["camera", "microphone", "screen", "room-tone"]
+          },
+          "path": {
+            "type": "string",
+            "pattern": "^/"
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          }
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "enum": ["reviewed", "closed"]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "privacy": {
+            "type": "object",
+            "properties": {
+              "screenPrivacyReview": {
+                "const": "passed"
+              },
+              "previewPrivacyReview": {
+                "const": "passed"
+              }
+            },
+            "allOf": [
+              {
+                "if": {
+                  "properties": {
+                    "otherPeople": {
+                      "enum": ["incidental", "participant"]
+                    }
+                  },
+                  "required": ["otherPeople"]
+                },
+                "then": {
+                  "properties": {
+                    "consentStatus": {
+                      "const": "recorded"
+                    },
+                    "consentReceiptPaths": {
+                      "type": "array",
+                      "minItems": 1
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "enum": ["ingested", "reviewed", "closed"]
+          }
+        },
+        "required": ["status"]
+      },
+      "then": {
+        "properties": {
+          "sources": {
+            "type": "array",
+            "minItems": 1
+          }
+        }
+      }
+    }
+  ]
+}
