@@ -36,7 +36,7 @@ jobs:
         id: version
         run: |
           LOCAL=$(jq -r .version package.json)
-          PUBLISHED=$(npm view vcut version 2>/dev/null || echo "0.0.0")
+          PUBLISHED=$(npm view @crafter/vcut version 2>/dev/null || echo "0.0.0")
           echo "local=$LOCAL" >> "$GITHUB_OUTPUT"
           echo "published=$PUBLISHED" >> "$GITHUB_OUTPUT"
           if [ "$LOCAL" != "$PUBLISHED" ]; then
@@ -80,7 +80,7 @@ jobs:
           mkdir -p /tmp/install-check
           cd /tmp/install-check
           npm init -y > /dev/null
-          npm install "$GITHUB_WORKSPACE"/vcut-*.tgz
+          npm install "$GITHUB_WORKSPACE"/crafter-vcut-*.tgz
           ./node_modules/.bin/vcut version
           ./node_modules/.bin/vcut skills get vcut | head -1 | grep -q '^---$'
 

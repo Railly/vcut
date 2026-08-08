@@ -44,7 +44,7 @@ jobs:
           mkdir -p /tmp/install-check
           cd /tmp/install-check
           npm init -y > /dev/null
-          npm install "$GITHUB_WORKSPACE"/vcut-*.tgz
+          npm install "$GITHUB_WORKSPACE"/crafter-vcut-*.tgz
           ./node_modules/.bin/vcut version
           ./node_modules/.bin/vcut skills get vcut | head -1 | grep -q '^---$'
           ./node_modules/.bin/vcut skills list --json | grep -q vcut

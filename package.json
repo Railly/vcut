@@ -1,5 +1,5 @@
 {
-  "name": "vcut",
+  "name": "@crafter/vcut",
   "version": "0.1.0",
   "description": "Cut dead air out of a recording, reproducibly. Agent-first CLI over ffmpeg.",
   "type": "module",
@@ -7,7 +7,7 @@
   "author": "Railly Hugo <hi@railly.dev>",
   "repository": {
     "type": "git",
-    "url": "https://github.com/Railly/vcut"
+    "url": "git+https://github.com/Railly/vcut.git"
   },
   "keywords": [
     "video",
@@ -44,5 +44,8 @@
     "@biomejs/biome": "^2.4.13",
     "@types/bun": "latest",
     "@types/node": "^22.10.0"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

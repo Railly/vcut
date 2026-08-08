@@ -2,8 +2,8 @@
   <span style="font-weight:600;font-size:20px;">vcut</span>
   <br/>
   <br/>
-  <a href="https://www.npmjs.com/package/vcut" target="_blank">
-    <img src="https://img.shields.io/npm/v/vcut?color=black" alt="npm"/>
+  <a href="https://www.npmjs.com/package/@crafter/vcut" target="_blank">
+    <img src="https://img.shields.io/npm/v/@crafter/vcut?color=black" alt="npm"/>
   </a>
   &nbsp;
   <a href="https://github.com/Railly/vcut/blob/main/LICENSE" target="_blank">
@@ -25,7 +25,7 @@
 </p>
 
 ```bash
-npx vcut recording.mp4
+npx @crafter/vcut recording.mp4
 ```
 
 ## Why
@@ -37,7 +37,7 @@ vcut splits those. It proposes cuts as data, and every destructive step is gated
 ## Quick Start
 
 ```bash
-npm install -g vcut     # or: bun add -g vcut
+npm install -g @crafter/vcut     # or: bun add -g @crafter/vcut
 vcut doctor             # checks ffmpeg and ffprobe
 ```
 
