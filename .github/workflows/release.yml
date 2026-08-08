@@ -86,7 +86,7 @@ jobs:
           npm init -y > /dev/null
           npm install "$GITHUB_WORKSPACE"/packages/cli/crafter-vcut-*.tgz
           ./node_modules/.bin/vcut version
-          ./node_modules/.bin/vcut skills get vcut | head -1 | grep -q '^---$'
+          ./node_modules/.bin/vcut skills get core | head -1 | grep -q '^---$'
 
       # access comes from publishConfig in package.json. Passing --access here too
       # made npm retry and collide with its own successful write, reporting

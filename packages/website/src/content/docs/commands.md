@@ -99,13 +99,21 @@ Versioned, so an agent can introspect the output shape at runtime instead of par
 
 ### vcut skills
 
+Install the skill into Claude Code, Cursor, or any agent that reads them:
+
+```bash
+npx skills add Railly/vcut
+```
+
+What gets installed is a **thin stub**. It carries the description an agent matches against and then points at the CLI:
+
 ```bash
 vcut skills list
-vcut skills get vcut     # raw markdown on stdout
+vcut skills get core     # the usage guide, raw markdown on stdout
 vcut skills path
 ```
 
-The agent manual ships inside the npm package and is served by the CLI itself, so it is available from an install rather than only from a repo checkout.
+The guide ships inside the npm package and is served by the CLI itself, so it always matches the installed version. A copy pasted into an agent's config would go stale the moment you upgrade; a stub that points at `skills get` cannot.
 
 ### vcut doctor
 

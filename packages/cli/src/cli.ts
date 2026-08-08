@@ -208,7 +208,9 @@ const skillsCommand = (argv: string[]): void => {
   }
 
   if (verb === 'get') {
-    const name = positional(rest) ?? 'vcut'
+    // `core` is the usage guide. `vcut` is the discovery stub that points here,
+    // so a bare `skills get` should serve the content, not the pointer.
+    const name = positional(rest) ?? 'core'
     const file = join(directory, name, 'SKILL.md')
     if (!existsSync(file)) {
       throw new UsageError(`no skill named ${name}. Run vcut skills list.`)

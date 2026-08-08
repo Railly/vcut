@@ -46,6 +46,14 @@ const rendered = await Promise.all([
 const heroHtml = rendered[0]
 const commandHtml = rendered.slice(1)
 
+const asciiLogo = `
+██╗   ██╗ ██████╗ ██╗   ██╗████████╗
+██║   ██║██╔════╝ ██║   ██║╚══██╔══╝
+██║   ██║██║      ██║   ██║   ██║
+╚██╗ ██╔╝██║      ██║   ██║   ██║
+ ╚████╔╝ ╚██████╗ ╚██████╔╝   ██║
+  ╚═══╝   ╚═════╝  ╚═════╝    ╚═╝`.trim()
+
 const stats = [
   { value: '3', label: 'Presets' },
   { value: '3', label: 'Languages' },
@@ -67,8 +75,8 @@ const principles = [
     desc: 'The output contract is introspectable at runtime, versioned, and does not require reading source.',
   },
   {
-    flag: 'vcut skills get',
-    desc: 'The agent manual ships inside the package and is served by the CLI itself.',
+    flag: 'npx skills add Railly/vcut',
+    desc: 'The installed skill is a thin stub pointing at vcut skills get, so guidance never drifts from the installed version.',
   },
   {
     flag: 'Nothing self-approves',
@@ -101,6 +109,7 @@ const guarantees = [
     <section class="hero">
       <div class="container hero-grid">
         <div>
+          <pre class="ascii-logo" aria-hidden="true">{asciiLogo}</pre>
           <h1 class="mono">
             Cut <span class="accent">dead air</span> out of a recording.
           </h1>
@@ -117,6 +126,10 @@ const guarantees = [
             <div class="install-row">
               <span class="install-label mono">Try it</span>
               <code class="install-line mono">npx @crafter/vcut recording.mp4</code>
+            </div>
+            <div class="install-row">
+              <span class="install-label mono">Skill</span>
+              <code class="install-line mono">npx skills add Railly/vcut</code>
             </div>
           </div>
 
@@ -236,6 +249,16 @@ const guarantees = [
     grid-template-columns: 1fr 1fr;
     gap: 48px;
     align-items: center;
+  }
+
+  .ascii-logo {
+    font-family: 'Geist Mono', monospace;
+    font-size: 11px;
+    line-height: 1.3;
+    letter-spacing: 0.02em;
+    color: var(--amber);
+    white-space: pre;
+    margin-bottom: 22px;
   }
 
   h1 {
@@ -563,6 +586,10 @@ const guarantees = [
 
     h1 {
       font-size: 30px;
+    }
+
+    .ascii-logo {
+      font-size: 8px;
     }
 
     .stats-grid {

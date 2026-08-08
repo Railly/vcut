@@ -118,8 +118,16 @@ A filler list matches tokens, not intent. Spanish `este` is a filler in "y este,
 ## For agents
 
 ```bash
+npx skills add Railly/vcut    # install the skill for Claude Code, Cursor, or any agent
+```
+
+The installed skill is a thin stub: it points at the CLI rather than copying its
+contents, so the guidance never drifts from the installed version.
+
+```bash
+vcut skills list       # what the installed version ships
+vcut skills get core   # the usage guide, as raw markdown
 vcut schema detect     # the JSON contract, versioned
-vcut skills get vcut   # the full agent manual
 ```
 
 JSON is emitted automatically when stdout is not a TTY, so an agent never needs `--json`. Data goes to stdout, diagnostics to stderr. Exit code 2 means the invocation was wrong, 1 means the run failed.

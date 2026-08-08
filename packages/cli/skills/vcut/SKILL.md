@@ -1,115 +1,56 @@
 ---
 name: vcut
-description: Cut silences, filler words, and dead air out of a recording and render a clean master, reproducibly. Use when the user has a raw screen or camera recording, mentions cutting silences or filler words, asks to clean up a take before publishing, or wants an edit decision list from a video. Do not use for story ideation, captions styling, or publishing.
+description: Cut silences, filler words, and dead air out of a recording and render a clean master, reproducibly. Use when the user has a raw screen or camera recording, mentions cutting silences or filler words or dead air, asks to clean up a take before publishing, wants an edit decision list from a video, or asks to trim pauses out of a talking-head recording. Also use when a recording needs a technical pass for clipping, black frames, or frozen frames before it ships. Do not use for story ideation, caption styling, subtitle translation, or publishing to a platform.
+allowed-tools: Bash(vcut:*), Bash(npx @crafter/vcut:*)
 ---
 
 # vcut
 
-Find what is worth cutting, propose it, and let a human approve before anything is rendered.
+Cut dead air out of a recording, reproducibly. Agent-first CLI over ffmpeg: it proposes cuts as data and renders only what a human approved.
 
-The pipeline is three commands and never skips the middle one:
+Install: `npm install -g @crafter/vcut` (needs `ffmpeg` and `ffprobe` on PATH)
 
-```
-vcut detect <input>  ->  detect.json   (candidates, nothing decided)
-vcut edl build       ->  edl.json      (draft, every segment proposed)
-vcut render          ->  master.mp4    (preview first, master after approval)
-```
+## Start here
 
-## Output contract
-
-Every command writes data to stdout and diagnostics to stderr. JSON is emitted automatically when stdout is not a TTY, so an agent never needs `--json`, though passing it is harmless. Exit code 2 means the invocation was wrong, 1 means the run failed.
-
-Run `vcut schema detect|edl|render` for the field-by-field contract instead of parsing `--help`.
-
-## detect
+This file is a discovery stub, not the usage guide. Before running any `vcut` command, load the real workflow content from the CLI:
 
 ```bash
-vcut detect recording.mp4 --preset clean --lang es --transcript words.srt
+vcut skills get core        # the pipeline, presets, thresholds, approval boundary
 ```
 
-Presets carry thresholds proven in production. Do not invent new ones.
+The CLI serves skill content that always matches the installed version, so instructions never go stale. The content in this stub cannot change between releases, which is why it just points at `skills get core`.
 
-| Preset | Threshold | Use |
-| --- | --- | --- |
-| `noisy` (default) | -20 dB | Events, ambient noise |
-| `clean` | -30 dB | Studio, talking head |
-| `podcast` | -35 dB | Intentional pauses |
+Run `vcut skills list` to see everything available on the installed version.
 
-Other flags: `--min-silence` (seconds, default 0.3), `--margin` (seconds, default 0.10), `--skip-video-scan` to skip black and frozen frame detection on long sources.
+## The shape of the work
 
-**Filler cutting needs word-level timestamps**, meaning one cue per word. A sentence-level SRT produces zero fillers and a warning rather than a guess. Generate a usable transcript with either:
+Three commands, and the middle one is not optional plumbing:
 
 ```bash
-trx transcribe recording.mp4 --words --language es   # wraps whisper, handles extraction
-whisper-cli -m model.bin -f audio.wav --max-len 1 --output-srt
+vcut detect recording.mp4 > detect.json     # candidates, decides nothing
+vcut edl build --detect detect.json \
+  --output master.mp4 --campaign my-video   # draft EDL, every segment proposed
+vcut render --edl edl.json --mode preview   # watch it before approving
 ```
 
-Do not report zero fillers as a clean result when the warning is present. Regenerate the transcript and run detect again.
+The EDL exists so a human can read and disagree with the edit before any file is written.
 
-**A filler list matches tokens, not intent.** Spanish `este` is a filler in "y este, entonces" and an ordinary demonstrative in "en este caso"; the detector cannot tell them apart, and cutting the second one mutilates the sentence. Read the filler hits before approving them. This is why they land as `proposed`.
+## Two rules that matter before you run anything
 
-`review` entries (clipping, black frames, frozen frames) are candidates for a human to look at. They are never cut automatically.
+**Nothing self-approves.** `vcut edl build` writes every segment as `proposed` and the EDL as `draft`. `vcut render --mode master` refuses until a human changes that. There is no `--yes`. Never mark segments approved on the human's behalf.
 
-## edl build
+**Zero fillers is not always a clean result.** Filler detection needs a word-level transcript. When one is missing, vcut reports zero and emits a warning. Read the warning before reporting success.
+
+## Introspecting the contract
 
 ```bash
-vcut edl build --detect detect.json --output master.mp4 --campaign my-video
+vcut schema             # which commands have a contract
+vcut schema detect      # the field-by-field output shape, versioned
+vcut doctor             # check ffmpeg and ffprobe before transforming anything
 ```
 
-Inverts the cut intervals into the spans worth keeping, so the EDL always describes surviving material. Boundaries are snapped to whole frames; unsnapped boundaries accumulate rounding error and make the renderer reject the result with a frame count mismatch.
+JSON is emitted automatically when stdout is not a TTY, so you never need `--json`. Data goes to stdout, diagnostics to stderr. Exit code 2 means the invocation was wrong, 1 means the run failed.
 
-Flags: `--edl <path>` (default `./edl.json`), `--width`, `--height`, `--fps`, `--no-fillers` to cut silences only.
+## Full documentation
 
-Every segment is written as `proposed` and the EDL as `draft`. **This command never approves its own work.**
-
-Compare the reported `removalPercent` against the target for the content type:
-
-| Content | Expected removal |
-| --- | --- |
-| Event or interview | 30-45% |
-| Tutorial or screencast | 15-25% |
-| Scripted talking head | 10-20% |
-
-A number far below target usually means the source was already edited.
-
-## render
-
-```bash
-vcut render --edl edl.json --mode preview --dry-run
-vcut render --edl edl.json --mode preview
-```
-
-Preview mode accepts proposed segments. Master mode requires an approved EDL, approved segments, matching source hashes, and a free output path; it refuses to overwrite.
-
-The renderer validates its own output against the EDL: dimensions, pixel format, colour metadata, frame count within one frame, and the audio contract. Identical inputs produce a byte-identical file, so the `sha256` in the result is a reproducibility check.
-
-## Human decision boundary
-
-vcut proposes. The human decides.
-
-| vcut may propose | The human decides |
-| --- | --- |
-| silence cuts | delivery quality |
-| filler word cuts | authenticity |
-| review candidates | semantic changes |
-| crop options | acceptable jump cuts |
-| | which mistakes stay human |
-
-Never mark segments approved on the human's behalf. Never render a master without explicit approval. Never overwrite source media.
-
-## Workflow for an agent
-
-1. `vcut doctor` if anything looks wrong with the environment.
-2. `vcut detect <input>` with the preset that matches the recording condition.
-3. Read the warnings. If the transcript is not word-level, say so rather than reporting zero fillers as a clean result.
-4. `vcut edl build`, then check `removalPercent` against the content type.
-5. `vcut render --mode preview --dry-run` to confirm the command is well formed.
-6. `vcut render --mode preview` and have a human watch it.
-7. Only after approval, flip the EDL to approved and render the master.
-
-## Limits
-
-- No semantic cutting. Repeated lines, false starts, and redundancy need a human or an LLM reading the transcript.
-- No crossfade at the joins; segments concatenate directly.
-- External audio, sync offset, and noise reduction are rejected rather than silently ignored.
-- No face tracking or automatic zoom.
+https://vcut.crafter.run/docs
