@@ -20,6 +20,10 @@
 </p>
 
 <p align="center">
+  <a href="https://vcut.crafter.run">vcut.crafter.run</a>
+</p>
+
+<p align="center">
   Finds the silences, filler words, and technical faults in a raw take, proposes an
   edit as data, and renders it only after a human approves.
 </p>
@@ -136,7 +140,7 @@ JSON is emitted automatically when stdout is not a TTY, so an agent never needs 
 
 ## Design
 
-Why it is shaped this way: [docs/design-notes.md](docs/design-notes.md).
+Why it is shaped this way: [docs/design-notes.md](docs/design-notes.md). Full documentation at [vcut.crafter.run/docs](https://vcut.crafter.run/docs).
 
 ## License
 
