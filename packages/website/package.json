@@ -1,0 +1,19 @@
+{
+  "name": "@crafter/vcut-website",
+  "type": "module",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "astro dev",
+    "build": "astro build",
+    "preview": "astro preview"
+  },
+  "dependencies": {
+    "@vercel/analytics": "^2.0.1",
+    "astro": "^5.9.4",
+    "shiki": "^3.4.2"
+  },
+  "devDependencies": {
+    "sharp": "^0.34.5"
+  }
+}

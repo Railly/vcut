@@ -1,0 +1,104 @@
+---
+import Analytics from '@vercel/analytics/astro'
+import '../styles/global.css'
+
+interface Props {
+  title: string
+  description?: string
+}
+
+const {
+  title,
+  description = 'Cut dead air out of a recording, reproducibly. Agent-first CLI over ffmpeg.',
+} = Astro.props
+
+const fullTitle = title === 'vcut' ? 'vcut — cut dead air out of a recording' : `${title} — vcut`
+const path = Astro.url.pathname
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="icon" type="image/png" href="/favicon.png" />
+    <title>{fullTitle}</title>
+    <meta name="description" content={description} />
+
+    <meta property="og:title" content={fullTitle} />
+    <meta property="og:description" content={description} />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://vcut.crafter.run" />
+    <meta property="og:image" content="https://vcut.crafter.run/og.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content={fullTitle} />
+    <meta name="twitter:description" content={description} />
+    <meta name="twitter:image" content="https://vcut.crafter.run/og-twitter.png" />
+
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+  </head>
+  <body>
+    <nav class="site-nav">
+      <div class="nav-inner">
+        <a href="/" class="nav-brand">vcut</a>
+        <div class="nav-links">
+          <a href="/docs" class:list={[path.startsWith('/docs') && 'active']}>Docs</a>
+          <a href="https://github.com/Railly/vcut" target="_blank" rel="noopener">GitHub</a>
+          <a
+            href="https://www.npmjs.com/package/@crafter/vcut"
+            target="_blank"
+            rel="noopener"
+            class="nav-cta">npm</a
+          >
+        </div>
+      </div>
+    </nav>
+
+    <slot />
+
+    <footer class="site-footer">
+      <div class="footer-inner">
+        <div class="footer-links">
+          <a href="/">Home</a>
+          <a href="/docs">Docs</a>
+          <a href="https://github.com/Railly/vcut" target="_blank" rel="noopener">GitHub</a>
+          <a href="https://www.npmjs.com/package/@crafter/vcut" target="_blank" rel="noopener"
+            >npm</a
+          >
+          <a href="https://crafter.run" target="_blank" rel="noopener">Crafter Station</a>
+        </div>
+        <div class="footer-note mono">Open source. MIT License.</div>
+      </div>
+    </footer>
+
+    <Analytics />
+
+    <script>
+      document.addEventListener('DOMContentLoaded', () => {
+        for (const pre of document.querySelectorAll('.prose pre')) {
+          const button = document.createElement('button')
+          button.className = 'copy-btn'
+          button.textContent = 'Copy'
+          button.addEventListener('click', async () => {
+            const code = pre.querySelector('code')
+            if (code === null) return
+            await navigator.clipboard.writeText(code.textContent ?? '')
+            button.textContent = 'Copied'
+            setTimeout(() => {
+              button.textContent = 'Copy'
+            }, 2000)
+          })
+          pre.appendChild(button)
+        }
+      })
+    </script>
+  </body>
+</html>

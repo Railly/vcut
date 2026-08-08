@@ -1,0 +1,581 @@
+---
+import { codeToHtml } from 'shiki'
+import Base from '../layouts/Base.astro'
+import { vcutTheme } from '../shiki-theme.ts'
+
+const heroCode = `$ vcut recording.mp4
+
+recording.mp4  6m 22s
+  dead air      ###.........  16.5%  (1m 03s)
+  net of margin ##..........  10.3%  (~39s)
+  silences      119 spans
+  fillers       4 hits
+  review        1 (never cut)
+                clipping: peak -0.24 dB
+
+  Next:
+    vcut detect recording.mp4 --json`
+
+const commands = [
+  {
+    title: 'detect',
+    desc: 'Silences by preset, filler words by language, clipping, black and frozen frames. Writes candidates, decides nothing.',
+    code: 'vcut detect recording.mp4 --preset clean --lang es',
+  },
+  {
+    title: 'edl build',
+    desc: 'Inverts the cuts into the spans worth keeping. Every segment is born proposed, the EDL draft.',
+    code: 'vcut edl build --detect detect.json \\\n  --output master.mp4 --campaign my-video',
+  },
+  {
+    title: 'render',
+    desc: 'Preview accepts proposals. Master needs an approved EDL, matching source hashes, and a free output path.',
+    code: 'vcut render --edl edl.json --mode preview',
+  },
+  {
+    title: 'schema',
+    desc: 'The JSON contract per command, versioned. An agent introspects it instead of parsing help text.',
+    code: 'vcut schema detect',
+  },
+]
+
+const rendered = await Promise.all([
+  codeToHtml(heroCode, { lang: 'bash', theme: vcutTheme }),
+  ...commands.map((c) => codeToHtml(c.code, { lang: 'bash', theme: vcutTheme })),
+])
+const heroHtml = rendered[0]
+const commandHtml = rendered.slice(1)
+
+const stats = [
+  { value: '3', label: 'Presets' },
+  { value: '3', label: 'Languages' },
+  { value: '0', label: 'Auto-approvals' },
+  { value: '1', label: 'Command' },
+]
+
+const principles = [
+  {
+    flag: 'JSON by default',
+    desc: 'Machine output when stdout is not a TTY. An agent never needs to remember a flag.',
+  },
+  {
+    flag: 'Exit codes that mean something',
+    desc: '2 for a wrong invocation, 1 for a failed run, 0 for success. Data on stdout, diagnostics on stderr.',
+  },
+  {
+    flag: 'vcut schema',
+    desc: 'The output contract is introspectable at runtime, versioned, and does not require reading source.',
+  },
+  {
+    flag: 'vcut skills get',
+    desc: 'The agent manual ships inside the package and is served by the CLI itself.',
+  },
+  {
+    flag: 'Nothing self-approves',
+    desc: 'Segments are proposed, the EDL is draft. There is no --yes for the master render.',
+  },
+  {
+    flag: 'Sources are hashed',
+    desc: 'A changed source hash aborts a master render. Original media is never modified.',
+  },
+]
+
+const guarantees = [
+  {
+    title: 'The renderer checks its own work',
+    body: 'After rendering, vcut probes the file it just produced and compares it against the EDL: dimensions, pixel format, colour metadata, decoded frame count within one frame, and the audio contract. A render that quietly produced two extra frames is a bug, and without this check it ships as a working file.',
+  },
+  {
+    title: 'Renders are reproducible',
+    body: 'The same EDL produces a byte-identical file. The sha256 in the result exists so you can verify that yourself rather than take it on faith. It is also how the port from one runtime to another was checked: same EDL, same hash, byte for byte.',
+  },
+  {
+    title: 'Unimplemented fields are rejected',
+    body: 'The EDL schema has room for external audio, sync offset, and noise reduction. The renderer does not implement them, so it refuses an EDL that sets them instead of rendering something that quietly ignores half the instruction.',
+  },
+]
+---
+
+<Base title="vcut">
+  <main>
+    <section class="hero">
+      <div class="container hero-grid">
+        <div>
+          <h1 class="mono">
+            Cut <span class="accent">dead air</span> out of a recording.
+          </h1>
+          <p class="hero-lead">
+            vcut finds the silences, filler words, and technical faults in a raw take, proposes an
+            edit as data, and renders it only after a human approves.
+          </p>
+
+          <div class="hero-actions">
+            <div class="install-row">
+              <span class="install-label mono">Install</span>
+              <code class="install-line mono">npm install -g @crafter/vcut</code>
+            </div>
+            <div class="install-row">
+              <span class="install-label mono">Try it</span>
+              <code class="install-line mono">npx @crafter/vcut recording.mp4</code>
+            </div>
+          </div>
+
+          <div class="hero-links">
+            <a href="/docs">Read the docs</a>
+            <a href="https://github.com/Railly/vcut" target="_blank" rel="noopener">GitHub</a>
+          </div>
+        </div>
+
+        <div class="hero-code" set:html={heroHtml} />
+      </div>
+    </section>
+
+    <section class="stats">
+      <div class="container stats-grid">
+        {
+          stats.map((s) => (
+            <div class="stat">
+              <div class="stat-value mono">{s.value}</div>
+              <div class="stat-label mono">{s.label}</div>
+            </div>
+          ))
+        }
+      </div>
+    </section>
+
+    <section class="pitch">
+      <div class="container pitch-inner">
+        <h2 class="mono">Cutting silence is mechanical. Deciding what stays is not.</h2>
+        <p>
+          Trimming pauses out of a talking-head recording is work an agent should do. What an agent
+          should not do is decide which of your mistakes stay in, or overwrite the only copy of a
+          take.
+        </p>
+        <p>
+          vcut splits those. It proposes cuts as data you can read, and every destructive step is
+          gated behind a human. The thresholds are not invented either: they come from a pipeline
+          that ran in production on published video.
+        </p>
+      </div>
+    </section>
+
+    <section class="commands" id="commands">
+      <div class="container">
+        <div class="section-label mono">Commands</div>
+        <div class="cmd-grid">
+          {
+            commands.map((c, i) => (
+              <div class="cmd-card">
+                <h3 class="mono">vcut {c.title}</h3>
+                <p>{c.desc}</p>
+                <div class="cmd-code" set:html={commandHtml[i]} />
+              </div>
+            ))
+          }
+        </div>
+      </div>
+    </section>
+
+    <section class="agent-first">
+      <div class="container">
+        <div class="section-label mono">Built for an agent to operate</div>
+        <div class="principle-grid">
+          {
+            principles.map((p) => (
+              <div class="principle">
+                <div class="principle-flag mono">{p.flag}</div>
+                <div class="principle-desc">{p.desc}</div>
+              </div>
+            ))
+          }
+        </div>
+      </div>
+    </section>
+
+    <section class="guarantees">
+      <div class="container guarantees-inner">
+        <div class="section-label mono light">Guarantees</div>
+        {
+          guarantees.map((g) => (
+            <div class="guarantee">
+              <h3 class="mono">{g.title}</h3>
+              <p>{g.body}</p>
+            </div>
+          ))
+        }
+      </div>
+    </section>
+
+    <section class="closing">
+      <div class="container closing-inner">
+        <h2 class="mono">Start with one file.</h2>
+        <code class="install-line mono big">npx @crafter/vcut recording.mp4</code>
+        <p class="closing-note">
+          Needs <code>ffmpeg</code> and <code>ffprobe</code> on your PATH. Run <code
+            >vcut doctor</code
+          > to check.
+        </p>
+      </div>
+    </section>
+  </main>
+</Base>
+
+<style>
+  main {
+    padding-top: 56px;
+  }
+
+  /* Hero */
+
+  .hero {
+    padding: 72px 0 56px;
+  }
+
+  .hero-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 48px;
+    align-items: center;
+  }
+
+  h1 {
+    font-size: 40px;
+    line-height: 1.15;
+    letter-spacing: -0.03em;
+    font-weight: 700;
+  }
+
+  h1 .accent {
+    color: var(--amber);
+  }
+
+  .hero-lead {
+    margin-top: 18px;
+    font-size: 16px;
+    color: var(--text-2);
+    max-width: 46ch;
+  }
+
+  .hero-actions {
+    margin-top: 28px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .install-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .install-label {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-3);
+    width: 52px;
+    flex-shrink: 0;
+  }
+
+  .install-line {
+    font-size: 13px;
+    background: var(--bg-alt);
+    border: 1px solid var(--border-light);
+    color: var(--amber);
+    padding: 8px 12px;
+    border-radius: 6px;
+    display: inline-block;
+  }
+
+  .install-line.big {
+    font-size: 15px;
+    padding: 12px 18px;
+  }
+
+  .hero-links {
+    margin-top: 26px;
+    display: flex;
+    gap: 20px;
+    font-size: 13px;
+  }
+
+  .hero-links a {
+    color: var(--text-2);
+    text-decoration: none;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 2px;
+  }
+
+  .hero-links a:hover {
+    color: var(--amber);
+    border-color: var(--amber);
+  }
+
+  .hero-code {
+    border-radius: 12px;
+    overflow: hidden;
+    box-shadow: 0 8px 32px rgba(28, 25, 23, 0.15);
+    font-size: 12.5px;
+  }
+
+  .hero-code :global(pre) {
+    padding: 20px;
+    overflow-x: auto;
+    line-height: 1.6;
+  }
+
+  /* A terminal transcript is meant to be read, not scrolled. Shrinking past the
+     breakpoint keeps the longest line whole instead of clipping it off-frame. */
+  @media (max-width: 1040px) {
+    .hero-code {
+      font-size: 11px;
+    }
+  }
+
+  /* Stats */
+
+  .stats {
+    padding: 36px 0;
+    border-top: 2px dashed var(--border);
+    border-bottom: 2px dashed var(--border);
+  }
+
+  .stats-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+  }
+
+  .stat {
+    text-align: center;
+    padding: 0 16px;
+    border-right: 2px dashed var(--border);
+  }
+
+  .stat:last-child {
+    border-right: none;
+  }
+
+  .stat-value {
+    font-size: 28px;
+    font-weight: 700;
+    color: var(--amber);
+    line-height: 1;
+  }
+
+  .stat-label {
+    margin-top: 6px;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-3);
+  }
+
+  /* Pitch */
+
+  .pitch {
+    background: var(--bg-dark);
+    color: var(--white);
+    padding: 72px 0;
+  }
+
+  .pitch-inner {
+    max-width: 720px;
+    text-align: center;
+  }
+
+  .pitch h2 {
+    font-size: 26px;
+    letter-spacing: -0.02em;
+    line-height: 1.3;
+  }
+
+  .pitch p {
+    margin-top: 18px;
+    color: #a8a29e;
+    font-size: 15px;
+  }
+
+  /* Section label */
+
+  .section-label {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--amber);
+    margin-bottom: 24px;
+  }
+
+  .section-label.light {
+    color: var(--amber-light);
+  }
+
+  /* Commands */
+
+  .commands {
+    padding: 72px 0;
+    background: var(--bg-alt);
+  }
+
+  .cmd-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+  }
+
+  .cmd-card {
+    background: var(--white);
+    border: 1px solid var(--border-light);
+    border-radius: 12px;
+    padding: 22px;
+    transition: border-color 150ms, box-shadow 150ms;
+  }
+
+  .cmd-card:hover {
+    border-color: var(--amber);
+    box-shadow: 0 4px 16px rgba(217, 119, 6, 0.08);
+  }
+
+  .cmd-card h3 {
+    font-size: 15px;
+    color: var(--amber);
+  }
+
+  .cmd-card p {
+    margin: 8px 0 14px;
+    font-size: 13.5px;
+    color: var(--text-2);
+  }
+
+  .cmd-code {
+    border-radius: 8px;
+    overflow: hidden;
+    font-size: 12px;
+  }
+
+  .cmd-code :global(pre) {
+    padding: 12px 14px;
+    overflow-x: auto;
+  }
+
+  /* Agent-first */
+
+  .agent-first {
+    padding: 72px 0;
+  }
+
+  .principle-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 18px;
+  }
+
+  .principle {
+    border: 2px dashed var(--border);
+    border-radius: 8px;
+    padding: 18px;
+    transition: border-color 150ms;
+  }
+
+  .principle:hover {
+    border-color: var(--amber);
+  }
+
+  .principle-flag {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--amber);
+  }
+
+  .principle-desc {
+    margin-top: 8px;
+    font-size: 13.5px;
+    color: var(--text-2);
+  }
+
+  /* Guarantees */
+
+  .guarantees {
+    background: var(--bg-dark);
+    color: var(--white);
+    padding: 72px 0;
+  }
+
+  .guarantees-inner {
+    max-width: 760px;
+  }
+
+  .guarantee {
+    padding: 22px 0;
+    border-top: 2px dashed #44403c;
+  }
+
+  .guarantee:first-of-type {
+    border-top: none;
+    padding-top: 0;
+  }
+
+  .guarantee h3 {
+    font-size: 16px;
+    color: var(--amber-light);
+  }
+
+  .guarantee p {
+    margin-top: 10px;
+    color: #a8a29e;
+    font-size: 14.5px;
+  }
+
+  /* Closing */
+
+  .closing {
+    padding: 72px 0 40px;
+    text-align: center;
+  }
+
+  .closing h2 {
+    font-size: 24px;
+    letter-spacing: -0.02em;
+    margin-bottom: 20px;
+  }
+
+  .closing-note {
+    margin-top: 18px;
+    font-size: 13px;
+    color: var(--text-3);
+  }
+
+  .closing-note code {
+    font-family: 'Geist Mono', monospace;
+    color: var(--text-2);
+  }
+
+  @media (max-width: 768px) {
+    .hero-grid,
+    .cmd-grid,
+    .principle-grid {
+      grid-template-columns: 1fr;
+    }
+
+    .hero-code {
+      display: none;
+    }
+
+    h1 {
+      font-size: 30px;
+    }
+
+    .stats-grid {
+      grid-template-columns: repeat(2, 1fr);
+      gap: 20px 0;
+    }
+
+    .stat:nth-child(2) {
+      border-right: none;
+    }
+
+    .pitch h2 {
+      font-size: 21px;
+    }
+  }
+</style>

@@ -1,0 +1,180 @@
+---
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { getCollection, render } from 'astro:content'
+import Base from '../layouts/Base.astro'
+
+const entries = await getCollection('docs')
+const sorted = entries.sort((a, b) => a.data.order - b.data.order)
+
+const rendered = await Promise.all(
+  sorted.map(async (entry) => ({ entry, Content: (await render(entry)).Content }))
+)
+
+// The raw markdown of every page, concatenated, so an agent can take the whole
+// documentation in one paste instead of scraping the rendered HTML.
+// Resolved from the project root, not from import.meta.url: at build time this
+// module runs out of dist/, where the markdown sources do not exist.
+const rawMarkdown = sorted
+  .map((entry) =>
+    readFileSync(join(process.cwd(), 'src/content/docs', `${entry.id}.md`), 'utf8').replace(
+      /^---[\s\S]*?---\n*/,
+      ''
+    )
+  )
+  .join('\n\n---\n\n')
+---
+
+<Base title="Docs" description="How to run vcut, what each command refuses to do, and what an EDL means.">
+  <main>
+    <div class="container docs-layout">
+      <aside class="docs-rail">
+        <div class="rail-label mono">Contents</div>
+        <nav>
+          {
+            sorted.map((entry) => (
+              <a class="docs-nav-link" href={`#${entry.id}`}>
+                {entry.data.title}
+              </a>
+            ))
+          }
+        </nav>
+        <button id="copy-all-md" class="copy-all-btn mono">Copy all as Markdown</button>
+      </aside>
+
+      <div class="docs-body">
+        <header class="docs-header">
+          <h1 class="mono">Documentation</h1>
+          <p>
+            vcut proposes cuts as data and renders only what a human approved. These pages cover the
+            commands, the transcript requirement, and the edit decision list you are approving.
+          </p>
+        </header>
+
+        {
+          rendered.map(({ entry, Content }) => (
+            <section id={entry.id} class="prose docs-section">
+              <Content />
+            </section>
+          ))
+        }
+      </div>
+    </div>
+  </main>
+
+  <script is:inline define:vars={{ rawMarkdown }}>
+    window.__docsMarkdown = rawMarkdown
+  </script>
+
+  <script>
+    document.addEventListener('DOMContentLoaded', () => {
+      const button = document.getElementById('copy-all-md')
+      button?.addEventListener('click', async () => {
+        const markdown = (window as unknown as { __docsMarkdown: string }).__docsMarkdown
+        await navigator.clipboard.writeText(markdown)
+        button.textContent = 'Copied'
+        setTimeout(() => {
+          button.textContent = 'Copy all as Markdown'
+        }, 2000)
+      })
+    })
+  </script>
+</Base>
+
+<style>
+  main {
+    padding-top: 90px;
+  }
+
+  .docs-layout {
+    display: grid;
+    grid-template-columns: 200px 1fr;
+    gap: 48px;
+    align-items: start;
+    padding-bottom: 40px;
+  }
+
+  .docs-rail {
+    position: sticky;
+    top: 90px;
+  }
+
+  .rail-label {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--text-3);
+    margin-bottom: 12px;
+  }
+
+  .docs-rail nav {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .docs-nav-link {
+    font-size: 13.5px;
+    color: var(--text-2);
+    text-decoration: none;
+    padding: 6px 10px;
+    border-radius: 6px;
+    transition: background 150ms, color 150ms;
+  }
+
+  .docs-nav-link:hover {
+    background: var(--bg-alt);
+    color: var(--amber);
+  }
+
+  .copy-all-btn {
+    margin-top: 20px;
+    width: 100%;
+    font-size: 11.5px;
+    padding: 8px 10px;
+    border-radius: 8px;
+    border: 2px dashed var(--border);
+    background: none;
+    color: var(--text-2);
+    cursor: pointer;
+    transition: border-color 150ms, color 150ms;
+  }
+
+  .copy-all-btn:hover {
+    border-color: var(--amber);
+    color: var(--amber);
+  }
+
+  .docs-header {
+    padding-bottom: 28px;
+    border-bottom: 2px dashed var(--border);
+    margin-bottom: 32px;
+  }
+
+  .docs-header h1 {
+    font-size: 30px;
+    letter-spacing: -0.03em;
+  }
+
+  .docs-header p {
+    margin-top: 12px;
+    color: var(--text-2);
+    max-width: 60ch;
+  }
+
+  .docs-section {
+    scroll-margin-top: 90px;
+    padding-bottom: 8px;
+  }
+
+  @media (max-width: 768px) {
+    .docs-layout {
+      grid-template-columns: 1fr;
+      gap: 24px;
+    }
+
+    .docs-rail {
+      display: none;
+    }
+  }
+</style>

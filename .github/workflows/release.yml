@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
     paths:
-      - "package.json"
+      - "packages/cli/package.json"
 
 concurrency:
   group: release
@@ -17,6 +17,9 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/cli
     steps:
       - uses: actions/checkout@v4
 
@@ -50,6 +53,7 @@ jobs:
       - name: Install dependencies
         if: steps.version.outputs.changed == 'true'
         run: bun install --frozen-lockfile
+        working-directory: .
 
       - name: Lint
         if: steps.version.outputs.changed == 'true'
@@ -80,7 +84,7 @@ jobs:
           mkdir -p /tmp/install-check
           cd /tmp/install-check
           npm init -y > /dev/null
-          npm install "$GITHUB_WORKSPACE"/crafter-vcut-*.tgz
+          npm install "$GITHUB_WORKSPACE"/packages/cli/crafter-vcut-*.tgz
           ./node_modules/.bin/vcut version
           ./node_modules/.bin/vcut skills get vcut | head -1 | grep -q '^---$'
 
@@ -97,6 +101,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.version.outputs.local }}
+        working-directory: .
         run: |
           # Annotated, because a repo that signs tags rejects a lightweight one
           # with "no tag message" and the release never gets created.

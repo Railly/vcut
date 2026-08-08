@@ -8,6 +8,9 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/cli
     steps:
       - uses: actions/checkout@v4
 
@@ -17,6 +20,7 @@ jobs:
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
+        working-directory: .
 
       - name: Lint
         run: bun x @biomejs/biome@2.4.13 check src tests
@@ -44,7 +48,26 @@ jobs:
           mkdir -p /tmp/install-check
           cd /tmp/install-check
           npm init -y > /dev/null
-          npm install "$GITHUB_WORKSPACE"/crafter-vcut-*.tgz
+          npm install "$GITHUB_WORKSPACE"/packages/cli/crafter-vcut-*.tgz
           ./node_modules/.bin/vcut version
           ./node_modules/.bin/vcut skills get vcut | head -1 | grep -q '^---$'
           ./node_modules/.bin/vcut skills list --json | grep -q vcut
+
+  website:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/website
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+        working-directory: .
+
+      - name: Build the site
+        run: bun run build

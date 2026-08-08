@@ -1,0 +1,51 @@
+{
+  "name": "@crafter/vcut",
+  "version": "0.1.0",
+  "description": "Cut dead air out of a recording, reproducibly. Agent-first CLI over ffmpeg.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Railly Hugo <hi@railly.dev>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Railly/vcut.git"
+  },
+  "keywords": [
+    "video",
+    "ffmpeg",
+    "silence",
+    "jump-cut",
+    "filler-words",
+    "edl",
+    "cli",
+    "agent",
+    "editing"
+  ],
+  "bin": {
+    "vcut": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "schemas",
+    "skills",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "bun build src/cli.ts --target=node --outdir=dist --banner='#!/usr/bin/env node' && chmod +x dist/cli.js",
+    "dev": "bun run src/cli.ts",
+    "test": "bun test",
+    "check": "biome check --write .",
+    "prepublishOnly": "cp ../../README.md ./README.md && cp ../../LICENSE ./LICENSE && bun run build"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.4.13",
+    "@types/bun": "latest",
+    "@types/node": "^22.10.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
