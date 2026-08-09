@@ -3,11 +3,12 @@ name: Release
 on:
   push:
     branches: [main]
-    paths:
-      - "packages/cli/package.json"
-  # A release that fails for a reason unrelated to the version, a red CI or a broken tag
-  # step, otherwise has no way back: the next commit does not touch package.json, so the
-  # path filter never fires again and the bump sits published-in-name-only.
+    # Deliberately not filtered on packages/cli/package.json. The bump commit gets one
+    # shot under a path filter, and 0.3.1 spent it: it carried a duplicate key, died in
+    # Lint before publishing, and the commit that fixed the lint touched src/cli.ts, so
+    # the filter never fired again and the version sat published-in-name-only until a
+    # manual dispatch. Every push is a retry now; the version guard below is what
+    # decides whether anything is published, and it already compares against npm.
   workflow_dispatch:
 
 concurrency:
