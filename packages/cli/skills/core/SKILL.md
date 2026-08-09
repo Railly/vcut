@@ -83,15 +83,20 @@ whisper-cli -m ggml-large-v3-turbo.bin -f audio.wav -l es \
   --max-len 1 --split-on-word --output-srt
 ```
 
-**`--split-on-word` is not optional.** Without it `--max-len 1` cuts at token boundaries, and
-a wrapper that passes only `--max-len` produces a transcript that looks word-level and is not:
-measured on the same recording, 26% of cues arrived as fragments without the flag and 0% with
-it. `detect` reports `wordLevel: true` either way, because it counts cues rather than judging
-them, so the flag is the only thing standing between you and a transcript that quietly breaks
-word clamping and makes the semantic export unreadable.
+`trx transcribe <input> --words --language es -m large-v3-turbo` does the same thing from
+`trx@0.7.1` on. Earlier versions passed `--max-len` without `--split-on-word`, which is worth
+knowing because of what that produces.
 
-Check it rather than trust it. A word-level SRT has a leading space on almost every cue, since
-that space is how the model marks where a word begins:
+**`--split-on-word` is not optional.** Without it `--max-len 1` cuts at token boundaries, so a
+multi-token word arrives split and the transcript looks word-level while being useless for
+clamping: measured on one recording, 26% of cues were fragments without the flag and 0% with
+it. `detect` reports `wordLevel: true` either way, because it counts cues rather than judging
+them.
+
+`detect` now warns when more than a tenth of the cues continue a word instead of starting one.
+**Read that warning**: it is the difference between a transcript that constrains cuts and one
+that only appears to. You can check it yourself the same way, since a leading space is how the
+model marks where a word begins:
 
 ```bash
 grep -c '^ ' words.srt      # should be close to the cue count, not a fraction of it

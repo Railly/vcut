@@ -19,7 +19,7 @@ import {
 import { renderCommand } from './render-edl.ts'
 import { semanticCommand } from './semantic.ts'
 
-export const VERSION = '0.3.0'
+export const VERSION = '0.3.1'
 export const SCHEMA_VERSION = 1
 
 const HELP = `vcut - cut dead air out of a recording, reproducibly

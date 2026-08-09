@@ -2,6 +2,22 @@
 
 Notable changes to `@crafter/vcut`. Entries say what changed and, where it is not obvious, what measurement led to it.
 
+## 0.3.1
+
+### Added
+
+- **`detect` warns when the transcript was split on tokens rather than words.** `--max-len 1` caps a cue at one token, so without `--split-on-word` a multi-token word arrives as fragments and the transcript looks word-level while being useless for clamping. Measured on one recording: 26% of cues were fragments without the flag, 0% with it. `wordLevel` said `true` in both cases, because it counts cues rather than judging them, so nothing downstream could tell the difference. `parseSrt` now reports `fragmentRatio` and `detect` warns above a tenth.
+
+### Changed
+
+- The skill and README showed a transcription command that produced exactly the transcript they called unusable: the wrapper they recommended passed `--max-len` without `--split-on-word`. Fixed upstream in `trx@0.7.1`; the docs now show both flags and a one-line way to verify a transcript rather than trust it.
+- Three method notes, each from a defect a listener found and the pass did not: ask the transcriber to keep hesitations, since it cleans by default and a hesitation that never reaches the transcript cannot be proposed; re-transcribe a passage before concluding the transcript is right, because a whole-file read collapses three attempts at one line into one; and treat a mapping between the source and master timelines as a claim rather than a fact, since a converted timestamp looks exactly as confident as a measured one.
+- The round now says out loud that skipping a step fails quietly, because the round still produces a shorter file and looks like it worked.
+
+### Fixed
+
+- The non-word-level transcript warning still mentioned filler detection, which left the CLI in 0.2.0.
+
 ## 0.3.0
 
 ### Added
