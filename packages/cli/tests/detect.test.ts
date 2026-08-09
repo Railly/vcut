@@ -9,6 +9,7 @@ import {
   parseSilenceLog,
   parseSrt,
   type Transcript,
+  withinSource,
 } from '../src/detect.ts'
 
 const realSilenceLog = `
@@ -186,5 +187,25 @@ describe('review candidates', () => {
 
   test('ignores an infinite peak from a silent track', () => {
     expect(parseClipping('Peak level dB: -inf\n', 10_000)).toHaveLength(0)
+  })
+})
+
+describe('withinSource', () => {
+  test('drops candidates the source no longer contains', () => {
+    const candidates = [
+      { startMs: 1_000, endMs: 1_400 },
+      { startMs: 179_000, endMs: 179_500 },
+      { startMs: 392_000, endMs: 392_600 },
+    ]
+    expect(withinSource(candidates, 180_000)).toHaveLength(2)
+  })
+
+  test('keeps a candidate ending exactly at the last millisecond', () => {
+    expect(withinSource([{ startMs: 900, endMs: 1_000 }], 1_000)).toHaveLength(1)
+  })
+
+  test('keeps everything when the transcript fits the source', () => {
+    const candidates = [{ startMs: 0, endMs: 500 }]
+    expect(withinSource(candidates, 180_000)).toEqual(candidates)
   })
 })

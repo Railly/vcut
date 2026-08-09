@@ -249,6 +249,12 @@ export const detectFillers = (transcript: Transcript, lang: Lang): FillerCandida
   return candidates
 }
 
+// A transcript can outlive the cut it was made from: trim the source afterwards and its tail
+// still describes speech the video no longer contains. Reporting those as candidates would
+// claim fillers at timestamps a reviewer cannot even seek to.
+export const withinSource = <T extends Interval>(candidates: T[], durationMs: number): T[] =>
+  candidates.filter((candidate) => candidate.endMs <= durationMs)
+
 export const parseBlackLog = (stderr: string): ReviewCandidate[] => {
   const candidates: ReviewCandidate[] = []
   for (const line of stderr.split('\n')) {
@@ -515,7 +521,13 @@ export const detectCommand = async (argv: string[]): Promise<void> => {
   }
 
   const { transcript, path } = loadTranscript(options.transcriptPath, warnings)
-  const fillers = detectFillers(transcript, options.lang)
+  const allFillers = detectFillers(transcript, options.lang)
+  const fillers = withinSource(allFillers, durationMs)
+  if (fillers.length < allFillers.length) {
+    warnings.push(
+      `transcript runs past the source; ignored ${allFillers.length - fillers.length} filler candidates beyond ${durationMs}ms`,
+    )
+  }
 
   const report: DetectReport = {
     version: 1,
