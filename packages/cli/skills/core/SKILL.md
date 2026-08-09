@@ -54,7 +54,7 @@ token depends on the model. Measured on the same three minutes of Spanish: `smal
 `large-v3-turbo` returns 0% and costs 13 seconds. Fragments weaken the word clamping
 that keeps cuts off speech, and they make the semantic export unreadable.
 
-**detect does not look for filler words, and that is deliberate.** It used to carry a list of six tokens per language. Measured on one Spanish recording, that list found 3 hits, all `o sea`, while the finished cut still carried 19 fillers in 332 words: `bueno`, `claro`, `¿no?`, `de hecho`, `entonces`, `nada`. None of them belong on a list, because they are ordinary words that happen to carry no meaning in that one sentence.
+**detect does not look for filler words, and that is deliberate.** It used to carry a list of six tokens per language. Measured on one Spanish recording, that list caught 3 spans while the finished cut still carried 19 fillers in 332 words. What it missed were ordinary words that happened to carry no meaning in that one sentence, which is most of them and is why no list would have helped.
 
 A list also cannot tell filler from real use. Spanish `este` is filler in "y este, entonces" and a demonstrative in "en este caso"; `claro` is filler in "y claro, entonces" and an answer on its own. Extending the list makes it worse, not better: the same token is filler or content depending on the clause around it, and a list has no clauses in it. And every new language would need one written from scratch.
 
@@ -166,10 +166,10 @@ The failure mode here is not cutting something precious. It is being polite: rea
 transcript as an argument to preserve rather than a recording to edit, and leaving the work
 undone while reporting it finished.
 
-It happened on the run this guidance came from. The speaker made one point, that Crafter
-Station would have grown differently in Argentina, and made it three times, forty seconds
-apart. Each telling read as a separate beat of the argument, so only one was cut. Heard back
-at speed, all three said the same thing and the listener noticed immediately.
+The shape it takes: a speaker returns to the same point across a recording, each time in
+different words and far enough apart that each reads as a separate beat of the argument. Cut
+one, leave the rest. Then the edit plays back at speed, the distance collapses, and a listener
+hears the repetition immediately.
 
 Hold this bar:
 
@@ -198,15 +198,15 @@ from them just as much as over-cutting does, only silently.
 nothing.** A single pass cannot be enough, because most of what needs cutting is invisible
 until the surrounding noise is gone.
 
-This is not a suggestion. It happened three times on the recording this guidance came from,
-and each round found things the round before could not see:
+Each class of defect only becomes visible once the one above it is gone, which is why the
+order is fixed and why stopping early leaves work that looks like polish and is not:
 
-| Round | What it found that the previous one could not |
+| Round | Only visible now because |
 | --- | --- |
-| 1 | The obvious: long silences, the run of stammers |
-| 2 | A pause two adjoining segments created together, which neither of them contained |
-| 3 | A sentence split in half by a cut that landed inside it, and a redundancy that survived every individually correct cut |
-| 4 | Two `¿no?` five seconds apart, audible only once the passage around them was tight |
+| 1 | Nothing hides long silence or an obvious stammer |
+| 2 | A pause two adjoining segments create together did not exist in either of them before |
+| 3 | A join reads as broken only once both sides are adjacent, and a surviving redundancy only once the passage is short enough to hold in your head |
+| 4 | A discourse marker is inaudible inside loose speech and obvious inside tight speech |
 
 The loop:
 
@@ -218,12 +218,18 @@ vcut semantic review --edl edl.json --detect detect.json --master master.mp4 --m
 # widen the spans in proposals.json, then run the whole thing again
 ```
 
-**Widen existing spans before adding new ones.** The most expensive miss on this recording
-was a cut that started too late: five attempts at the same sentence, and the proposal only
-covered the last three because the first two read like content on their own. Extending one
-span from 42.0s back to 20.4s removed thirteen more seconds than adding any new cut would
-have. When a `false-start` survives its own cut, the span was too narrow, not the judgement
-wrong.
+**Transcribe the render every round, and read that.** Not the previous transcript, not the
+source transcript projected forward. Every cut shifts everything after it, so the two
+timelines diverge by the whole removed duration, and a span written against stale timings
+lands somewhere nobody chose. A fresh transcript is also the only place a mangled join is
+visible as text: the source transcript describes what was said, and only the render's own
+describes what is left.
+
+**Widen existing spans before adding new ones.** When a proposal fails to remove what it
+named, the usual cause is a boundary set too tight, not a wrong call. A restart is only
+obvious once you see the attempt that follows it, so the earliest attempts read as content
+while you are looking at them and as preamble once the last one is in view. Extending an
+existing span usually removes more than any new cut placed beside it.
 
 **Stop when a pass proposes nothing**, not when the removal percentage looks respectable.
 
@@ -233,15 +239,30 @@ Hard rules. Each one is a defect if it survives a pass, not a matter of taste, a
 is checkable against the transcript of the render rather than against intent:
 
 1. **No idea is stated twice.** If two passages make the same point, one of them is a cut.
-   Forty seconds between them is not evidence they differ.
+   Distance between them is not evidence they differ: the edit removes that distance.
 2. **No sentence begins and does not land.** Every start has its ending in the edit, or the
    whole attempt goes.
 3. **No pronoun outlives its antecedent.** If "that" or "eso" refers to something cut, the
    sentence goes with it.
 4. **No fragment survives alone.** A clause that only made sense as part of a passage that
    was removed is not content, it is a leftover.
-5. **No discourse marker sits in a pause.** `¿no?`, `o sea`, `bueno` are audible precisely
-   when the speech around them is tight, so they get louder as the edit gets better.
+5. **Nothing survives that can be deleted without changing what the sentence says.** Delete
+   the candidate, read what remains, and ask whether a listener learns anything less. If not,
+   it goes.
+
+   The test is a deletion, never a vocabulary. A word list only finds what someone already
+   thought to write down, misses the same function expressed differently, and has to be
+   rewritten for every language. The deletion test needs none of that: it asks what a span
+   *does* in its sentence, so it works on a construction nobody named and in a language
+   nobody wrote a list for.
+
+   Sweep the transcript span by span rather than scanning for shapes you recognise. What you
+   recognise is gone by the second pass; what stays is what did not look like filler, usually
+   because it sits mid-clause and reads as ordinary grammar.
+
+   Two things fail this test and must stay anyway: a word carrying emphasis the speaker
+   meant, and a beat that gives a listener room before a heavy point. Removing those is what
+   makes an edit sound like a script.
 6. **The last line lands.** A video ending on an abandoned start is worse than one four
    seconds shorter.
 
