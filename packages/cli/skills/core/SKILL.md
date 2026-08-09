@@ -269,6 +269,29 @@ is checkable against the transcript of the render rather than against intent:
 If the transcript of the render violates one of these, the edit is not done, whatever the
 removal percentage says.
 
+### Non-verbal sound is not detected, and three attempts failed
+
+A breath, a mic bump, a laugh: audible, meaningless, and invisible to both instruments. The
+silence pass sees energy and calls it speech. The transcript has no word for it. It is a real
+gap and it stays open.
+
+What was tried, so nobody spends the day again:
+
+| Attempt | Why it cannot work |
+| --- | --- |
+| Sound with no word covering it | The transcript stretches every cue to the next word, so the noise lands *inside* a word's span, never beside it |
+| Gaps between consecutive words | Same cause: on a finished edit the largest gap between two cues was a fraction of a second |
+| Energy swing inside one word | A word with a breath in it swung 28 dB; an ordinary word swung 57. Speech is not smooth, so the spread measures syllables, not intruders |
+| Median level inside one word | Ranks unstressed function words at the bottom. It finds short quiet words, which is not the same question |
+
+The pattern across all four: each measures a **proxy** for non-speech and every proxy is
+dominated by ordinary variation in speech. Separating a breath from a syllable is a
+classification problem about what a sound *is*, and none of these instruments answer that.
+
+If it gets built, it needs something that recognises voice as voice, a VAD or a small
+classifier, not another statistic over energy. Until then, listen for it: the review reports
+silence and text, and a human ear is what covers the rest.
+
 ## Limits
 
 - Semantic cutting is proposal-only. vcut supplies the transcript and folds in the spans; the judgement is yours and the approval is the human's.
