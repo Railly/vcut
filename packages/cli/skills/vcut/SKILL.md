@@ -54,3 +54,8 @@ JSON is emitted automatically when stdout is not a TTY, so you never need `--jso
 ## Full documentation
 
 https://vcut.crafter.run/docs
+
+**Cutting is a loop, not a command.** Silence removal is the first round of several: each
+class of defect only becomes visible once the one before it is gone. `vcut skills get core`
+carries the procedure, the invariants that say when it is done, and what has already been
+tried and failed.

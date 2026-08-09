@@ -125,12 +125,19 @@ Never mark segments approved on the human's behalf. Never render a master withou
 ## Workflow for an agent
 
 1. `vcut doctor` if anything looks wrong with the environment.
-2. `vcut detect <input>` with the preset that matches the recording condition.
-3. Read the warnings. If the transcript is not word-level, say so: clamping is off and cuts can land inside a word.
-4. `vcut edl build`, then check `removalPercent` against the content type.
-5. `vcut render --mode preview --dry-run` to confirm the command is well formed.
-6. `vcut render --mode preview` and have a human watch it.
-7. Only after approval, flip the EDL to approved and render the master.
+2. Transcribe the source word-level with a large model.
+3. `vcut detect <input>` with the preset that matches the recording condition.
+4. Read the warnings. If the transcript is not word-level, say so: clamping is off and cuts can land inside a word.
+5. `vcut semantic export`, read the lines, write proposals.
+6. **Loop**: build, render, transcribe the render, review, fold findings back in. Repeat
+   until a round proposes nothing and every invariant holds. This is where most of the work
+   is, and one pass is never the answer. The full procedure is under `semantic` below.
+7. `vcut render --mode preview` and have a human watch it.
+8. Only after approval, flip the EDL to approved and render the master.
+
+Step 6 is not optional and its rounds are not interchangeable. Each round can only see what
+the round before it uncovered, so stopping after one leaves work that looks finished and is
+not. Steps 1 through 5 take minutes; step 6 is the job.
 
 ## semantic
 
@@ -208,22 +215,47 @@ order is fixed and why stopping early leaves work that looks like polish and is 
 | 3 | A join reads as broken only once both sides are adjacent, and a surviving redundancy only once the passage is short enough to hold in your head |
 | 4 | A discourse marker is inaudible inside loose speech and obvious inside tight speech |
 
-The loop:
+#### The round, in order
+
+Run every step every round. Skipping one is how a defect survives four of them.
 
 ```bash
-vcut edl build --detect detect.json --semantic proposals.json ... && vcut render --edl edl.json --mode preview
-trx transcribe master.mp4 --words --language es -m large-v3-turbo
-vcut detect master.mp4 --preset clean --transcript master.srt --json > master-detect.json
-vcut semantic review --edl edl.json --detect detect.json --master master.mp4 --master-transcript master.srt
-# widen the spans in proposals.json, then run the whole thing again
+# 1. Build and render from the current proposals
+vcut edl build --detect detect.json --semantic proposals.json --output master.mp4 --campaign x --edl edl.json
+vcut render --edl edl.json --mode preview
+
+# 2. Transcribe the RENDER, never reuse the previous transcript
+trx transcribe master.mp4 --words --language <lang> -m large-v3-turbo
+
+# 3. Read the result and where nobody looked
+vcut semantic review --edl edl.json --detect detect.json \
+  --master master.mp4 --master-transcript master.srt
+
+# 4. Audible sound that is not language, if the classifier is installed
+python3 skills/non-speech.py master.mp4 > non-speech.json
+
+# 5. Fold findings back into proposals.json and repeat from 1
 ```
+
+Two things about step 4. Its timings are the **master** timeline, so map them back through
+the EDL before adding them, and a master span can cross a cut, which means one span maps to
+several source spans and taking only its endpoints yields a range covering everything
+between. Run it on the render, never on the source: on raw footage every pause scores as
+non-speech, correctly and uselessly.
+
+#### Working a round
+
+**Read `unreviewed` before anything else.** A pass reads what it went looking for, so cuts
+land where the attention was and the stretches between two cuts are where nothing was ever
+read. They look reviewed because their neighbours are. `review` lists them with their text;
+apply the deletion test to every span in that list before scanning anywhere else. A marker
+that survives several rounds is almost always sitting in one.
 
 **Transcribe the render every round, and read that.** Not the previous transcript, not the
 source transcript projected forward. Every cut shifts everything after it, so the two
 timelines diverge by the whole removed duration, and a span written against stale timings
-lands somewhere nobody chose. A fresh transcript is also the only place a mangled join is
-visible as text: the source transcript describes what was said, and only the render's own
-describes what is left.
+lands somewhere nobody chose. The fresh transcript is also the only place a mangled join is
+visible as text: the source describes what was said, only the render describes what is left.
 
 **Widen existing spans before adding new ones.** When a proposal fails to remove what it
 named, the usual cause is a boundary set too tight, not a wrong call. A restart is only
@@ -231,13 +263,25 @@ obvious once you see the attempt that follows it, so the earliest attempts read 
 while you are looking at them and as preamble once the last one is in view. Extending an
 existing span usually removes more than any new cut placed beside it.
 
-**Read `unreviewed` first.** A pass reads what it went looking for, so cuts land where the
-attention was and the stretches between two cuts are where nothing was ever read. They look
-reviewed because their neighbours are, and that is where a marker survives round after round
-while both spans around it get examined closely. `review` lists them; work that list before
-scanning anywhere else.
+**A span that maps to an implausible range crossed a cut.** Mapping between timelines
+silently produces nonsense when the endpoints land in different segments: a half-second of
+speech comes back as a range tens of seconds long. Check the duration of what you mapped
+before proposing it.
 
-**Stop when a pass proposes nothing**, not when the removal percentage looks respectable.
+#### Before calling it done
+
+Stop when a round proposes nothing, not when the removal percentage looks respectable.
+Verify against the transcript of the render, not against the plan:
+
+- Every invariant below holds.
+- `unreviewed` is empty, or every stretch in it has been read.
+- The non-speech pass reports nothing.
+- The last line lands.
+
+**A word missing from the transcript is not proof of a bad cut.** Transcription models drop
+and mangle words, especially at a join. Before reporting one, check whether the EDL still
+covers that span and what the audio measures there. If it does and the level is normal, the
+transcript is wrong and the audio is fine.
 
 ### Invariants
 
@@ -271,9 +315,18 @@ is checkable against the transcript of the render rather than against intent:
    makes an edit sound like a script.
 6. **The last line lands.** A video ending on an abandoned start is worse than one four
    seconds shorter.
+7. **Nothing audible is left that is not language.** A breath, a mic bump, a lip smack. Both
+   instruments are blind to these, so this one is not checkable by reading: it needs the
+   classifier, and without it the check is a human ear.
+8. **Every stretch has been read at least once.** Not a property of the edit but of the pass
+   that made it, and the one that lets all the others survive: an unread stretch violates
+   nothing visibly, because nobody looked. `review` reports these as `unreviewed`.
 
 If the transcript of the render violates one of these, the edit is not done, whatever the
 removal percentage says.
+
+Rules 1 through 6 are read off the transcript. Rule 7 needs the audio. Rule 8 needs the EDL
+and is the only one that says where to look rather than what to look for.
 
 ### Non-verbal sound needs a classifier, not a statistic
 
