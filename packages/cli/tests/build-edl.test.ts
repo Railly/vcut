@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import {
+  absorbSlivers,
   type Cut,
   clampToWords,
   invertToSegments,
@@ -213,5 +214,48 @@ describe('invertToSegments', () => {
 
   test('returns nothing when a single cut covers the entire source', () => {
     expect(invertToSegments([silence(0, 10_000)], 10_000, 'take-01', 0)).toHaveLength(0)
+  })
+})
+
+describe('absorbSlivers', () => {
+  const cut = (startMs: number, endMs: number): Cut => ({ startMs, endMs, reason: 'silence' })
+
+  test('merges two cuts across a remainder too short to be speech', () => {
+    const merged = absorbSlivers([cut(0, 1_000), cut(1_200, 2_000)], 300)
+    expect(merged).toHaveLength(1)
+    expect(merged[0]).toMatchObject({ startMs: 0, endMs: 2_000 })
+  })
+
+  test('keeps two cuts apart when real speech survives between them', () => {
+    expect(absorbSlivers([cut(0, 1_000), cut(2_000, 3_000)], 300)).toHaveLength(2)
+  })
+
+  test('collapses a run of stutters into one cut', () => {
+    const merged = absorbSlivers([cut(0, 500), cut(700, 900), cut(1_100, 1_400)], 300)
+    expect(merged).toHaveLength(1)
+    expect(merged[0].endMs).toBe(1_400)
+  })
+
+  test('a merged cut reports as silence when its parts disagree', () => {
+    const merged = absorbSlivers([cut(0, 500), { startMs: 600, endMs: 900, reason: 'filler' }], 300)
+    expect(merged[0].reason).toBe('silence')
+  })
+
+  test('leaves a single cut alone', () => {
+    expect(absorbSlivers([cut(0, 1_000)], 300)).toEqual([cut(0, 1_000)])
+  })
+
+  test('stops islands of pure margin reaching the EDL', () => {
+    // Two silences 216ms apart at a 100ms margin. The remainder is margin on both sides and
+    // nothing else, which is what turned one pause into three audible stutters. Without the
+    // absorb step this inverts to three segments with a sliver in the middle.
+    const segments = invertToSegments(
+      [cut(1_000, 2_000), cut(2_216, 3_000)],
+      10_000,
+      'src',
+      100,
+      60,
+    )
+    expect(segments).toHaveLength(2)
   })
 })

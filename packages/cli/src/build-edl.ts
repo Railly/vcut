@@ -192,14 +192,41 @@ export const snapToFrame = (milliseconds: number, fps: number): number => {
   return Math.round(frame * frameMs + frameMs / 2)
 }
 
+// Two cuts with a sliver of speech between them do not read as two cuts. The ear hears one
+// broken passage: a fragment too short to carry a word, bracketed by silence on both sides.
+// Merging the cuts across such a remainder turns three stutters into one clean cut.
+//
+// minKeepMs measures the remainder itself, before margins are added back. A remainder that
+// survives becomes a segment margin longer on each side, so the caller passes what it
+// considers the shortest defensible piece of speech rather than the shortest segment.
+export const absorbSlivers = (cuts: Cut[], minKeepMs: number): Cut[] => {
+  const merged: Cut[] = []
+
+  for (const cut of cuts) {
+    const last = merged[merged.length - 1]
+    if (last !== undefined && cut.startMs - last.endMs < minKeepMs) {
+      last.endMs = Math.max(last.endMs, cut.endMs)
+      if (last.reason !== cut.reason) {
+        last.reason = 'silence'
+      }
+      continue
+    }
+    merged.push({ ...cut })
+  }
+  return merged
+}
+
 export const invertToSegments = (
   cuts: Cut[],
   durationMs: number,
   sourceId: string,
   marginMs: number,
   fps = 0,
+  minKeepMs = 300,
 ): KeptSegment[] => {
-  const merged = mergeIntervals(cuts)
+  // The detector's own minimum: a stretch of audio it would not have called a pause is not
+  // long enough to be a word either, so anything shorter is margin wearing a segment's shape.
+  const merged = absorbSlivers(mergeIntervals(cuts), minKeepMs)
   const kept: Array<{ inMs: number; outMs: number; reason: string }> = []
   let cursor = 0
 
@@ -447,7 +474,14 @@ export const buildEdlCommand = async (argv: string[]): Promise<void> => {
 
   const sourceId = slug(report.input.split('/').pop() ?? 'source')
   const segments = markSemanticRisk(
-    invertToSegments(allCuts, probe.durationMs, sourceId, report.marginMs, outputFps),
+    invertToSegments(
+      allCuts,
+      probe.durationMs,
+      sourceId,
+      report.marginMs,
+      outputFps,
+      report.minSilenceMs,
+    ),
     semanticCuts,
     report.marginMs + Math.ceil(1000 / outputFps),
   )
