@@ -288,10 +288,13 @@ several source spans and taking only its endpoints yields a range covering every
 between. Run it on the render, never on the source: on raw footage every pause scores as
 non-speech, correctly and uselessly.
 
-If the classifier is not installed the script says so and exits. Invariant 7 still holds, and
-without the classifier the only instrument left for it is a human ear: say that in the
-handoff rather than reporting the edit as verified. It is the one check that cannot be read
-off any text.
+`vcut doctor` reports whether the classifier is installed and `vcut setup classifier` fetches
+it, around 320MB into `~/.vcut/panns`. The script also needs `pip install panns-inference
+scipy numpy`.
+
+If it is not installed the script says so and exits. Invariant 7 still holds, and without the
+classifier the only instrument left for it is a human ear: say that in the handoff rather
+than reporting the edit as verified. It is the one check that cannot be read off any text.
 
 #### Working a round
 
@@ -410,12 +413,15 @@ span rather than beside it.
 correctly and uselessly, while on a finished cut only real intrusions are left.
 
 ```bash
-python3 skills/non-speech.py master.mp4 > non-speech.json
+vcut setup classifier                          # once, ~320MB into ~/.vcut/panns
+vcut skills list                               # prints where the script lives
+python3 <path>/non-speech.py master.mp4 > non-speech.json
 # map the master timings back through the EDL, then feed them in
 ```
 
-It lives outside the CLI because it needs a 300MB torch checkpoint, and vcut has no
-dependencies worth trading for that. Anything emitting the proposal schema works; that
+It ships beside the guides rather than as a subcommand because it needs Python and a 300MB
+torch checkpoint, and vcut otherwise runs anywhere ffmpeg does. Making it a verb would put
+those dependencies behind a command that looks like every other one. Anything emitting the proposal schema works; that
 script is the reference.
 
 **Four energy statistics were tried first and all four failed**, which is worth knowing

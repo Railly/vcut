@@ -35,10 +35,8 @@ checkpoint is not one worth taking for a signal a human ear catches for free.
 Anything that emits the proposal schema works here; this is the reference.
 
 Setup:
+    vcut setup classifier              # fetches the model into ~/.vcut/panns
     pip install panns-inference scipy numpy
-    mkdir -p ~/panns_data && cd ~/panns_data
-    curl -LO http://storage.googleapis.com/us_audioset/youtube_corpus/v1/csv/class_labels_indices.csv
-    curl -Lo 'Cnn14_mAP=0.431.pth' 'https://zenodo.org/record/3987831/files/Cnn14_mAP%3D0.431.pth?download=1'
 """
 
 import contextlib
@@ -110,17 +108,20 @@ def main() -> int:
         print(__doc__.strip().split("\n\n")[1], file=sys.stderr)
         return 2
 
-    labels_path = os.path.expanduser("~/panns_data/class_labels_indices.csv")
-    checkpoint = os.path.expanduser("~/panns_data/Cnn14_mAP=0.431.pth")
+    home = os.environ.get("VCUT_CLASSIFIER_HOME", os.path.expanduser("~/.vcut/panns"))
+    labels_path = os.path.join(home, "class_labels_indices.csv")
+    checkpoint = os.path.join(home, "Cnn14_mAP=0.431.pth")
     for path in (labels_path, checkpoint):
         if not os.path.exists(path):
-            print(f"missing {path}; see the setup notes at the top of this file", file=sys.stderr)
+            print(f"missing {path}; run: vcut setup classifier", file=sys.stderr)
             return 1
 
     labels = [row[2] for row in csv.reader(open(labels_path)) if row[0] != "index"]
     speech_index = [i for i, label in enumerate(labels) if label in SPEECH_LABELS]
-    # The tagger prints its own banner to stdout, which would land in the middle of
-    # the JSON a caller is piping.
+    # The tagger prints its own banner to stdout, which would land in the middle of the JSON
+    # a caller is piping. Hold the real stream before redirecting: json.dump would otherwise
+    # resolve sys.stdout to whatever the context manager left behind.
+    out = sys.stdout
     with contextlib.redirect_stdout(io.StringIO()):
         tagger = AudioTagging(checkpoint_path=checkpoint, device="cpu")
 
@@ -145,7 +146,7 @@ def main() -> int:
         }
         for start, end in merge(flagged)
     ]
-    json.dump(proposals, sys.stdout, indent=2)
+    json.dump(proposals, out, indent=2)
     return 0
 
 

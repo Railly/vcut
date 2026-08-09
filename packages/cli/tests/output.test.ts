@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { matchTarget } from '../src/build-edl.ts'
+import { classifierStatus } from '../src/cli.ts'
 import { bar, duration, resolveMode } from '../src/output.ts'
 
 describe('resolveMode', () => {
@@ -60,5 +61,24 @@ describe('matchTarget', () => {
 
   test('says the source may already be edited when below every range', () => {
     expect(matchTarget(4)).toContain('already be edited')
+  })
+})
+
+describe('classifierStatus', () => {
+  test('reports the home when every file is present', () => {
+    const status = classifierStatus([true, true])
+    expect(status.ok).toBe(true)
+    expect(status.detail).toContain('.vcut')
+  })
+
+  test('names the command that fixes it when something is missing', () => {
+    const status = classifierStatus([true, false])
+    expect(status.ok).toBe(false)
+    expect(status.detail).toContain('vcut setup classifier')
+  })
+
+  test('says the check has a fallback rather than reading as broken', () => {
+    // Absent is a supported state, not a failure: invariant 7 falls back to a human ear.
+    expect(classifierStatus([false, false]).detail).toContain('optional')
   })
 })

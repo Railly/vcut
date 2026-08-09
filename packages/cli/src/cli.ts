@@ -1,10 +1,11 @@
-import { existsSync, readdirSync, readFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { buildEdlCommand } from './build-edl.ts'
 import { detectCommand, positional } from './detect.ts'
-import { run } from './exec.ts'
+import { run, runInherit } from './exec.ts'
 import {
   emitJson,
   fail,
@@ -32,6 +33,7 @@ Usage:
   vcut schema [name]                 Print the JSON contract for a command
   vcut skills list|get [name]        Read the bundled agent manual
   vcut doctor                        Check external dependencies
+  vcut setup classifier              Fetch the optional non-speech classifier
   vcut version                       Print the version
 
 Global flags:
@@ -67,6 +69,32 @@ const DEPENDENCIES = [
   { name: 'ffprobe', why: 'reading duration, streams, and frame counts' },
 ]
 
+// Everything the non-speech classifier needs, which is nothing the CLI itself uses. It stays
+// optional because a 300MB checkpoint is a steep toll on a tool that otherwise runs anywhere
+// ffmpeg does, and because the check it performs has a fallback: a human ear.
+const CLASSIFIER_HOME = join(homedir(), '.vcut', 'panns')
+const CLASSIFIER_FILES = [
+  {
+    name: 'class_labels_indices.csv',
+    url: 'http://storage.googleapis.com/us_audioset/youtube_corpus/v1/csv/class_labels_indices.csv',
+  },
+  {
+    name: 'Cnn14_mAP=0.431.pth',
+    url: 'https://zenodo.org/record/3987831/files/Cnn14_mAP%3D0.431.pth?download=1',
+  },
+]
+
+export const classifierStatus = (present: boolean[]): { ok: boolean; detail: string } => {
+  const missing = present.filter((exists) => !exists).length
+  if (missing === 0) {
+    return { ok: true, detail: CLASSIFIER_HOME }
+  }
+  return {
+    ok: false,
+    detail: `not installed, optional. Run vcut setup classifier. Without it, invariant 7 needs a human ear.`,
+  }
+}
+
 const doctorCommand = async (argv: string[]): Promise<void> => {
   const mode: Mode = resolveMode(argv, Boolean(process.stdout.isTTY))
   const checks = await Promise.all(
@@ -85,14 +113,18 @@ const doctorCommand = async (argv: string[]): Promise<void> => {
     }),
   )
   const missing = checks.filter((check) => !check.ok)
+  const classifier = classifierStatus(
+    CLASSIFIER_FILES.map((file) => existsSync(join(CLASSIFIER_HOME, file.name))),
+  )
 
   if (mode === 'json') {
-    emitJson({ ok: missing.length === 0, checks })
+    emitJson({ ok: missing.length === 0, checks, classifier })
   } else {
     const lines = [heading('dependencies')]
     for (const check of checks) {
       lines.push(line(check.name, check.ok ? check.version : `MISSING - needed for ${check.why}`))
     }
+    lines.push(line('non-speech classifier', classifier.ok ? classifier.detail : classifier.detail))
     if (missing.length > 0) {
       lines.push(nextStep(`brew install ${missing.map((check) => check.name).join(' ')}`))
     }
@@ -101,6 +133,46 @@ const doctorCommand = async (argv: string[]): Promise<void> => {
   if (missing.length > 0) {
     process.exit(1)
   }
+}
+
+const SETUP_HELP = `vcut setup - fetch the optional non-speech classifier
+
+Usage:
+  vcut setup classifier [--force]
+
+Downloads the AudioSet model that skills/non-speech.py uses to find breaths, mic bumps and
+other audible sound that is not language. Around 320MB, kept under ~/.vcut/panns.
+
+Nothing else in vcut needs it: detect, edl build and render all run without it. Skipping this
+leaves invariant 7 to a human ear, which is a real answer, not a broken state.
+
+The script also needs Python with panns-inference:
+  pip install panns-inference scipy numpy`
+
+const setupCommand = async (argv: string[]): Promise<void> => {
+  const target = positional(argv)
+  if (target !== 'classifier') {
+    throw new UsageError(SETUP_HELP)
+  }
+  const force = argv.includes('--force')
+  mkdirSync(CLASSIFIER_HOME, { recursive: true })
+
+  const results = []
+  for (const file of CLASSIFIER_FILES) {
+    const path = join(CLASSIFIER_HOME, file.name)
+    if (existsSync(path) && !force) {
+      results.push({ file: file.name, status: 'present' as const, path })
+      continue
+    }
+    // curl rather than fetch: this is hundreds of megabytes and a resumable, progress-showing
+    // download is worth more here than one fewer process.
+    const exitCode = await runInherit('curl', ['-fL', '--progress-bar', '-o', path, file.url])
+    if (exitCode !== 0) {
+      throw new Error(`failed to download ${file.name}`)
+    }
+    results.push({ file: file.name, status: 'downloaded' as const, path })
+  }
+  emitJson({ status: 'ready', home: CLASSIFIER_HOME, files: results })
 }
 
 const CONTRACTS: Record<string, unknown> = {
@@ -198,17 +270,27 @@ const skillsCommand = (argv: string[]): void => {
   const mode: Mode = resolveMode(argv, Boolean(process.stdout.isTTY))
 
   if (verb === undefined || verb === 'list') {
-    const names = readdirSync(directory, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory())
-      .map((entry) => entry.name)
+    const entries = readdirSync(directory, { withFileTypes: true })
+    const names = entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name)
+    // Scripts ship beside the guides and are useless if a caller cannot find out they exist.
+    // Listing them here is the difference between an optional tool and a hidden one.
+    const scripts = entries
+      .filter((entry) => entry.isFile() && !entry.name.endsWith('.md'))
+      .map((entry) => ({ name: entry.name, path: join(directory, entry.name) }))
     if (mode === 'json') {
-      emitJson({ skills: names })
+      emitJson({ skills: names, scripts })
       return
     }
     console.log(
       [
         heading('bundled skills'),
         ...names.map((name) => line(name, `vcut skills get ${name}`)),
+        ...(scripts.length === 0
+          ? []
+          : [
+              heading('bundled scripts'),
+              ...scripts.map((script) => line(script.name, script.path)),
+            ]),
       ].join('\n'),
     )
     return
@@ -278,6 +360,9 @@ export const route = async (argv: string[]): Promise<void> => {
   }
   if (command === 'doctor') {
     return doctorCommand(rest)
+  }
+  if (command === 'setup') {
+    return setupCommand(rest)
   }
   if (isPath(command)) {
     return detectCommand([resolve(command), ...rest])
