@@ -103,6 +103,11 @@ jobs:
           VERSION: ${{ steps.version.outputs.local }}
         working-directory: .
         run: |
+          # An annotated tag records an author, and the runner has no git identity,
+          # so without this the tag aborts with "empty ident name" after npm has
+          # already published. Found the first time this workflow ran end to end.
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           # Annotated, because a repo that signs tags rejects a lightweight one
           # with "no tag message" and the release never gets created.
           git tag -a "v$VERSION" -m "v$VERSION"
