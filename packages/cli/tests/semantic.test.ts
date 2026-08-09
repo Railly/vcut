@@ -1,13 +1,22 @@
-import { describe, expect, test } from 'bun:test'
+import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
+import { rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { parseSrt } from '../src/detect.ts'
+import { run } from '../src/exec.ts'
 import {
   buildLines,
   joinWords,
   quietSegments,
+  renderedGaps,
   silentSegments,
   survivingLines,
   validateProposals,
 } from '../src/semantic.ts'
+
+// A real file, because renderedGaps runs ffmpeg: a fixture path would only test the error
+// branch. Generated on the fly so the suite carries no binary.
+const MASTER_FIXTURE = join(tmpdir(), 'vcut-test-master.wav')
 
 const srt = (entries: Array<[string, string, string]>): string =>
   entries
@@ -235,5 +244,53 @@ describe('quietSegments', () => {
       12,
     )
     expect(found).toHaveLength(0)
+  })
+})
+
+describe('renderedGaps', () => {
+  // Built here rather than committed, so the suite carries no binary and the assertion is
+  // about audio that provably contains one second of silence in the middle.
+  beforeAll(async () => {
+    await run('ffmpeg', [
+      '-v',
+      'error',
+      '-f',
+      'lavfi',
+      '-i',
+      'sine=frequency=440:duration=1',
+      '-f',
+      'lavfi',
+      '-i',
+      'anullsrc=r=48000:cl=mono:d=1',
+      '-filter_complex',
+      '[0][1][0]concat=n=3:v=0:a=1',
+      '-y',
+      MASTER_FIXTURE,
+    ])
+  })
+
+  afterAll(() => {
+    rmSync(MASTER_FIXTURE, { force: true })
+  })
+
+  test('finds the silence sitting between two tones', async () => {
+    const found = await renderedGaps(MASTER_FIXTURE, -30, 600)
+    expect(found).toHaveLength(1)
+    expect(found[0].startMs).toBeGreaterThanOrEqual(900)
+    expect(found[0].endMs).toBeLessThanOrEqual(2_100)
+  })
+
+  test('labels its findings as master timings, not source timings', async () => {
+    const found = await renderedGaps(MASTER_FIXTURE, -30, 600)
+    expect(found[0].segmentId).toBe('rendered')
+    expect(found[0].detail).toContain('of the master itself')
+  })
+
+  test('ignores a gap shorter than the minimum', async () => {
+    expect(await renderedGaps(MASTER_FIXTURE, -30, 2_000)).toEqual([])
+  })
+
+  test('returns nothing rather than failing when the file cannot be read', async () => {
+    expect(await renderedGaps('/nonexistent/master.mp4', -30, 600)).toEqual([])
   })
 })

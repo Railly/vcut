@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs'
 
 import type { DetectReport, Interval, Transcript, Word } from './detect.ts'
-import { parseSrt } from './detect.ts'
+import { parseSilenceLog, parseSrt } from './detect.ts'
 import { run } from './exec.ts'
 import { emitJson, UsageError } from './output.ts'
 
@@ -10,12 +10,13 @@ const HELP = `vcut semantic - hand the transcript to a model, take back cut prop
 Usage:
   vcut semantic export --detect <path>
   vcut semantic check --proposals <path> --detect <path>
-  vcut semantic review --edl <path> --detect <path>
+  vcut semantic review --edl <path> --detect <path> [--master <path>]
 
 Flags:
   --detect <path>       Report produced by detect (required)
   --proposals <path>    Proposals to validate (check only)
   --edl <path>          EDL to read back (review only)
+  --master <path>       Rendered file to measure silence on (review only)
   --help                Show this message
 
 Both subcommands emit JSON: the reader is an agent, not a terminal.
@@ -335,6 +336,9 @@ export const quietSegments = (
     }))
 }
 
+// Longer than a breath between clauses, short enough to catch a pause that stalls the video.
+const GAP_MS = 600
+
 // Measured on this corpus: the one segment a listener flagged as an unexplained gap sat
 // 16 dB under the median while every other survivor stayed within 6.
 const QUIET_BELOW_MEDIAN_DB = 12
@@ -376,10 +380,42 @@ const REVIEW_INSTRUCTIONS = [
   'precededByCut marks a join: the line before it was removed. That is where a transition breaks.',
   'truncated marks a line the cuts entered: part of it is gone, so check the half that stayed still parses.',
   'Look for a sentence whose start survived and whose end did not, a pronoun whose antecedent was cut, two clauses that now collide, and an idea that still repeats after the cuts.',
-  'deadAir lists segments that survived carrying no words. Those are pauses left stranded by a cut, and each one is a gap the viewer hears for no reason.',
+  'deadAir lists gaps left by the cuts, each one a pause the viewer hears for no reason.',
+  'A deadAir entry with segmentId "rendered" was measured on the master itself, so its timings are the master timeline, not the source. Those are the ones a viewer really sits through, including a pause two adjoining segments create together.',
   'fix says what to do: extend a cut, shorten it, restore a span. Give timings when you can.',
   'Report nothing when the result reads clean. An empty array is a valid answer.',
 ]
+
+// Everything else in review reasons about the source: the transcript mapped onto the spans
+// that survive. That describes the plan, not the file. Silence measured on the rendered master
+// is the only evidence of what a viewer actually sits through, and it catches the pause that
+// two adjoining segments create together, which neither of them contained on its own.
+export const renderedGaps = async (
+  masterPath: string,
+  thresholdDb: number,
+  minMs: number,
+): Promise<DeadAir[]> => {
+  const { stderr, exitCode } = await run('ffmpeg', [
+    '-hide_banner',
+    '-nostats',
+    '-i',
+    masterPath,
+    '-af',
+    `silencedetect=noise=${thresholdDb}dB:d=${minMs / 1000}`,
+    '-f',
+    'null',
+    '-',
+  ])
+  if (exitCode !== 0) {
+    return []
+  }
+  return parseSilenceLog(stderr, Number.POSITIVE_INFINITY).map((silence) => ({
+    segmentId: 'rendered',
+    startMs: silence.startMs,
+    endMs: silence.endMs,
+    detail: `${silence.durationMs}ms of silence at ${(silence.startMs / 1000).toFixed(2)}s of the master itself`,
+  }))
+}
 
 export const semanticCommand = async (argv: string[]): Promise<void> => {
   if (argv.includes('--help') || argv.length === 0) {
@@ -425,9 +461,16 @@ export const semanticCommand = async (argv: string[]): Promise<void> => {
     }))
     const words = joinWords(loadTranscript(report))
     const lines = survivingLines(buildLines(words, report.silences, LINE_BREAK_MS), segments)
+    const masterPath = value('--master')
+    if (masterPath !== undefined && !existsSync(masterPath)) {
+      throw new UsageError(`master missing: ${masterPath}`)
+    }
     const deadAir = [
       ...silentSegments(segments, report.silences, report.minSilenceMs),
       ...quietSegments(await segmentLevels(report.input, segments), QUIET_BELOW_MEDIAN_DB),
+      ...(masterPath === undefined
+        ? []
+        : await renderedGaps(masterPath, report.thresholdDb, GAP_MS)),
     ]
     const keptMs = segments.reduce((total, segment) => total + (segment.endMs - segment.startMs), 0)
     emitJson({
@@ -436,6 +479,7 @@ export const semanticCommand = async (argv: string[]): Promise<void> => {
       sourceDurationMs: report.durationMs,
       resultDurationMs: keptMs,
       instructions: REVIEW_INSTRUCTIONS,
+      masterMeasured: masterPath !== undefined,
       deadAir,
       lines,
     })
