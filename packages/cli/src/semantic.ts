@@ -11,12 +11,14 @@ Usage:
   vcut semantic export --detect <path>
   vcut semantic check --proposals <path> --detect <path>
   vcut semantic review --edl <path> --detect <path> [--master <path>]
+                       [--master-transcript <path>]
 
 Flags:
   --detect <path>       Report produced by detect (required)
   --proposals <path>    Proposals to validate (check only)
   --edl <path>          EDL to read back (review only)
   --master <path>       Rendered file to measure silence on (review only)
+  --master-transcript <path>  Word-level SRT of the master; lines come from it (review only)
   --help                Show this message
 
 Both subcommands emit JSON: the reader is an agent, not a terminal.
@@ -375,13 +377,17 @@ const segmentLevels = async (
   )
 
 const REVIEW_INSTRUCTIONS = [
-  'These are the lines that survive the cuts, in the order a viewer hears them. Read the result, not the plan.',
+  'These are the lines of the edit, in the order a viewer hears them. Read the result, not the plan.',
+  'linesFrom says where they came from. "master" means the render was transcribed again, so this is literally what a listener hears, word for word, including any word the cuts left half-spoken. "source" means the original transcript projected onto the surviving spans, which shows the plan and can hide a mangled join.',
+  'When linesFrom is "master", read it as prose and judge it as prose: a word cut in half, a clause with no verb, a sentence split across two lines that used to be one, the same point still made twice after all the cutting. Timings are the master timeline.',
   'Return a JSON array of problems, nothing else. Each entry: {"lineIndex": number, "problem": string, "fix": string}.',
   'precededByCut marks a join: the line before it was removed. That is where a transition breaks.',
   'truncated marks a line the cuts entered: part of it is gone, so check the half that stayed still parses.',
   'Look for a sentence whose start survived and whose end did not, a pronoun whose antecedent was cut, two clauses that now collide, and an idea that still repeats after the cuts.',
+  'Redundancy that survives is worth reporting even when every cut was correct: keeping the clearest of three tellings is the point, and two of them may still be there.',
   'deadAir lists gaps left by the cuts, each one a pause the viewer hears for no reason.',
   'A deadAir entry with segmentId "rendered" was measured on the master itself, so its timings are the master timeline, not the source. Those are the ones a viewer really sits through, including a pause two adjoining segments create together.',
+  'A missing word is not proof of a bad cut. Whisper drops words, so before reporting one, check the EDL still covers that span: if it does, the transcript is wrong and the audio is fine.',
   'fix says what to do: extend a cut, shorten it, restore a span. Give timings when you can.',
   'Report nothing when the result reads clean. An empty array is a valid answer.',
 ]
@@ -460,19 +466,36 @@ export const semanticCommand = async (argv: string[]): Promise<void> => {
       endMs: segment.outMs,
     }))
     const words = joinWords(loadTranscript(report))
-    const lines = survivingLines(buildLines(words, report.silences, LINE_BREAK_MS), segments)
+    const masterTranscript = value('--master-transcript')
+    if (masterTranscript !== undefined && !existsSync(masterTranscript)) {
+      throw new UsageError(`master transcript missing: ${masterTranscript}`)
+    }
     const masterPath = value('--master')
     if (masterPath !== undefined && !existsSync(masterPath)) {
       throw new UsageError(`master missing: ${masterPath}`)
     }
+    const gaps =
+      masterPath === undefined ? [] : await renderedGaps(masterPath, report.thresholdDb, GAP_MS)
     const deadAir = [
       ...silentSegments(segments, report.silences, report.minSilenceMs),
       ...quietSegments(await segmentLevels(report.input, segments), QUIET_BELOW_MEDIAN_DB),
-      ...(masterPath === undefined
-        ? []
-        : await renderedGaps(masterPath, report.thresholdDb, GAP_MS)),
+      ...gaps,
     ]
+    // Lines from the master need the master's own pauses to break on. Without --master there
+    // are none measured, and the transcript's own punctuation carries the split.
+    const masterSilences = gaps.map((gap) => ({ startMs: gap.startMs, endMs: gap.endMs }))
     const keptMs = segments.reduce((total, segment) => total + (segment.endMs - segment.startMs), 0)
+    // Transcribing the master and reading that is the only way to see a word the cuts left
+    // half-spoken, or two clauses that only collide once they are adjacent. Projecting the
+    // source transcript onto the surviving spans shows the plan; this shows the sentence.
+    const lines =
+      masterTranscript === undefined
+        ? survivingLines(buildLines(words, report.silences, LINE_BREAK_MS), segments)
+        : buildLines(
+            joinWords(parseSrt(readFileSync(masterTranscript, 'utf8'))),
+            masterSilences,
+            LINE_BREAK_MS,
+          )
     emitJson({
       status: 'exported',
       input: report.input,
@@ -480,6 +503,7 @@ export const semanticCommand = async (argv: string[]): Promise<void> => {
       resultDurationMs: keptMs,
       instructions: REVIEW_INSTRUCTIONS,
       masterMeasured: masterPath !== undefined,
+      linesFrom: masterTranscript === undefined ? 'source' : 'master',
       deadAir,
       lines,
     })
