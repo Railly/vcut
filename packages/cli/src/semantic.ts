@@ -406,7 +406,10 @@ export const renderedGaps = async (
   thresholdDb: number,
   minMs: number,
 ): Promise<DeadAir[]> => {
-  const { stderr, exitCode } = await run('ffmpeg', [
+  // A missing ffmpeg throws rather than returning a code, and this measurement is an extra
+  // signal on top of the review, not a precondition for producing one. Losing it costs the
+  // caller one class of finding; failing here would cost them the whole review.
+  const probe = await run('ffmpeg', [
     '-hide_banner',
     '-nostats',
     '-i',
@@ -416,11 +419,11 @@ export const renderedGaps = async (
     '-f',
     'null',
     '-',
-  ])
-  if (exitCode !== 0) {
+  ]).catch(() => null)
+  if (probe === null || probe.exitCode !== 0) {
     return []
   }
-  return parseSilenceLog(stderr, Number.POSITIVE_INFINITY).map((silence) => ({
+  return parseSilenceLog(probe.stderr, Number.POSITIVE_INFINITY).map((silence) => ({
     segmentId: 'rendered',
     startMs: silence.startMs,
     endMs: silence.endMs,

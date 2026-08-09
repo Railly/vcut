@@ -247,7 +247,14 @@ describe('quietSegments', () => {
   })
 })
 
-describe('renderedGaps', () => {
+// renderedGaps shells out to ffmpeg, and the fixture it measures has to be generated the
+// same way. Where ffmpeg is absent the behaviour under test cannot exist, so these skip
+// rather than fail: a red suite would report a broken CLI when the machine is just bare.
+const hasFfmpeg = await run('ffmpeg', ['-version'])
+  .then((result) => result.exitCode === 0)
+  .catch(() => false)
+
+describe.if(hasFfmpeg)('renderedGaps', () => {
   // Built here rather than committed, so the suite carries no binary and the assertion is
   // about audio that provably contains one second of silence in the middle.
   beforeAll(async () => {
@@ -289,8 +296,10 @@ describe('renderedGaps', () => {
   test('ignores a gap shorter than the minimum', async () => {
     expect(await renderedGaps(MASTER_FIXTURE, -30, 2_000)).toEqual([])
   })
+})
 
-  test('returns nothing rather than failing when the file cannot be read', async () => {
+describe('renderedGaps without a readable file', () => {
+  test('returns nothing rather than failing', async () => {
     expect(await renderedGaps('/nonexistent/master.mp4', -30, 600)).toEqual([])
   })
 })
