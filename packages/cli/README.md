@@ -79,11 +79,40 @@ Piped or captured, the same command emits JSON. No flag needed.
 |---------|--------------|
 | `vcut detect <input>` | Silences, clipping, black and frozen frames |
 | `vcut edl build` | Turns a detect report into a draft edit decision list |
+| `vcut semantic export\|check\|review` | Hands the transcript to a model, takes proposals back, reads the result |
 | `vcut render` | Renders an EDL; preview accepts proposals, master needs approval |
 | `vcut schema [name]` | The JSON contract per command, versioned |
 | `vcut skills get vcut` | The bundled agent manual, as markdown |
 | `vcut doctor` | Checks external dependencies |
+| `vcut setup classifier` | Fetches the optional non-speech classifier |
 | `vcut <input>` | Shorthand for `vcut detect` |
+
+## Cutting is a loop
+
+Silence removal is the first round of several. Each class of defect only becomes visible once
+the one above it is gone: a pause two adjoining segments create together did not exist in
+either of them, a broken join only reads as broken once both sides are adjacent, and a
+discourse marker is inaudible inside loose speech and obvious inside tight speech.
+
+```bash
+vcut edl build --detect detect.json --semantic proposals.json --output cut-1.mp4 --campaign x --edl edl-1.json
+vcut render --edl edl-1.json --mode preview
+trx transcribe cut-1.mp4 --words --language es -m large-v3-turbo
+vcut semantic review --edl edl-1.json --detect detect.json --master cut-1.mp4 --master-transcript cut-1.srt
+```
+
+`review` reports what survives, the silence measured on the render itself, and `unreviewed`:
+the stretches between two cuts that no proposal ever touched. Those look reviewed because
+their neighbours are, and that is where a defect survives round after round.
+
+Stop when a round proposes nothing, not when the removal percentage looks respectable.
+
+## Beyond silence
+
+- **`--crop top:0.06`** frames the whole edit at once, so remembering the menu bar after cutting does not mean redoing every segment.
+- **`--edge-fade`** (default 50ms) ramps each segment edge to zero. Not a crossfade: overlapping the sides would drift the audio against concatenated video.
+- **Loudness** is normalised to the `speechTargetLufs` the EDL declares, on the concatenated result rather than per segment.
+- **`skills/core/scripts/non-speech.py`** finds breaths and mic bumps, which neither the silence pass nor the transcript can see. `vcut setup classifier` fetches what it needs; without it that check falls back to a human ear.
 
 ## Presets
 

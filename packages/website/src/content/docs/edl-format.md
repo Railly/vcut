@@ -44,9 +44,9 @@ It describes the material that **survives**, not the material that gets deleted.
   "audio": {
     "speechTargetLufs": -16,
     "truePeakMaxDbtp": -1,
-    "noiseReduction": "off",
     "externalAudioSourceId": null,
-    "syncOffsetMs": 0
+    "syncOffsetMs": 0,
+    "edgeFadeMs": 50
   },
   "output": {
     "path": "/absolute/path/master.mp4",
@@ -94,9 +94,19 @@ A master render aborts on any of these:
 
 Hashing sources and refusing on a mismatch is what makes an approval mean something: you approved *that* footage, not whatever now sits at that path.
 
+### Audio recorded separately
+
+`externalAudioSourceId` names a second entry in `sources` that carries sound and no picture. The renderer reads every segment's audio from there instead of from the video, which is the case a separate microphone exists for.
+
+`syncOffsetMs` corrects two recorders that did not start together. It slides the window the audio is read from rather than shifting the audio afterwards, because shifting changes the length and the length is what the duration contract checks. Two recordings started by the same app share a clock, so zero is the common case.
+
+`edgeFadeMs` ramps the last and first milliseconds of each segment to zero. It is not a crossfade: overlapping the two sides would shorten the render against concatenated video and drift the audio out of sync, so each side fades within its own segment.
+
+`speechTargetLufs` and `truePeakMaxDbtp` are applied to the concatenated result rather than per segment, so a quiet passage stays quieter than a loud one instead of every piece being dragged to the same number.
+
 ### Fields that are rejected, not ignored
 
-The schema has room for `externalAudioSourceId`, `syncOffsetMs`, and `noiseReduction`. The renderer does not implement them, so it **rejects** an EDL that sets them rather than rendering something that quietly ignores half the instruction.
+An `externalAudioSourceId` naming nothing, or naming a source with no audio, is refused rather than silently falling back to the camera track. So is a crop outside the source bounds, a segment whose source is unknown, and a master render whose EDL is not approved.
 
 A tool that silently drops a field you set is worse than one that refuses to run.
 

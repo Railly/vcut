@@ -8,12 +8,14 @@ order: 2
 
 ```
 vcut <input>                       Shorthand for: vcut detect <input>
-vcut detect <input> [flags]        Find silences, fillers, and review candidates
+vcut detect <input> [flags]        Find silences and review candidates
 vcut edl build [flags]             Turn a detect report into a draft EDL
+vcut semantic export|check|review  Hand the transcript to a model, take back proposals
 vcut render --edl <path> [flags]   Render an EDL to video
 vcut schema [name]                 Print the JSON contract for a command
 vcut skills list|get [name]        Read the bundled agent manual
 vcut doctor                        Check external dependencies
+vcut setup classifier              Fetch the optional non-speech classifier
 vcut version                       Print the version
 ```
 
@@ -33,13 +35,22 @@ vcut detect recording.mp4 --preset clean --lang es --transcript words.srt
 | `--preset <name>` | `noisy` | `noisy` (-20 dB), `clean` (-30 dB), `podcast` (-35 dB) |
 | `--min-silence <sec>` | `0.3` | Shortest silence worth cutting |
 | `--margin <sec>` | `0.10` | Padding kept on each side of speech |
-| `--lang <code>` | `es` | `es`, `en`, or `pt`; selects the filler list |
-| `--transcript <path>` | — | SRT used for filler detection; must be word-level |
+| `--lang <code>` | `es` | Free-form language tag, passed through to the semantic export |
+| `--audio <path>` | — | Separate audio recording; silence is measured on this |
+| `--transcript <path>` | — | Word-level SRT, used to keep cuts off word edges |
 | `--skip-video-scan` | off | Skip black and frozen frame detection |
 
-It reports four kinds of finding: **silences** measured from audio energy, **fillers** matched against a word list, **review candidates** (clipping, black frames, frozen frames), and **warnings** for conditions worth reading before trusting the run.
+It reports three kinds of finding: **silences** measured from audio energy, **review candidates** (clipping, black frames, frozen frames), and **warnings** for conditions worth reading before trusting the run.
 
 Review candidates are never cut automatically. They exist so a human looks.
+
+**Filler words are not detected here.** A word list matches tokens, not intent: Spanish `este` is filler in "y este, entonces" and a demonstrative in "en este caso", and no list survives a language nobody wrote one for. Filler words are proposed by a model through `vcut semantic`, like every other judgement call.
+
+**`--audio` when the sound was recorded separately.** Silence is then measured on that file rather than on the camera track, which matters because the camera track is the one being discarded: cutting against a waveform nobody will hear puts the cuts in the wrong places. The path travels in the report, so `edl build` writes both sources without being told twice.
+
+```bash
+vcut detect screen.mp4 --audio mic.wav --preset clean
+```
 
 ### vcut edl build
 
@@ -56,7 +67,12 @@ vcut edl build --detect detect.json --output master.mp4 --campaign my-video
 | `--campaign <id>` | required | Campaign identifier, stored in the EDL |
 | `--edl <path>` | `./edl.json` | Where to write the EDL |
 | `--width`, `--height`, `--fps` | source values | Output geometry |
-| `--no-fillers` | off | Cut silences only, ignore filler candidates |
+| `--edge-fade <ms>` | `50` | Audio ramp at each segment edge; `0` disables |
+| `--crop <spec>` | — | `top\|bottom\|left\|right:<fraction>`, or `x,y,width,height` |
+| `--semantic <path>` | — | Model proposals from `vcut semantic` |
+| `--audio-offset <ms>` | `0` | Shift the separate audio; positive delays it |
+
+**`--crop` frames the whole edit at once**, which is why it lives here and not per segment. A traditional editor makes you set the frame per clip, so remembering the menu bar after cutting means redoing every segment by hand. Here the crop is one decision applied to all of them, and changing it never touches a cut boundary. Fractions, not pixels, so the same EDL survives a source at another resolution.
 
 The command inverts the cut intervals into the spans worth **keeping**, so the EDL always describes surviving material rather than deleted material.
 
@@ -69,6 +85,39 @@ It also reports a removal percentage. Compare it against the content type:
 | Scripted talking head | 10-20% |
 
 A number far below target usually means the source was already edited.
+
+### vcut semantic
+
+Repeated lines, false starts, digressions and filler words need something reading the transcript. **vcut never calls a model.** It exports the lines and takes proposals back, so the judgement stays with whoever is reading.
+
+```bash
+vcut semantic export --detect detect.json > lines.json
+# read lines.json, write proposals.json
+vcut semantic check --proposals proposals.json --detect detect.json
+vcut edl build --detect detect.json --semantic proposals.json ...
+```
+
+| Subcommand | What it does |
+| --- | --- |
+| `export --detect <path>` | Numbered lines with timings, rebuilt into words and split on measured pauses |
+| `check --proposals <path> --detect <path>` | Validates proposals without building |
+| `review --edl <path> --detect <path>` | Reads an EDL back: what survives, and where nobody looked |
+
+A proposal is `{startMs, endMs, kind, reason}` where `kind` is `false-start`, `repetition`, `tangent`, `filler`, or `non-speech`. Every semantic cut lands as `semanticRisk: material` on the segments around it, so a reviewer can find them without reading all of them.
+
+Nothing malformed passes: an inverted span, a span past the end of the source, an unknown kind, or an empty `reason` is refused by index and aborts the build. A proposal that vanished between check and build would read as the model choosing not to cut there, which is worse than a refusal.
+
+**`review` closes the loop.** With `--master` it measures silence on the render itself, and with `--master-transcript` it returns the lines of the render rather than the source projected forward. It also reports `unreviewed`: the stretches between two cuts that no proposal ever touched, which is where a defect survives round after round because its neighbours look worked on.
+
+### vcut setup
+
+```bash
+vcut setup classifier
+```
+
+Fetches the AudioSet model that `skills/core/scripts/non-speech.py` uses to find breaths, mic bumps and other audible sound that is not language. Around 320MB into `~/.vcut/panns`, and idempotent.
+
+Nothing else needs it: `detect`, `edl build` and `render` all run without it. `vcut doctor` reports whether it is installed, as optional rather than missing.
 
 ### vcut render
 
@@ -117,7 +166,9 @@ The guide ships inside the npm package and is served by the CLI itself, so it al
 
 ### vcut doctor
 
-Checks that `ffmpeg` and `ffprobe` are reachable and reports their versions. Exits non-zero when something is missing.
+Checks that `ffmpeg` and `ffprobe` are reachable and reports their versions. Exits non-zero when either is missing.
+
+It also reports the optional non-speech classifier, which is a supported absence rather than a failure: without it the check it performs falls back to a human ear.
 
 ### Exit codes
 
