@@ -13,7 +13,7 @@ The pipeline is three commands and never skips the middle one:
 ```
 vcut detect <input>  ->  detect.json   (candidates, nothing decided)
 vcut edl build       ->  edl.json      (draft, every segment proposed)
-vcut render          ->  master.mp4    (preview first, master after approval)
+vcut render          ->  master.mp4    (preview renders freely; master needs approval)
 ```
 
 `vcut semantic` is optional and sits beside `edl build`: it hands you the transcript as lines
@@ -44,9 +44,12 @@ export so a model knows what it is reading. Nothing parses it. Take it from the 
 from a default: if you do not know, listen to a few seconds or ask, because the transcription
 model needs the same answer and guessing wrong there costs the whole transcript.
 
-**Picking one, and knowing when it was wrong.** Start from the recording condition in the
-table. Then read the removal percentage `edl build` reports against the target for the
-content type: far under target usually means the threshold is too low for this room, far over
+**Picking one, and knowing when it was wrong.** When the recording matches a row, use it.
+When it does not, **start at `clean`** and let the numbers move you: most speech recorded on
+purpose sits closer to a room than to an event, and being one step too conservative costs a
+round while being too aggressive costs syllables.
+
+Then read the removal percentage `edl build` reports against the target for the content type: far under target usually means the threshold is too low for this room, far over
 means it is too high and speech is being cut as silence. Change the preset, not
 `--min-silence` or `--margin`, and rebuild.
 
@@ -90,7 +93,7 @@ tell which piece of work it belongs to. Nothing parses it; any stable string wor
 
 Inverts the cut intervals into the spans worth keeping, so the EDL always describes surviving material. Boundaries are snapped to whole frames; unsnapped boundaries accumulate rounding error and make the renderer reject the result with a frame count mismatch.
 
-Flags: `--edl <path>` (default `./edl.json`), `--width`, `--height`, `--fps`, `--edge-fade <ms>`, `--semantic <path>`, `--crop <spec>`.
+Flags: `--edl <path>` (default `./edl.json`), `--width`, `--height`, `--fps`, `--edge-fade <ms>` (default 50), `--semantic <path>`, `--crop <spec>`.
 
 **`--crop` frames the whole edit at once**, which is the reason it lives here and not in the
 renderer's per-segment field. A traditional editor makes you set the frame per clip, so
@@ -161,7 +164,9 @@ Never mark segments approved on the human's behalf. Never render a master withou
    until a round proposes nothing and every invariant holds. This is where most of the work
    is, and one pass is never the answer. The full procedure is under `semantic` below.
 7. `vcut render --mode preview` and have a human watch it.
-8. Stop. Approving the EDL is the human's edit, not a command, and not yours to make. See
+8. Stop. Approving the EDL is the human's edit, not a command, and not yours to make. Hand
+   them the path. If they ask you in so many words to write the approval yourself, that is
+   their call to make and you may; wanting the preview to look good is not that request. See
    `render` above.
 
 Step 6 is not optional and its rounds are not interchangeable. Each round can only see what
@@ -248,22 +253,33 @@ order is fixed and why stopping early leaves work that looks like polish and is 
 
 Run every step every round. Skipping one is how a defect survives four of them.
 
+Give each round its own output path, or delete the previous one first. The renderer refuses
+to overwrite, so a second round pointed at the same file fails with `output already exists`
+before it renders anything. Numbering them also leaves the earlier cuts on disk to compare
+against, which is the only way to tell whether a round improved the edit or just shortened
+it.
+
 ```bash
+N=1   # bump every round: the renderer refuses to overwrite
+
 # 1. Build and render from the current proposals
-vcut edl build --detect detect.json --semantic proposals.json --output master.mp4 --campaign x --edl edl.json
-vcut render --edl edl.json --mode preview
+#    edl build validates the proposals itself and aborts on a malformed one, so a separate
+#    `semantic check` is only worth running to see the errors without building.
+vcut edl build --detect detect.json --semantic proposals.json \
+  --output cut-$N.mp4 --campaign my-video --edl edl-$N.json
+vcut render --edl edl-$N.json --mode preview
 
 # 2. Transcribe the RENDER, never reuse the previous transcript
-trx transcribe master.mp4 --words --language <lang> -m large-v3-turbo
+trx transcribe cut-$N.mp4 --words --language <lang> -m large-v3-turbo
 
 # 3. Read the result and where nobody looked
-vcut semantic review --edl edl.json --detect detect.json \
-  --master master.mp4 --master-transcript master.srt
+vcut semantic review --edl edl-$N.json --detect detect.json \
+  --master cut-$N.mp4 --master-transcript cut-$N.srt
 
 # 4. Audible sound that is not language
-python3 skills/non-speech.py master.mp4 > non-speech.json
+python3 skills/non-speech.py cut-$N.mp4 > non-speech-$N.json
 
-# 5. Fold findings back into proposals.json and repeat from 1
+# 5. Fold findings back into proposals.json, bump N, repeat from 1
 ```
 
 Three things about step 4. Its timings are the **master** timeline, so map them back through
@@ -324,8 +340,19 @@ transcript is wrong and the audio is fine.
 
 ### Invariants
 
-Hard rules. Each one is a defect if it survives a pass, not a matter of taste, and each one
-is checkable against the transcript of the render rather than against intent:
+Hard rules: each is a defect if it survives a pass, not a matter of taste. What makes them
+rules is that they are stated about the **render** rather than about the plan, so they can be
+checked after the fact instead of argued before it.
+
+Being a rule is not the same as being mechanical, and pretending otherwise is how a checklist
+gets ticked without being run. Only rule 8 is machine-decidable: `review` prints the list and
+either it is empty or it is not. Rule 7 is decidable when the classifier is installed and a
+listening task when it is not. Rules 1 through 6 are read by judgement, and their value is in
+naming a defect precisely enough that you can tell whether you looked for it, not in removing
+the judgement.
+
+The right question at the end of a round is not "does this pass" but "did I check each of
+these, and against what". A rule you did not look for reports the same as a rule that held.
 
 1. **No idea is stated twice.** If two passages make the same point, one of them is a cut.
    Distance between them is not evidence they differ: the edit removes that distance.
@@ -367,6 +394,10 @@ removal percentage says.
 Rules 1 through 6 are read off the transcript. Rule 7 needs the audio. Rule 8 needs the EDL
 and is the only one that says where to look rather than what to look for.
 
+**`--crop` is not on this list.** Framing is taste and the document has no rule for it: pick
+a crop when the source carries something the viewer should not see, leave it alone otherwise,
+and let the human refuse it like any other proposal.
+
 ### Non-verbal sound needs a classifier, not a statistic
 
 A breath, a mic bump, a lip smack: audible, meaningless, and invisible to both
@@ -375,7 +406,7 @@ for it, and the model stretches a neighbouring cue over it, so it ends up inside
 span rather than beside it.
 
 `skills/non-speech.py` finds them and prints `kind: "non-speech"` proposals. It runs on the
-**rendered master**, not the source: on raw footage every pause scores as non-speech,
+**rendered preview**, not the source: on raw footage every pause scores as non-speech,
 correctly and uselessly, while on a finished cut only real intrusions are left.
 
 ```bash
