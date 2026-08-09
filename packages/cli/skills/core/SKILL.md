@@ -1,6 +1,6 @@
 ---
 name: core
-description: Core vcut usage guide. Read this before running any vcut command. Covers the detect to EDL to render pipeline, presets and thresholds, the word-level transcript requirement for filler cutting, the approval boundary, and what each command refuses to do.
+description: Core vcut usage guide. Read this before running any vcut command. Covers the detect to EDL to render pipeline, presets and thresholds, the word-level transcript requirement for word clamping, the approval boundary, and what each command refuses to do.
 allowed-tools: Bash(vcut:*), Bash(npx @crafter/vcut:*)
 ---
 
@@ -41,7 +41,7 @@ Presets carry thresholds proven in production. Do not invent new ones.
 
 Other flags: `--min-silence` (seconds, default 0.3), `--margin` (seconds, default 0.10), `--skip-video-scan` to skip black and frozen frame detection on long sources.
 
-**Filler cutting needs word-level timestamps**, meaning one cue per word. A sentence-level SRT produces zero fillers and a warning rather than a guess. Generate a usable transcript with either:
+**Word clamping needs word-level timestamps**, meaning one cue per word. A sentence-level SRT turns clamping off, with a warning rather than a guess. Generate a usable transcript with either:
 
 ```bash
 trx transcribe recording.mp4 --words --language es -m large-v3-turbo
@@ -51,16 +51,14 @@ whisper-cli -m ggml-large-v3-turbo.bin -f audio.wav --max-len 1 --output-srt
 **Ask for a large model.** One cue per word means one cue per *token*, and what counts as a
 token depends on the model. Measured on the same three minutes of Spanish: `small` returns
 26% of its cues as word fragments, splitting "Crafter" into `Cra` + `fter`, while
-`large-v3-turbo` returns 0% and costs 13 seconds. Fragments break filler matching, which
-compares whole tokens, and they weaken the word clamping that keeps cuts off speech.
+`large-v3-turbo` returns 0% and costs 13 seconds. Fragments weaken the word clamping
+that keeps cuts off speech, and they make the semantic export unreadable.
 
-Do not report zero fillers as a clean result when the warning is present. Regenerate the transcript and run detect again.
+**detect does not look for filler words, and that is deliberate.** It used to carry a list of six tokens per language. Measured on one Spanish recording, that list found 3 hits, all `o sea`, while the finished cut still carried 19 fillers in 332 words: `bueno`, `claro`, `¿no?`, `de hecho`, `entonces`, `nada`. None of them belong on a list, because they are ordinary words that happen to carry no meaning in that one sentence.
 
-**The filler list is a floor, not the feature.** It holds six tokens per language, hardcoded, and it will never hold the ones that matter most. Measured on one Spanish recording: the detector found 3 fillers, all `o sea`, while the finished cut still carried 19 in 332 words. `bueno`, `claro`, `¿no?`, `de hecho`, `entonces` and `nada` were every bit as much filler and none of them are on any list, because they are ordinary words that happen to carry no meaning in that sentence.
+A list also cannot tell filler from real use. Spanish `este` is filler in "y este, entonces" and a demonstrative in "en este caso"; `claro` is filler in "y claro, entonces" and an answer on its own. Extending the list makes it worse, not better: the same token is filler or content depending on the clause around it, and a list has no clauses in it. And every new language would need one written from scratch.
 
-A list also cannot tell them apart from real use. Spanish `este` is filler in "y este, entonces" and a demonstrative in "en este caso"; `claro` is filler in "y claro, entonces" and an answer on its own. That is why hits land as `proposed`, and why the list can never be extended into a solution: the same token is filler or content depending on the clause around it, and no list has clauses in it.
-
-**Fillers are the model's job, through `vcut semantic`.** Read the exported lines, mark the discourse markers that carry nothing *in that sentence*, and leave the ones doing work. This is also the only approach that survives a language nobody wrote a list for.
+**Fillers are the model's job, through `vcut semantic`.** Read the exported lines, mark the discourse markers that carry nothing *in that sentence*, and leave the ones doing work. `kind: "filler"` exists in the proposal schema for exactly this.
 
 `review` entries (clipping, black frames, frozen frames) are candidates for a human to look at. They are never cut automatically.
 
@@ -72,7 +70,7 @@ vcut edl build --detect detect.json --output master.mp4 --campaign my-video
 
 Inverts the cut intervals into the spans worth keeping, so the EDL always describes surviving material. Boundaries are snapped to whole frames; unsnapped boundaries accumulate rounding error and make the renderer reject the result with a frame count mismatch.
 
-Flags: `--edl <path>` (default `./edl.json`), `--width`, `--height`, `--fps`, `--no-fillers` to cut silences only.
+Flags: `--edl <path>` (default `./edl.json`), `--width`, `--height`, `--fps`, `--edge-fade <ms>`, `--semantic <path>`.
 
 Every segment is written as `proposed` and the EDL as `draft`. **This command never approves its own work.**
 
@@ -104,7 +102,6 @@ vcut proposes. The human decides.
 | vcut may propose | The human decides |
 | --- | --- |
 | silence cuts | delivery quality |
-| filler word cuts | authenticity |
 | review candidates | semantic changes |
 | crop options | acceptable jump cuts |
 | | which mistakes stay human |
@@ -115,7 +112,7 @@ Never mark segments approved on the human's behalf. Never render a master withou
 
 1. `vcut doctor` if anything looks wrong with the environment.
 2. `vcut detect <input>` with the preset that matches the recording condition.
-3. Read the warnings. If the transcript is not word-level, say so rather than reporting zero fillers as a clean result.
+3. Read the warnings. If the transcript is not word-level, say so: clamping is off and cuts can land inside a word.
 4. `vcut edl build`, then check `removalPercent` against the content type.
 5. `vcut render --mode preview --dry-run` to confirm the command is well formed.
 6. `vcut render --mode preview` and have a human watch it.

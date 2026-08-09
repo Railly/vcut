@@ -24,7 +24,7 @@
 </p>
 
 <p align="center">
-  Finds the silences, filler words, and technical faults in a raw take, proposes an
+  Finds the silences and technical faults in a raw take, proposes an
   edit as data, and renders it only after a human approves.
 </p>
 
@@ -66,7 +66,7 @@ recording.mp4  6m 22s
   net after margins       ##..................  10.3%  (~39s once 100ms is kept on each side)
   silences                119 spans, 1m 03s
   longest silence         1s at 6m 20s
-  fillers                 not checked (transcript is not word-level)
+  filler words            not scanned; run vcut semantic
   review candidates       1 (never cut automatically)
                           clipping: peak level -0.24 dB exceeds -1 dBFS
 ```
@@ -77,7 +77,7 @@ Piped or captured, the same command emits JSON. No flag needed.
 
 | Command | What it does |
 |---------|--------------|
-| `vcut detect <input>` | Silences, filler words, clipping, black and frozen frames |
+| `vcut detect <input>` | Silences, clipping, black and frozen frames |
 | `vcut edl build` | Turns a detect report into a draft edit decision list |
 | `vcut render` | Renders an EDL; preview accepts proposals, master needs approval |
 | `vcut schema [name]` | The JSON contract per command, versioned |
@@ -97,7 +97,7 @@ Tune with `--min-silence` (seconds, default 0.3) and `--margin` (seconds, defaul
 
 ## Filler words
 
-Filler detection needs word-level timestamps: one cue per word. A normal SRT has one cue per sentence, which is not enough to cut a single word without guessing. vcut tells you when this is the case instead of silently reporting zero.
+Word-level timestamps mean one cue per word. A normal SRT has one cue per sentence, which is not enough to cut a single word without guessing. vcut tells you when this is the case instead of silently reporting zero.
 
 ```bash
 # with trx, which wraps whisper and handles extraction
@@ -110,7 +110,7 @@ whisper-cli -m ggml-large-v3-turbo.bin -f audio.wav --max-len 1 --output-srt
 Ask for a large model. One cue per word means one cue per *token*, and what counts as a token
 depends on the model. On the same three minutes of Spanish, `small` returns 26% of its cues as
 word fragments, splitting "Crafter" into `Cra` + `fter`; `large-v3-turbo` returns 0% and costs
-13 seconds. Fragments break filler matching, which compares whole tokens.
+13 seconds. Fragments weaken word clamping and make the semantic export unreadable.
 
 ```bash
 vcut detect recording.mp4 --transcript words.srt --lang es
@@ -118,7 +118,7 @@ vcut detect recording.mp4 --transcript words.srt --lang es
 
 Lists ship for `es`, `en`, and `pt`.
 
-A filler list matches tokens, not intent. Spanish `este` is a filler in "y este, entonces" and an ordinary demonstrative in "en este caso"; the detector cannot tell them apart. That is one reason every hit lands in the EDL as `proposed`: read them before approving.
+detect finds silence, not filler words. A word list matches tokens, not intent: Spanish `este` is filler in "y este, entonces" and a demonstrative in "en este caso", and no list survives a new language. Filler words are proposed by a model through `vcut semantic`, like every other judgement call.
 
 ## For agents
 

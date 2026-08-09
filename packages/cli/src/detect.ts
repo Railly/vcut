@@ -36,7 +36,9 @@ Filler cutting needs word-level timestamps. Generate them with:
   whisper-cli --max-len 1 --split-on-word`
 
 export type Preset = 'noisy' | 'clean' | 'podcast'
-export type Lang = 'es' | 'en' | 'pt'
+// Free-form, not an enum: it is passed through to the semantic export so a model knows what
+// it is reading. Nothing here parses the language itself.
+export type Lang = string
 
 export type Interval = {
   startMs: number
@@ -46,12 +48,6 @@ export type Interval = {
 export type SilenceCandidate = Interval & {
   kind: 'silence'
   durationMs: number
-}
-
-export type FillerCandidate = Interval & {
-  kind: 'filler'
-  text: string
-  filler: string
 }
 
 export type ReviewCandidate = Interval & {
@@ -86,7 +82,6 @@ export type DetectReport = {
     words: number
   }
   silences: SilenceCandidate[]
-  fillers: FillerCandidate[]
   review: ReviewCandidate[]
   warnings: string[]
 }
@@ -97,23 +92,10 @@ export const PRESET_DB: Record<Preset, number> = {
   podcast: -35,
 }
 
-export const FILLERS: Record<Lang, string[]> = {
-  es: ['aaa', 'eee', 'este', 'pues', 'o sea', 'tipo'],
-  en: ['uh', 'um', 'like', 'basically', 'you know', 'i mean'],
-  pt: ['aaa', 'eee', 'tipo', 'assim', 'entendeu', 'sabe'],
-}
-
 const DEFAULT_MIN_SILENCE_MS = 300
 const DEFAULT_MARGIN_MS = 100
 
-const BOOLEAN_FLAGS = new Set([
-  '--json',
-  '--human',
-  '--help',
-  '--dry-run',
-  '--skip-video-scan',
-  '--no-fillers',
-])
+const BOOLEAN_FLAGS = new Set(['--json', '--human', '--help', '--dry-run', '--skip-video-scan'])
 
 export const parseSilenceLog = (stderr: string, durationMs: number): SilenceCandidate[] => {
   const candidates: SilenceCandidate[] = []
@@ -195,63 +177,9 @@ export const parseSrt = (content: string): Transcript => {
   return { words, wordLevel: words.length > 0 && multiWordCues === 0 }
 }
 
-const normalize = (text: string): string =>
-  text
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[̀-ͯ]/g, '')
-    .replace(/[^\p{L}\p{N}\s]/gu, '')
-    .trim()
-
-export const detectFillers = (transcript: Transcript, lang: Lang): FillerCandidate[] => {
-  if (!transcript.wordLevel) {
-    return []
-  }
-  const fillers = FILLERS[lang]
-  const singles = new Set(fillers.filter((filler) => !filler.includes(' ')))
-  const phrases = fillers.filter((filler) => filler.includes(' '))
-  const candidates: FillerCandidate[] = []
-  const words = transcript.words
-
-  for (const [index, word] of words.entries()) {
-    const token = normalize(word.text)
-    if (token === '') {
-      continue
-    }
-    if (singles.has(token)) {
-      candidates.push({
-        kind: 'filler',
-        startMs: word.startMs,
-        endMs: word.endMs,
-        text: word.text.trim(),
-        filler: token,
-      })
-      continue
-    }
-    for (const phrase of phrases) {
-      const parts = phrase.split(' ')
-      const window = words.slice(index, index + parts.length)
-      if (window.length < parts.length) {
-        continue
-      }
-      const joined = window.map((entry) => normalize(entry.text)).join(' ')
-      if (joined === phrase) {
-        candidates.push({
-          kind: 'filler',
-          startMs: window[0].startMs,
-          endMs: window[window.length - 1].endMs,
-          text: window.map((entry) => entry.text.trim()).join(' '),
-          filler: phrase,
-        })
-      }
-    }
-  }
-  return candidates
-}
-
 // A transcript can outlive the cut it was made from: trim the source afterwards and its tail
 // still describes speech the video no longer contains. Reporting those as candidates would
-// claim fillers at timestamps a reviewer cannot even seek to.
+// claim candidates at timestamps a reviewer cannot even seek to.
 export const withinSource = <T extends Interval>(candidates: T[], durationMs: number): T[] =>
   candidates.filter((candidate) => candidate.endMs <= durationMs)
 
@@ -374,10 +302,7 @@ const parseCli = (args: string[]): CliOptions => {
   if (PRESET_DB[preset] === undefined) {
     throw new UsageError('preset must be noisy, clean, or podcast')
   }
-  const lang = (value('--lang') ?? 'es') as Lang
-  if (FILLERS[lang] === undefined) {
-    throw new UsageError('lang must be es, en, or pt')
-  }
+  const lang = value('--lang') ?? 'es'
   const minSilence = value('--min-silence')
   const margin = value('--margin')
   return {
@@ -413,16 +338,11 @@ const loadTranscript = (
 }
 
 export const humanReport = (report: DetectReport): string => {
-  const cutMs = report.silences.reduce((total, silence) => total + silence.durationMs, 0)
-  const fillerMs = report.fillers.reduce(
-    (total, filler) => total + filler.endMs - filler.startMs,
-    0,
-  )
-  const removable = cutMs + fillerMs
+  const removable = report.silences.reduce((total, silence) => total + silence.durationMs, 0)
   const fraction = report.durationMs === 0 ? 0 : removable / report.durationMs
   const longest = [...report.silences].sort((left, right) => right.durationMs - left.durationMs)[0]
 
-  const marginGiveback = (report.silences.length + report.fillers.length) * report.marginMs * 2
+  const marginGiveback = report.silences.length * report.marginMs * 2
   const netMs = Math.max(0, removable - marginGiveback)
   const netFraction = report.durationMs === 0 ? 0 : netMs / report.durationMs
 
@@ -436,7 +356,7 @@ export const humanReport = (report: DetectReport): string => {
       'net after margins',
       `${bar(netFraction)}  ${(netFraction * 100).toFixed(1)}%  (~${duration(netMs)} once ${report.marginMs}ms is kept on each side)`,
     ),
-    line('silences', `${report.silences.length} spans, ${duration(cutMs)}`),
+    line('silences', `${report.silences.length} spans, ${duration(removable)}`),
   ]
 
   if (longest !== undefined) {
@@ -446,10 +366,8 @@ export const humanReport = (report: DetectReport): string => {
   }
   lines.push(
     line(
-      'fillers',
-      report.transcript.wordLevel
-        ? `${report.fillers.length} hits, ${duration(fillerMs)}`
-        : 'not checked (transcript is not word-level)',
+      'filler words',
+      'not scanned; a word list cannot tell filler from ordinary use. Run vcut semantic.',
     ),
   )
   if (report.review.length > 0) {
@@ -521,13 +439,6 @@ export const detectCommand = async (argv: string[]): Promise<void> => {
   }
 
   const { transcript, path } = loadTranscript(options.transcriptPath, warnings)
-  const allFillers = detectFillers(transcript, options.lang)
-  const fillers = withinSource(allFillers, durationMs)
-  if (fillers.length < allFillers.length) {
-    warnings.push(
-      `transcript runs past the source; ignored ${allFillers.length - fillers.length} filler candidates beyond ${durationMs}ms`,
-    )
-  }
 
   const report: DetectReport = {
     version: 1,
@@ -540,7 +451,6 @@ export const detectCommand = async (argv: string[]): Promise<void> => {
     lang: options.lang,
     transcript: { path, wordLevel: transcript.wordLevel, words: transcript.words.length },
     silences,
-    fillers,
     review,
     warnings,
   }

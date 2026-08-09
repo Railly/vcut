@@ -31,7 +31,6 @@ Flags:
   --width <n>           Output width (default: source width)
   --height <n>          Output height (default: source height)
   --fps <n>             Output frame rate (default: source rate)
-  --no-fillers          Cut silences only, ignore filler candidates
   --edge-fade <ms>      Audio ramp at each segment edge (default 50, 0 disables)
   --semantic <path>     Model proposals from 'vcut semantic'; each lands as material risk
   --json                Force JSON (default when stdout is not a TTY)
@@ -97,7 +96,7 @@ export const humanSummary = (summary: BuildSummary): string => {
 }
 
 export type Cut = Interval & {
-  reason: 'silence' | 'filler' | 'semantic'
+  reason: 'silence' | 'semantic'
 }
 
 // A segment touching a model-proposed cut carries the risk of that proposal: approving it
@@ -330,7 +329,6 @@ type CliOptions = {
   width: number | null
   height: number | null
   fps: number | null
-  includeFillers: boolean
   edgeFadeMs: number
   semanticPath: string | null
 }
@@ -359,7 +357,6 @@ const parseCli = (args: string[]): CliOptions => {
     width: numeric('--width'),
     height: numeric('--height'),
     fps: numeric('--fps'),
-    includeFillers: !args.includes('--no-fillers'),
     edgeFadeMs: edgeFade(numeric('--edge-fade')),
     semanticPath: value('--semantic') === undefined ? null : resolve(value('--semantic') as string),
   }
@@ -400,20 +397,12 @@ const captionPaths = (report: DetectReport) => {
   }
 }
 
-const collectCuts = (report: DetectReport, includeFillers: boolean): Cut[] => [
-  ...report.silences.map((silence) => ({
+const collectCuts = (report: DetectReport): Cut[] =>
+  report.silences.map((silence) => ({
     startMs: silence.startMs,
     endMs: silence.endMs,
     reason: 'silence' as const,
-  })),
-  ...(includeFillers
-    ? report.fillers.map((filler) => ({
-        startMs: filler.startMs,
-        endMs: filler.endMs,
-        reason: 'filler' as const,
-      }))
-    : []),
-]
+  }))
 
 export const buildEdlCommand = async (argv: string[]): Promise<void> => {
   if (argv.includes('--help') || argv.length === 0) {
@@ -430,7 +419,7 @@ export const buildEdlCommand = async (argv: string[]): Promise<void> => {
     throw new Error(`source missing: ${report.input}`)
   }
 
-  const cuts = collectCuts(report, options.includeFillers)
+  const cuts = collectCuts(report)
 
   const transcript =
     report.transcript.path !== null && existsSync(report.transcript.path)

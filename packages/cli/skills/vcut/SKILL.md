@@ -39,7 +39,7 @@ The EDL exists so a human can read and disagree with the edit before any file is
 
 **Nothing self-approves.** `vcut edl build` writes every segment as `proposed` and the EDL as `draft`. `vcut render --mode master` refuses until a human changes that. There is no `--yes`. Never mark segments approved on the human's behalf.
 
-**Zero fillers is not always a clean result.** Filler detection needs a word-level transcript. When one is missing, vcut reports zero and emits a warning. Read the warning before reporting success.
+**detect finds silence, not filler words.** A word list cannot tell filler from ordinary use and never survives a new language, so filler words are proposed by a model through `vcut semantic`, like every other judgement call.
 
 ## Introspecting the contract
 

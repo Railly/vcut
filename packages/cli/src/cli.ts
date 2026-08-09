@@ -18,7 +18,7 @@ import {
 import { renderCommand } from './render-edl.ts'
 import { semanticCommand } from './semantic.ts'
 
-export const VERSION = '0.1.1'
+export const VERSION = '0.2.0'
 export const SCHEMA_VERSION = 1
 
 const HELP = `vcut - cut dead air out of a recording, reproducibly
@@ -115,15 +115,14 @@ const CONTRACTS: Record<string, unknown> = {
       thresholdDb: 'number, the dB floor for the preset',
       minSilenceMs: 'integer',
       marginMs: 'integer, padding kept around speech',
-      lang: 'es | en | pt',
+      lang: 'free-form language tag, passed through to the semantic export',
       transcript: '{ path: string|null, wordLevel: boolean, words: integer }',
       silences: '[{ kind: "silence", startMs, endMs, durationMs }]',
-      fillers: '[{ kind: "filler", startMs, endMs, text, filler }]',
       review: '[{ kind: "clipping"|"black"|"frozen", startMs, endMs, detail }]',
       warnings: 'string[], non-fatal conditions worth reading',
     },
     notes: [
-      'Filler detection needs a word-level transcript; otherwise fillers is empty and a warning explains why.',
+      'Silence only. Filler words are not detected here: a word list cannot tell a filler from ordinary use, and it never survives a new language. Run vcut semantic for those.',
       'review entries are candidates for a human to inspect. They are never cut automatically.',
     ],
   },

@@ -1,14 +1,11 @@
 import { describe, expect, test } from 'bun:test'
 import {
-  detectFillers,
-  FILLERS,
   PRESET_DB,
   parseBlackLog,
   parseClipping,
   parseFreezeLog,
   parseSilenceLog,
   parseSrt,
-  type Transcript,
   withinSource,
 } from '../src/detect.ts'
 
@@ -21,22 +18,11 @@ const realSilenceLog = `
 [silencedetect @ 0x9cd07c480] silence_end: 8.2965 | silence_duration: 0.416979
 `
 
-const wordTranscript = (entries: Array<[string, number, number]>): Transcript => ({
-  words: entries.map(([text, startMs, endMs]) => ({ text, startMs, endMs })),
-  wordLevel: true,
-})
-
 describe('presets', () => {
   test('carry the production thresholds from the archived pipeline', () => {
     expect(PRESET_DB.noisy).toBe(-20)
     expect(PRESET_DB.clean).toBe(-30)
     expect(PRESET_DB.podcast).toBe(-35)
-  })
-
-  test('filler lists cover the three shipped languages', () => {
-    expect(FILLERS.es).toContain('o sea')
-    expect(FILLERS.en).toContain('you know')
-    expect(FILLERS.pt).toContain('entendeu')
   })
 })
 
@@ -106,53 +92,6 @@ chicos
 palabra
 `
     expect(parseSrt(srt).words[0].startMs).toBe(3_723_456)
-  })
-})
-
-describe('detectFillers', () => {
-  test('skips detection when the transcript is not word-level', () => {
-    const transcript: Transcript = {
-      words: [{ text: 'o sea tipo pues', startMs: 0, endMs: 1000 }],
-      wordLevel: false,
-    }
-    expect(detectFillers(transcript, 'es')).toHaveLength(0)
-  })
-
-  test('matches single-token fillers ignoring case, accents and punctuation', () => {
-    const transcript = wordTranscript([
-      ['Bueno', 0, 300],
-      ['Este,', 300, 600],
-      ['código', 600, 900],
-    ])
-    const fillers = detectFillers(transcript, 'es')
-    expect(fillers).toHaveLength(1)
-    expect(fillers[0].filler).toBe('este')
-    expect(fillers[0].startMs).toBe(300)
-    expect(fillers[0].endMs).toBe(600)
-  })
-
-  test('matches multi-word fillers across consecutive cues', () => {
-    const transcript = wordTranscript([
-      ['o', 1000, 1200],
-      ['sea', 1200, 1500],
-      ['funciona', 1500, 2000],
-    ])
-    const fillers = detectFillers(transcript, 'es')
-    expect(fillers).toHaveLength(1)
-    expect(fillers[0].filler).toBe('o sea')
-    expect(fillers[0].startMs).toBe(1000)
-    expect(fillers[0].endMs).toBe(1500)
-  })
-
-  test('does not run past the end of the token stream', () => {
-    const transcript = wordTranscript([['o', 1000, 1200]])
-    expect(detectFillers(transcript, 'es')).toHaveLength(0)
-  })
-
-  test('applies the language list, not a global one', () => {
-    const transcript = wordTranscript([['basically', 0, 400]])
-    expect(detectFillers(transcript, 'en')).toHaveLength(1)
-    expect(detectFillers(transcript, 'es')).toHaveLength(0)
   })
 })
 
