@@ -349,6 +349,18 @@ A window with **no words but real level** is the case worth stopping on. Somethi
 that the transcript never saw, which is what `skills/core/scripts/non-speech.py` exists to
 find.
 
+## When something comes out wrong
+
+```bash
+vcut skills get debug
+```
+
+Read it before diagnosing a render that sounds off, a word that seems cut in half, dead air
+that survived a cut, or a transcript whose positions do not match the audio. Every method in
+it is cheap; none of them is the obvious one. It exists because for each of those questions
+there is a more rigorous-looking instrument that cannot tell the hypotheses apart, and reaching
+for it is how confident wrong answers get written down.
+
 ## Human decision boundary
 
 vcut proposes. The human decides.
