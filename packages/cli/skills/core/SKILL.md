@@ -156,6 +156,22 @@ Fractions, not pixels, so the same EDL survives a source at another resolution.
 
 Every segment is written as `proposed` and the EDL as `draft`. **This command never approves its own work.**
 
+**Read the boundary warnings.** When a segment opens right after a semantic cut, the build says so:
+
+```
+warning   segment-020 opens right after a semantic cut of 5.83s (18 words). A tail of removed
+          speech surviving that join reads as a real sentence, so check it once rendered.
+```
+
+That is where the tail of removed speech leaks into the render, and it does not arrive looking
+like a defect: it arrives as a plausible sentence with the wrong meaning, which reads as a
+transcription error rather than a cut. Checking one is two commands — `vcut locate` for the
+master position, `vcut say` to hear what landed there.
+
+Only semantic cuts raise this. Silence cuts do not, and that is deliberate: with word clamping
+every silence cut brushes the margin around a word, so keying the warning on "words were
+removed" fired on 23 of 24 boundaries on a real EDL and would have trained you to skip it.
+
 Compare the reported `removalPercent` against the target for the content type:
 
 | Content | Expected removal |

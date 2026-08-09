@@ -265,6 +265,60 @@ export const absorbSlivers = (cuts: Cut[], minKeepMs: number): Cut[] => {
   return merged
 }
 
+/**
+ * Segment starts that open right after speech was deliberately removed.
+ *
+ * This is where the tail of a cut span survives into the render: the boundary sits against
+ * material that was meant to be gone, so whatever the renderer carries past the edge is
+ * words rather than room tone. One session shipped a round where a removed phrase leaked
+ * across such a join and reversed the meaning of the sentence it landed in. It took three
+ * rounds to find, and everything needed to flag it was already present at build time.
+ *
+ * The condition is the *kind* of cut, not a distance. "Did the removed span contain words"
+ * was the first attempt and it fired on 23 of 24 boundaries: with word clamping every
+ * silence cut brushes the margin around a word, so the test marked everything and would
+ * have trained a reader to skip it. The measured spread on that EDL was stark — the two
+ * semantic cuts removed 7.27s and 5.83s while every silence cut removed 0.83s or less —
+ * but reaching for a duration threshold there would be fitting a number to one recording.
+ *
+ * A semantic cut is the honest signal: it is the one the model asked for because the words
+ * carried meaning, and it is the only kind that removes speech on purpose.
+ */
+export const boundariesAfterSpeech = (
+  segments: Array<{ id?: string; inMs: number; outMs: number }>,
+  speechCuts: Interval[],
+  words: Interval[],
+): Array<{ index: number; inMs: number; cutMs: number; wordsRemoved: number }> => {
+  if (speechCuts.length === 0) {
+    return []
+  }
+  const found: Array<{ index: number; inMs: number; cutMs: number; wordsRemoved: number }> = []
+  for (const [index, segment] of segments.entries()) {
+    // The first segment opens the file rather than following a cut.
+    if (index === 0) {
+      continue
+    }
+    const previous = segments[index - 1]
+    if (previous === undefined) {
+      continue
+    }
+    const gapStart = previous.outMs
+    const gapEnd = segment.inMs
+    if (gapEnd <= gapStart) {
+      continue
+    }
+    const removed = speechCuts.some((cut) => cut.startMs < gapEnd && cut.endMs > gapStart)
+    if (!removed) {
+      continue
+    }
+    const wordsRemoved = words.filter(
+      (word) => word.endMs > gapStart && word.startMs < gapEnd,
+    ).length
+    found.push({ index, inMs: segment.inMs, cutMs: gapEnd - gapStart, wordsRemoved })
+  }
+  return found
+}
+
 export const invertToSegments = (
   cuts: Cut[],
   durationMs: number,
@@ -639,7 +693,13 @@ export const buildEdlCommand = async (argv: string[]): Promise<void> => {
       'scripted-talking-head': '10-20%',
     },
     wordBoundaryClamping: boundaries.length > 0,
-    warnings: report.warnings,
+    warnings: [
+      ...report.warnings,
+      ...boundariesAfterSpeech(segments, semanticCuts, wordBoundaries(transcript)).map(
+        (boundary) =>
+          `${segments[boundary.index]?.id ?? `segment ${boundary.index + 1}`} opens right after a semantic cut of ${(boundary.cutMs / 1000).toFixed(2)}s${boundary.wordsRemoved === 0 ? '' : ` (${boundary.wordsRemoved} ${boundary.wordsRemoved === 1 ? 'word' : 'words'})`}. A tail of removed speech surviving that join reads as a real sentence, so check it once rendered: vcut say <render> --transcript <srt> --at <the master position from vcut locate>.`,
+      ),
+    ],
   }
   if (mode === 'json') {
     emitJson(summary)

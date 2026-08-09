@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import {
   absorbSlivers,
+  boundariesAfterSpeech,
   type Cut,
   clampToWords,
   invertToSegments,
@@ -316,5 +317,49 @@ describe('invertToSegments with a crop', () => {
   test('leaves crop null when none was asked for, so old EDLs render unchanged', () => {
     const segments = invertToSegments([silence(2000, 3000)], 10_000, 'src', 100, 60)
     expect(segments.every((segment) => segment.crop === null)).toBe(true)
+  })
+})
+
+describe('boundariesAfterSpeech', () => {
+  const seg = (inMs: number, outMs: number, id: string) => ({ id, inMs, outMs })
+  const span = (startMs: number, endMs: number) => ({ startMs, endMs })
+
+  // Three kept spans. The gap before the third is where a semantic cut removed speech.
+  const segments = [
+    seg(0, 2000, 'segment-001'),
+    seg(2100, 4000, 'segment-002'),
+    seg(11000, 13000, 'segment-003'),
+  ]
+  const words = [span(4200, 4600), span(4700, 5200), span(10500, 10900)]
+
+  test('names the boundary that opens after a semantic cut', () => {
+    const found = boundariesAfterSpeech(segments, [span(4000, 11000)], words)
+    expect(found).toHaveLength(1)
+    expect(found[0]).toMatchObject({ index: 2, wordsRemoved: 3 })
+    expect(found[0]?.cutMs).toBe(7000)
+  })
+
+  // The first attempt at this check keyed on "did the removed span contain words" and fired
+  // on 23 of 24 boundaries of a real EDL: with word clamping every silence cut brushes the
+  // margin around a word. A warning that fires everywhere trains a reader to skip it.
+  test('says nothing when the only cuts were silence', () => {
+    expect(boundariesAfterSpeech(segments, [], words)).toEqual([])
+  })
+
+  test('ignores a semantic cut that does not touch a boundary', () => {
+    expect(boundariesAfterSpeech(segments, [span(20_000, 21_000)], words)).toEqual([])
+  })
+
+  test('the opening segment follows no cut', () => {
+    const found = boundariesAfterSpeech(segments, [span(0, 1000)], words)
+    expect(found.every((entry) => entry.index !== 0)).toBe(true)
+  })
+
+  // A semantic cut can remove a pause the model judged dead rather than words, and that
+  // boundary is still where a tail survives.
+  test('reports a semantic cut even when it removed no words', () => {
+    const found = boundariesAfterSpeech(segments, [span(4000, 11000)], [])
+    expect(found).toHaveLength(1)
+    expect(found[0]?.wordsRemoved).toBe(0)
   })
 })
