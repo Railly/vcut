@@ -50,6 +50,7 @@ export type Edl = {
     noiseReduction: 'off' | 'light' | 'manual'
     externalAudioSourceId: string | null
     syncOffsetMs: number
+    edgeFadeMs: number
   }
   output: {
     path: string
@@ -180,6 +181,34 @@ export const edlErrors = (edl: Edl, mode: Mode): string[] => {
   return errors
 }
 
+// A joint between two segments is a discontinuity in the waveform, and an instant jump
+// from one sample level to another is the click the ear picks up. Ramping the last and
+// first few milliseconds to zero removes the step without touching anything audible.
+//
+// Deliberately not acrossfade: that filter overlaps the two sides, so the render comes out
+// shorter than the sum of its segments by fadeMs per joint. Video is concatenated, not
+// overlapped, so the audio would drift ahead of the picture a little more at every cut,
+// and outputErrors checks the render against exactly that sum. Fading inside each segment
+// keeps every segment its own length, which keeps sync and the duration contract intact.
+//
+// The cost is a real one: two ramps to silence, not a crossfade through a shared middle.
+// A joint under a fully continuous sentence can still be heard as a dip.
+const audioEdgeFade = (segment: Segment, fadeMs: number | undefined): string => {
+  // An EDL written before this field existed renders exactly as it did then.
+  if (fadeMs === undefined || !Number.isFinite(fadeMs) || fadeMs <= 0) {
+    return ''
+  }
+  const spanMs = segment.outMs - segment.inMs
+  // Both ramps have to fit with audio left between them, otherwise the segment is one
+  // continuous fade and the words inside it lose level.
+  if (spanMs <= fadeMs * 2) {
+    return ''
+  }
+  const fade = seconds(fadeMs)
+  const outStart = seconds(spanMs - fadeMs)
+  return `,afade=t=in:st=0:d=${fade},afade=t=out:st=${outStart}:d=${fade}`
+}
+
 export const buildFfmpegArgs = (edl: Edl, outputPath: string): string[] => {
   const sourceIndex = new Map(edl.sources.map((source, index) => [source.id, index]))
   const filters: string[] = []
@@ -203,7 +232,7 @@ export const buildFfmpegArgs = (edl: Edl, outputPath: string): string[] => {
 
     if (policy === 'required') {
       filters.push(
-        `[${input}:a]atrim=start=${seconds(segment.inMs)}:end=${seconds(segment.outMs)},asetpts=PTS-STARTPTS,aresample=48000,aformat=channel_layouts=stereo[a${index}]`,
+        `[${input}:a]atrim=start=${seconds(segment.inMs)}:end=${seconds(segment.outMs)},asetpts=PTS-STARTPTS,aresample=48000,aformat=channel_layouts=stereo${audioEdgeFade(segment, edl.audio.edgeFadeMs)}[a${index}]`,
       )
       concatInputs.push(`[a${index}]`)
     }

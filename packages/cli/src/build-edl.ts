@@ -31,6 +31,7 @@ Flags:
   --height <n>          Output height (default: source height)
   --fps <n>             Output frame rate (default: source rate)
   --no-fillers          Cut silences only, ignore filler candidates
+  --edge-fade <ms>      Audio ramp at each segment edge (default 50, 0 disables)
   --json                Force JSON (default when stdout is not a TTY)
   --human               Force the human summary
   --help                Show this message
@@ -270,7 +271,12 @@ type CliOptions = {
   height: number | null
   fps: number | null
   includeFillers: boolean
+  edgeFadeMs: number
 }
+
+// content-factory used 50ms per joint and Hunter approved masters cut with it, so this is
+// a measured inheritance rather than a guess. --edge-fade 0 restores the hard cut.
+const DEFAULT_EDGE_FADE_MS = 50
 
 const parseCli = (args: string[]): CliOptions => {
   const value = (flag: string) => {
@@ -293,7 +299,20 @@ const parseCli = (args: string[]): CliOptions => {
     height: numeric('--height'),
     fps: numeric('--fps'),
     includeFillers: !args.includes('--no-fillers'),
+    edgeFadeMs: edgeFade(numeric('--edge-fade')),
   }
+}
+
+// Rejected here rather than in the renderer: a bad value would otherwise reach the EDL as
+// NaN and only surface as a broken filter graph one command later.
+const edgeFade = (requested: number | null): number => {
+  if (requested === null) {
+    return DEFAULT_EDGE_FADE_MS
+  }
+  if (!Number.isFinite(requested) || requested < 0) {
+    throw new UsageError('--edge-fade takes a non-negative number of milliseconds')
+  }
+  return requested
 }
 
 const assertSegmentCount = (count: number): void => {
@@ -406,6 +425,7 @@ export const buildEdlCommand = async (argv: string[]): Promise<void> => {
       noiseReduction: 'off',
       externalAudioSourceId: null,
       syncOffsetMs: 0,
+      edgeFadeMs: options.edgeFadeMs,
     },
     captions: captionPaths(report),
     output: {
