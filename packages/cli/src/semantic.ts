@@ -394,7 +394,15 @@ const REVIEW_INSTRUCTIONS = [
   'A deadAir entry with segmentId "rendered" was measured on the master itself, so its timings are the master timeline, not the source. Those are the ones a viewer really sits through, including a pause two adjoining segments create together.',
   'A missing word is not proof of a bad cut. Whisper drops words, so before reporting one, check the EDL still covers that span: if it does, the transcript is wrong and the audio is fine.',
   'fix says what to do: extend a cut, shorten it, restore a span. Give timings when you can.',
-  'Report nothing when the result reads clean. An empty array is a valid answer.',
+  'Check these one at a time against the text above. Each is a defect, not a matter of taste, and each survives a pass that only looked for the obvious:',
+  '1. No idea is stated twice. Two passages making the same point means one is a cut, however far apart they sit.',
+  '2. No sentence begins and does not land. Every start has its ending here, or the whole attempt goes.',
+  '3. No pronoun outlives its antecedent. If "that" refers to something cut, the sentence goes with it.',
+  '4. No fragment survives alone. A clause that only made sense inside a removed passage is a leftover, not content.',
+  '5. No discourse marker sits in a pause. Markers get more audible as the edit gets tighter, so a pass that found none earlier will find them now.',
+  '6. The last line lands. Ending on an abandoned start is worse than ending four seconds sooner.',
+  'When a false-start survived its own cut, the span was too narrow, not the judgement wrong: widen the existing proposal rather than adding a new one beside it.',
+  'Report nothing when the result reads clean and every invariant holds. An empty array is a valid answer, and it is the signal to stop looping.',
 ]
 
 // Everything else in review reasons about the source: the transcript mapped onto the spans

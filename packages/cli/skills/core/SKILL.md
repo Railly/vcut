@@ -192,6 +192,62 @@ strips the thinking out of a reflection makes it sound like a script. Propose th
 what is lost in `reason`, and let them refuse it. Under-proposing takes that decision away
 from them just as much as over-cutting does, only silently.
 
+### One pass is never the answer
+
+**Cut, render, transcribe the render, read it again, cut again. Until a pass proposes
+nothing.** A single pass cannot be enough, because most of what needs cutting is invisible
+until the surrounding noise is gone.
+
+This is not a suggestion. It happened three times on the recording this guidance came from,
+and each round found things the round before could not see:
+
+| Round | What it found that the previous one could not |
+| --- | --- |
+| 1 | The obvious: long silences, the run of stammers |
+| 2 | A pause two adjoining segments created together, which neither of them contained |
+| 3 | A sentence split in half by a cut that landed inside it, and a redundancy that survived every individually correct cut |
+| 4 | Two `¿no?` five seconds apart, audible only once the passage around them was tight |
+
+The loop:
+
+```bash
+vcut edl build --detect detect.json --semantic proposals.json ... && vcut render --edl edl.json --mode preview
+trx transcribe master.mp4 --words --language es -m large-v3-turbo
+vcut detect master.mp4 --preset clean --transcript master.srt --json > master-detect.json
+vcut semantic review --edl edl.json --detect detect.json --master master.mp4 --master-transcript master.srt
+# widen the spans in proposals.json, then run the whole thing again
+```
+
+**Widen existing spans before adding new ones.** The most expensive miss on this recording
+was a cut that started too late: five attempts at the same sentence, and the proposal only
+covered the last three because the first two read like content on their own. Extending one
+span from 42.0s back to 20.4s removed thirteen more seconds than adding any new cut would
+have. When a `false-start` survives its own cut, the span was too narrow, not the judgement
+wrong.
+
+**Stop when a pass proposes nothing**, not when the removal percentage looks respectable.
+
+### Invariants
+
+Hard rules. Each one is a defect if it survives a pass, not a matter of taste, and each one
+is checkable against the transcript of the render rather than against intent:
+
+1. **No idea is stated twice.** If two passages make the same point, one of them is a cut.
+   Forty seconds between them is not evidence they differ.
+2. **No sentence begins and does not land.** Every start has its ending in the edit, or the
+   whole attempt goes.
+3. **No pronoun outlives its antecedent.** If "that" or "eso" refers to something cut, the
+   sentence goes with it.
+4. **No fragment survives alone.** A clause that only made sense as part of a passage that
+   was removed is not content, it is a leftover.
+5. **No discourse marker sits in a pause.** `¿no?`, `o sea`, `bueno` are audible precisely
+   when the speech around them is tight, so they get louder as the edit gets better.
+6. **The last line lands.** A video ending on an abandoned start is worse than one four
+   seconds shorter.
+
+If the transcript of the render violates one of these, the edit is not done, whatever the
+removal percentage says.
+
 ## Limits
 
 - Semantic cutting is proposal-only. vcut supplies the transcript and folds in the spans; the judgement is yours and the approval is the human's.
