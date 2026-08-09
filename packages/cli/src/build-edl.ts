@@ -32,6 +32,7 @@ Flags:
   --height <n>          Output height (default: source height)
   --fps <n>             Output frame rate (default: source rate)
   --edge-fade <ms>      Audio ramp at each segment edge (default 50, 0 disables)
+  --crop <spec>         top|bottom|left|right:<fraction>, or x,y,width,height
   --semantic <path>     Model proposals from 'vcut semantic'; each lands as material risk
   --json                Force JSON (default when stdout is not a TTY)
   --human               Force the human summary
@@ -95,6 +96,46 @@ export const humanSummary = (summary: BuildSummary): string => {
   return lines.join('\n')
 }
 
+export type Crop = { x: number; y: number; width: number; height: number }
+
+// Cropping after the cuts rather than before them is the whole point. A traditional editor
+// makes you set the frame per clip, so remembering the menu bar at the end means redoing
+// every segment by hand. The EDL keeps the crop beside the cut list, so the frame is one
+// decision applied to all of them and changing it never touches a boundary.
+//
+// Accepts `top:0.05` and its three siblings, which is the shape of the real request: shave a
+// strip off one edge. `x,y,width,height` stays available for an arbitrary window. Fractions,
+// not pixels, so the same EDL survives a source at another resolution.
+export const parseCrop = (spec: string): Crop => {
+  const edges: Record<string, (amount: number) => Crop> = {
+    top: (amount) => ({ x: 0, y: amount, width: 1, height: 1 - amount }),
+    bottom: (amount) => ({ x: 0, y: 0, width: 1, height: 1 - amount }),
+    left: (amount) => ({ x: amount, y: 0, width: 1 - amount, height: 1 }),
+    right: (amount) => ({ x: 0, y: 0, width: 1 - amount, height: 1 }),
+  }
+  const edge = spec.split(':')
+  const build = edges[edge[0]]
+  if (build !== undefined) {
+    const amount = Number(edge[1])
+    if (!Number.isFinite(amount) || amount <= 0 || amount >= 1) {
+      throw new UsageError(`--crop ${edge[0]} takes a fraction between 0 and 1, exclusive`)
+    }
+    return build(amount)
+  }
+
+  const parts = spec.split(',').map(Number)
+  if (parts.length !== 4 || parts.some((part) => !Number.isFinite(part))) {
+    throw new UsageError(
+      '--crop takes top|bottom|left|right:<fraction> or x,y,width,height as fractions',
+    )
+  }
+  const [x, y, width, height] = parts
+  if (x < 0 || y < 0 || width <= 0 || height <= 0 || x + width > 1 || y + height > 1) {
+    throw new UsageError('--crop must stay inside the source: fractions from 0 to 1')
+  }
+  return { x, y, width, height }
+}
+
 export type Cut = Interval & {
   reason: 'silence' | 'semantic'
 }
@@ -132,7 +173,7 @@ export type KeptSegment = {
   handlesMs: { before: number; after: number }
   approval: 'proposed'
   semanticRisk: 'none' | 'low' | 'material'
-  crop: null
+  crop: Crop | null
 }
 
 const MAX_SEGMENTS = 999
@@ -229,6 +270,7 @@ export const invertToSegments = (
   marginMs: number,
   fps = 0,
   minKeepMs = 300,
+  crop: Crop | null = null,
 ): KeptSegment[] => {
   // The detector's own minimum: a stretch of audio it would not have called a pause is not
   // long enough to be a word either, so anything shorter is margin wearing a segment's shape.
@@ -270,7 +312,7 @@ export const invertToSegments = (
       handlesMs: { before: marginMs, after: marginMs },
       approval: 'proposed' as const,
       semanticRisk: 'none' as const,
-      crop: null,
+      crop,
     }))
 }
 
@@ -331,6 +373,7 @@ type CliOptions = {
   fps: number | null
   edgeFadeMs: number
   semanticPath: string | null
+  crop: Crop | null
 }
 
 // content-factory used 50ms per joint and Hunter approved masters cut with it, so this is
@@ -359,6 +402,7 @@ const parseCli = (args: string[]): CliOptions => {
     fps: numeric('--fps'),
     edgeFadeMs: edgeFade(numeric('--edge-fade')),
     semanticPath: value('--semantic') === undefined ? null : resolve(value('--semantic') as string),
+    crop: value('--crop') === undefined ? null : parseCrop(value('--crop') as string),
   }
 }
 
@@ -477,6 +521,7 @@ export const buildEdlCommand = async (argv: string[]): Promise<void> => {
       report.marginMs,
       outputFps,
       report.minSilenceMs,
+      options.crop,
     ),
     semanticCuts,
     report.marginMs + Math.ceil(1000 / outputFps),

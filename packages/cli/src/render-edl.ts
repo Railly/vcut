@@ -47,6 +47,8 @@ export type Edl = {
   sources: Source[]
   segments: Segment[]
   audio: {
+    speechTargetLufs?: number
+    truePeakMaxDbtp?: number
     noiseReduction: 'off' | 'light' | 'manual'
     externalAudioSourceId: string | null
     syncOffsetMs: number
@@ -193,6 +195,31 @@ export const edlErrors = (edl: Edl, mode: Mode): string[] => {
 //
 // The cost is a real one: two ramps to silence, not a crossfade through a shared middle.
 // A joint under a fully continuous sentence can still be heard as a dip.
+// The EDL has carried a loudness target since V1 and nothing ever read it. A recording sits
+// where the mic and the room put it, not where a viewer wants it: this source measured
+// -25.4 LUFS against the -16 the EDL asks for, which is the difference between reaching for
+// the volume and not.
+//
+// Normalising the concatenated result rather than each segment keeps the relative levels
+// between segments intact, so a quiet passage stays quieter than a loud one instead of every
+// piece being dragged to the same number. Single pass: a two-pass measure-then-apply would
+// double the render for a correction this size, and the true peak limiter is what stops the
+// gain from clipping.
+//
+// loudnorm resamples internally and hands back a stream tens of milliseconds longer than it
+// received, which the duration contract in outputErrors rejects. Resampling back to 48k and
+// trimming to the sum of the segments keeps the render exactly as long as the EDL says, and
+// the trim is the honest fix: the extra samples are filter latency, not audio.
+const loudnessFilter = (edl: Edl): string => {
+  const target = edl.audio.speechTargetLufs
+  const peak = edl.audio.truePeakMaxDbtp
+  if (target === undefined || !Number.isFinite(target)) {
+    return ''
+  }
+  const truePeak = peak === undefined || !Number.isFinite(peak) ? -1 : peak
+  return `,loudnorm=I=${target}:TP=${truePeak}:LRA=11`
+}
+
 const audioEdgeFade = (segment: Segment, fadeMs: number | undefined): string => {
   // An EDL written before this field existed renders exactly as it did then.
   if (fadeMs === undefined || !Number.isFinite(fadeMs) || fadeMs <= 0) {
@@ -243,9 +270,20 @@ export const buildFfmpegArgs = (edl: Edl, outputPath: string): string[] => {
   }
 
   const hasAudio = policy !== 'forbidden'
+  const concatOut = hasAudio ? '[vcat][acat]' : '[v]'
   filters.push(
-    `${concatInputs.join('')}concat=n=${edl.segments.length}:v=1:a=${hasAudio ? 1 : 0}[v]${hasAudio ? '[a]' : ''}`,
+    `${concatInputs.join('')}concat=n=${edl.segments.length}:v=1:a=${hasAudio ? 1 : 0}${concatOut}`,
   )
+  if (hasAudio) {
+    filters.push(`[vcat]null[v]`)
+    const totalMs = edl.segments.reduce(
+      (total, segment) => total + (segment.outMs - segment.inMs),
+      0,
+    )
+    filters.push(
+      `[acat]aresample=48000${loudnessFilter(edl)},aresample=48000,atrim=end=${seconds(totalMs)},asetpts=PTS-STARTPTS[a]`,
+    )
+  }
 
   const codec = edl.output.videoCodec === 'h264' ? 'libx264' : 'libx265'
   const args = edl.sources.flatMap((source) => ['-i', source.path])

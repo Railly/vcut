@@ -27,6 +27,8 @@ const edl = (
     },
   ],
   audio: {
+    speechTargetLufs: -16,
+    truePeakMaxDbtp: -1,
     noiseReduction: 'off',
     externalAudioSourceId: null,
     syncOffsetMs: 0,
@@ -135,5 +137,39 @@ describe('buildFfmpegArgs edge fade', () => {
     const graph = buildFfmpegArgs(edl('required', 50), '/tmp/master.mp4').join(' ')
     expect(graph).not.toContain('acrossfade')
     expect(outputErrors(edl('required', 50), probe(2))).toEqual([])
+  })
+})
+
+describe('loudness normalisation', () => {
+  test('normalises to the target the EDL has always declared', () => {
+    const graph = buildFfmpegArgs(edl('required'), '/tmp/master.mp4').join(' ')
+    expect(graph).toContain('loudnorm=I=-16:TP=-1')
+  })
+
+  test('normalises the concatenated result, not each segment on its own', () => {
+    // Per-segment would flatten a quiet passage to the same number as a loud one.
+    const graph = buildFfmpegArgs(edl('required'), '/tmp/master.mp4').join(' ')
+    expect(graph.match(/loudnorm/g)).toHaveLength(1)
+  })
+
+  test('trims back to the EDL duration, since loudnorm hands back a longer stream', () => {
+    const graph = buildFfmpegArgs(edl('required'), '/tmp/master.mp4').join(' ')
+    expect(graph).toContain('atrim=end=5,')
+  })
+
+  test('leaves the audio alone when no target is declared', () => {
+    const legacy = edl('required')
+    legacy.audio = { ...legacy.audio, speechTargetLufs: undefined }
+    expect(buildFfmpegArgs(legacy, '/tmp/master.mp4').join(' ')).not.toContain('loudnorm')
+  })
+
+  test('defaults the ceiling to -1 dBTP when only a target is given', () => {
+    const partial = edl('required')
+    partial.audio = { ...partial.audio, truePeakMaxDbtp: undefined }
+    expect(buildFfmpegArgs(partial, '/tmp/master.mp4').join(' ')).toContain('TP=-1')
+  })
+
+  test('adds no audio filter chain when the track is forbidden', () => {
+    expect(buildFfmpegArgs(edl('forbidden'), '/tmp/master.mp4').join(' ')).not.toContain('loudnorm')
   })
 })

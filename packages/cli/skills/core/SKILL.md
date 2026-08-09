@@ -70,7 +70,19 @@ vcut edl build --detect detect.json --output master.mp4 --campaign my-video
 
 Inverts the cut intervals into the spans worth keeping, so the EDL always describes surviving material. Boundaries are snapped to whole frames; unsnapped boundaries accumulate rounding error and make the renderer reject the result with a frame count mismatch.
 
-Flags: `--edl <path>` (default `./edl.json`), `--width`, `--height`, `--fps`, `--edge-fade <ms>`, `--semantic <path>`.
+Flags: `--edl <path>` (default `./edl.json`), `--width`, `--height`, `--fps`, `--edge-fade <ms>`, `--semantic <path>`, `--crop <spec>`.
+
+**`--crop` frames the whole edit at once**, which is the reason it lives here and not in the
+renderer's per-segment field. A traditional editor makes you set the frame per clip, so
+remembering the menu bar after cutting means redoing every segment by hand. Here the crop is
+one decision applied to all of them, and changing it never touches a cut boundary.
+
+```bash
+vcut edl build --detect detect.json --crop top:0.06 ...   # shave 6% off the top
+vcut edl build --detect detect.json --crop 0.1,0,0.8,1 ...  # arbitrary window
+```
+
+Fractions, not pixels, so the same EDL survives a source at another resolution.
 
 Every segment is written as `proposed` and the EDL as `draft`. **This command never approves its own work.**
 
@@ -92,6 +104,8 @@ vcut render --edl edl.json --mode preview
 ```
 
 Preview mode accepts proposed segments. Master mode requires an approved EDL, approved segments, matching source hashes, and a free output path; it refuses to overwrite.
+
+Audio is normalised to the `speechTargetLufs` the EDL declares, defaulting to -16 LUFS with a -1 dBTP ceiling. This runs on the concatenated result rather than per segment, so a quiet passage stays quieter than a loud one instead of every piece being dragged to the same number. Measured on one recording: -25.4 LUFS in, -16.5 out.
 
 The renderer validates its own output against the EDL: dimensions, pixel format, colour metadata, frame count within one frame, and the audio contract. Identical inputs produce a byte-identical file, so the `sha256` in the result is a reproducibility check.
 

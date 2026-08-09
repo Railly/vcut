@@ -25,7 +25,7 @@ const HELP = `vcut - cut dead air out of a recording, reproducibly
 
 Usage:
   vcut <input>                       Shorthand for: vcut detect <input>
-  vcut detect <input> [flags]        Find silences, fillers, and review candidates
+  vcut detect <input> [flags]        Find silences and review candidates
   vcut edl build [flags]             Turn a detect report into a draft EDL
   vcut semantic export|check [flags] Hand the transcript to a model, take back proposals
   vcut render --edl <path> [flags]   Render an EDL to video
@@ -172,6 +172,7 @@ const CONTRACTS: Record<string, unknown> = {
     },
     notes: [
       'Preview mode accepts proposed segments; master mode requires approval.',
+      'Audio is normalised to the EDL speechTargetLufs, on the concatenated result rather than per segment.',
       'The renderer validates its own output against the EDL and fails on a mismatch.',
     ],
   },

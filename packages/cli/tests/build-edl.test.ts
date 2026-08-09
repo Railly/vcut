@@ -6,6 +6,7 @@ import {
   invertToSegments,
   matchTarget,
   mergeIntervals,
+  parseCrop,
   snapToFrame,
   wordBoundaries,
 } from '../src/build-edl.ts'
@@ -272,5 +273,48 @@ describe('matchTarget bounds', () => {
 
   test('names the range at its exact ceiling', () => {
     expect(matchTarget(45)).toContain('event or interview')
+  })
+})
+
+describe('parseCrop', () => {
+  test('shaves a strip off the top, which is the request this exists for', () => {
+    expect(parseCrop('top:0.06')).toEqual({ x: 0, y: 0.06, width: 1, height: 0.94 })
+  })
+
+  test('shaves the other three edges', () => {
+    expect(parseCrop('bottom:0.1')).toEqual({ x: 0, y: 0, width: 1, height: 0.9 })
+    expect(parseCrop('left:0.2')).toEqual({ x: 0.2, y: 0, width: 0.8, height: 1 })
+    expect(parseCrop('right:0.2')).toEqual({ x: 0, y: 0, width: 0.8, height: 1 })
+  })
+
+  test('accepts an arbitrary window as fractions', () => {
+    expect(parseCrop('0.1,0.2,0.5,0.6')).toEqual({ x: 0.1, y: 0.2, width: 0.5, height: 0.6 })
+  })
+
+  test('refuses an edge fraction outside the unit range', () => {
+    expect(() => parseCrop('top:1.5')).toThrow()
+    expect(() => parseCrop('top:0')).toThrow()
+  })
+
+  test('refuses a window that runs past the source', () => {
+    expect(() => parseCrop('0.5,0.5,0.9,0.9')).toThrow()
+  })
+
+  test('refuses a malformed spec rather than guessing', () => {
+    expect(() => parseCrop('0.1,0.2')).toThrow()
+    expect(() => parseCrop('middle:0.5')).toThrow()
+  })
+})
+
+describe('invertToSegments with a crop', () => {
+  test('applies one frame decision to every segment', () => {
+    const crop = { x: 0, y: 0.06, width: 1, height: 0.94 }
+    const segments = invertToSegments([silence(2000, 3000)], 10_000, 'src', 100, 60, 300, crop)
+    expect(segments.every((segment) => segment.crop === crop)).toBe(true)
+  })
+
+  test('leaves crop null when none was asked for, so old EDLs render unchanged', () => {
+    const segments = invertToSegments([silence(2000, 3000)], 10_000, 'src', 100, 60)
+    expect(segments.every((segment) => segment.crop === null)).toBe(true)
   })
 })
