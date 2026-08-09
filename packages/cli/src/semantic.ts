@@ -463,6 +463,8 @@ const REVIEW_INSTRUCTIONS = [
   '7. Nothing audible is left that is not language: a breath, a mic bump, a lip smack. Neither the silence pass nor the transcript can see these, so they need an audio classifier or a human ear.',
   '8. Every stretch has been read at least once. An unread stretch violates nothing visibly, because nobody looked, which is what lets a defect survive round after round.',
   'When a false-start survived its own cut, the span was too narrow, not the judgement wrong: widen the existing proposal rather than adding a new one beside it.',
+  'When a listener reports something this text does not show, transcribe that stretch on its own before deciding the text is right: a model reading the whole file collapses three attempts at one line into one, and the same audio cut to a few seconds returns all three.',
+  'A converted timestamp looks as confident as a measured one. When a finding contradicts your mapping between the source and the master, check the mapping first, since it is the newer claim.',
   'unreviewed lists the stretches between two cuts that no proposal ever touched. They look reviewed because their neighbours were cut, and that is where a marker survives round after round. Read those first and apply the deletion test to every span in them.',
   'Report nothing when the result reads clean and every invariant holds. An empty array is a valid answer, and it is the signal to stop looping.',
 ]

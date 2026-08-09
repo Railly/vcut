@@ -83,6 +83,19 @@ trx transcribe recording.mp4 --words --language es -m large-v3-turbo
 whisper-cli -m ggml-large-v3-turbo.bin -f audio.wav --max-len 1 --output-srt
 ```
 
+**Ask the model to keep the hesitations.** A transcriber cleans by default: it writes what it
+believes was meant, so a stretched vowel or a tag question is dropped as noise. Those are
+exactly the spans worth cutting, and one that never reaches the transcript cannot be proposed.
+
+```bash
+whisper-cli -m ggml-large-v3-turbo.bin -f audio.wav --max-len 1 --output-srt \
+  --prompt "Transcripción literal. Incluí muletillas, dudas y sonidos: eh, mmm, o sea."
+```
+
+Write the prompt in the language being transcribed and name the sounds that language actually
+uses; a list written for one language is noise in another. It recovers some of them, not all,
+which is why the classifier still has a job.
+
 **Ask for a large model.** One cue per word means one cue per *token*, and what counts as a
 token depends on the model. Measured on the same three minutes of Spanish: `small` returns
 26% of its cues as word fragments, splitting "Crafter" into `Cra` + `fter`, while
@@ -266,7 +279,18 @@ order is fixed and why stopping early leaves work that looks like polish and is 
 
 #### The round, in order
 
-Run every step every round. Skipping one is how a defect survives four of them.
+Run every step every round. Skipping one is how a defect survives four of them, and the way
+it fails is quiet: the round still produces a shorter file, so it looks like it worked.
+
+The step most often skipped is 3 and 4, because step 2 already produced a transcript and
+reading it feels like reviewing. It is not. The transcript says what was said; `review` says
+where nobody looked, and the classifier hears what no transcript writes. A round that
+transcribed but did not run those two has checked one of the eight invariants.
+
+**A listener finding something you did not is evidence about the pass, not just about the
+edit.** Before fixing what they named, ask which step would have caught it. If the answer is
+a step that ran, the step needs strengthening; if it is a step that did not, that is the
+finding.
 
 Give each round its own output path, or delete the previous one first. The renderer refuses
 to overwrite, so a second round pointed at the same file fails with `output already exists`
@@ -312,6 +336,19 @@ classifier the only instrument left for it is a human ear: say that in the hando
 than reporting the edit as verified. It is the one check that cannot be read off any text.
 
 #### Working a round
+
+**A whole-file transcript averages. Re-transcribe the passage.** A model reading ninety
+seconds collapses three attempts at the same line into one, because one line is the likelier
+sentence. The same audio cut to twelve seconds returns all three. When a listener reports
+something the transcript does not show, transcribe just that stretch before concluding the
+transcript is right.
+
+**A mapping between timelines is a claim, not a fact.** Every proposal is written against
+source timings and every finding arrives in master timings, so the two are converted
+constantly and a converted number looks exactly as confident as a measured one. When a
+finding contradicts the mapping, check the mapping first: it is the newer of the two claims.
+Cheapest test is to convert a known landmark and see whether it lands where the audio says it
+does.
 
 **Read `unreviewed` before anything else.** A pass reads what it went looking for, so cuts
 land where the attention was and the stretches between two cuts are where nothing was ever
