@@ -240,6 +240,33 @@ removed and names the next surviving segment, rather than failing.
 The EDL records intent. Only the render says what happened, which is why the two can disagree
 and why `--render` exists.
 
+## say
+
+```bash
+vcut say cut.mp4 --transcript cut.srt --at 50.2
+vcut say cut.mp4 --transcript cut.srt --at 50.2 --edl edl.json --window 3
+```
+
+Reads back what is spoken at a position, with the level there and, with `--edl`, which
+segment it falls in.
+
+```
+at 50.200               la verdad. Venimos construyendo bien duro y
+level                   peak -1.2 dB, mean -16.5 dB
+segment                 segment-020, source 84.239
+```
+
+**Do not answer this by cutting a slice and transcribing it.** A window shorter than a couple
+of seconds comes back as noise no matter what the audio holds, so a nonsense result proves
+nothing: it looks exactly the same whether the audio is speech or a mic bump. In one session
+that mistake produced a confident diagnosis of a model hallucination that was not there, and
+about four minutes went into the wrong branch. The transcript already knows what was said;
+this reads it.
+
+A window with **no words but real level** is the case worth stopping on. Something is audible
+that the transcript never saw, which is what `skills/core/scripts/non-speech.py` exists to
+find.
+
 ## Human decision boundary
 
 vcut proposes. The human decides.

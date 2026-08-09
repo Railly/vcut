@@ -18,6 +18,7 @@ import {
   UsageError,
 } from './output.ts'
 import { renderCommand } from './render-edl.ts'
+import { sayCommand } from './say.ts'
 import { semanticCommand } from './semantic.ts'
 
 export const VERSION = '0.3.1'
@@ -32,6 +33,7 @@ Usage:
   vcut semantic export|check [flags] Hand the transcript to a model, take back proposals
   vcut render --edl <path> [flags]   Render an EDL to video
   vcut locate --edl <path> [flags]   Translate between master time and source time
+  vcut say <media> [flags]           Read back what is spoken at a position
   vcut schema [name]                 Print the JSON contract for a command
   vcut skills list|get [name]        Read the bundled agent manual
   vcut doctor                        Check external dependencies
@@ -238,6 +240,25 @@ const CONTRACTS: Record<string, unknown> = {
       'check exits 1 when anything is malformed, and edl build refuses the whole file rather than skipping entries.',
     ],
   },
+  say: {
+    version: SCHEMA_VERSION,
+    command: 'vcut say',
+    output: {
+      atMs: 'integer, the position asked about',
+      windowMs: 'integer, how much context was read',
+      text: 'the words in the window, joined',
+      words: '[{ text, startMs, endMs }]',
+      peakDb: 'number|null, loudest sample in the window. null when no media was given',
+      meanDb: 'number|null',
+      segment: '{ id, sourceMs }|null, only with --edl',
+      warning: 'present when the transcript is not word-level',
+    },
+    notes: [
+      'Reads an existing transcript. vcut never calls a model, here as everywhere else.',
+      'Do not answer this by transcribing a short slice instead: a window under about two seconds returns noise whatever the audio contains, so the result cannot tell a real word from a guess.',
+      'A window with no words but real level is the interesting case: something audible the transcript never saw. That is what the non-speech classifier is for.',
+    ],
+  },
   locate: {
     version: SCHEMA_VERSION,
     command: 'vcut locate',
@@ -390,6 +411,9 @@ export const route = async (argv: string[]): Promise<void> => {
   }
   if (command === 'locate') {
     return locateCommand(rest)
+  }
+  if (command === 'say') {
+    return sayCommand(rest)
   }
   if (command === 'schema') {
     return schemaCommand(rest)
