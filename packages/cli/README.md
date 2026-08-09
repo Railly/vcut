@@ -129,12 +129,14 @@ Tune with `--min-silence` (seconds, default 0.3) and `--margin` (seconds, defaul
 Word-level timestamps mean one cue per word. A normal SRT has one cue per sentence, which is not enough to cut a single word without guessing. vcut tells you when this is the case instead of silently reporting zero.
 
 ```bash
-# with trx, which wraps whisper and handles extraction
-trx transcribe recording.mp4 --words --language es -m large-v3-turbo
-
-# or with whisper-cli directly
-whisper-cli -m ggml-large-v3-turbo.bin -f audio.wav --max-len 1 --output-srt
+whisper-cli -m ggml-large-v3-turbo.bin -f audio.wav -l es \
+  --max-len 1 --split-on-word --output-srt
 ```
+
+`--split-on-word` is not optional. Without it `--max-len 1` cuts at token boundaries, so
+"Crafter" arrives as `Cra` + `fter` and the transcript looks word-level while breaking every
+cut that relies on it. Measured on one recording: 26% of cues were fragments without the flag,
+0% with it. `detect` warns when it sees this.
 
 Ask for a large model. One cue per word means one cue per *token*, and what counts as a token
 depends on the model. On the same three minutes of Spanish, `small` returns 26% of its cues as

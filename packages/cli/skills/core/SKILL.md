@@ -79,8 +79,22 @@ Other flags: `--min-silence` (seconds, default 0.3), `--margin` (seconds, defaul
 **Word clamping needs word-level timestamps**, meaning one cue per word. A sentence-level SRT turns clamping off, with a warning rather than a guess. Generate a usable transcript with either:
 
 ```bash
-trx transcribe recording.mp4 --words --language es -m large-v3-turbo
-whisper-cli -m ggml-large-v3-turbo.bin -f audio.wav --max-len 1 --output-srt
+whisper-cli -m ggml-large-v3-turbo.bin -f audio.wav -l es \
+  --max-len 1 --split-on-word --output-srt
+```
+
+**`--split-on-word` is not optional.** Without it `--max-len 1` cuts at token boundaries, and
+a wrapper that passes only `--max-len` produces a transcript that looks word-level and is not:
+measured on the same recording, 26% of cues arrived as fragments without the flag and 0% with
+it. `detect` reports `wordLevel: true` either way, because it counts cues rather than judging
+them, so the flag is the only thing standing between you and a transcript that quietly breaks
+word clamping and makes the semantic export unreadable.
+
+Check it rather than trust it. A word-level SRT has a leading space on almost every cue, since
+that space is how the model marks where a word begins:
+
+```bash
+grep -c '^ ' words.srt      # should be close to the cue count, not a fraction of it
 ```
 
 **Ask the model to keep the hesitations.** A transcriber cleans by default: it writes what it
@@ -96,11 +110,11 @@ Write the prompt in the language being transcribed and name the sounds that lang
 uses; a list written for one language is noise in another. It recovers some of them, not all,
 which is why the classifier still has a job.
 
-**Ask for a large model.** One cue per word means one cue per *token*, and what counts as a
-token depends on the model. Measured on the same three minutes of Spanish: `small` returns
-26% of its cues as word fragments, splitting "Crafter" into `Cra` + `fter`, while
-`large-v3-turbo` returns 0% and costs 13 seconds. Fragments weaken the word clamping
-that keeps cuts off speech, and they make the semantic export unreadable.
+**Ask for a large model too.** Model size and the split flag are separate causes of the same
+symptom. Measured on three minutes of Spanish: `small` returned 26% of its cues as fragments,
+splitting "Crafter" into `Cra` + `fter`, where `large-v3-turbo` returned 0% and cost 13
+seconds. Fragments weaken the word clamping that keeps cuts off speech, and they make the
+semantic export unreadable.
 
 **detect does not look for filler words, and that is deliberate.** It used to carry a list of six tokens per language. Measured on one Spanish recording, that list caught 3 spans while the finished cut still carried 19 fillers in 332 words. What it missed were ordinary words that happened to carry no meaning in that one sentence, which is most of them and is why no list would have helped.
 

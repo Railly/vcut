@@ -66,6 +66,9 @@ export type Word = {
 export type Transcript = {
   words: Word[]
   wordLevel: boolean
+  // Share of cues that continue a word rather than starting one. Above a few percent the
+  // transcript was split on tokens, which silently weakens every cut that relies on it.
+  fragmentRatio?: number
 }
 
 export type DetectReport = {
@@ -95,6 +98,9 @@ export const PRESET_DB: Record<Preset, number> = {
   clean: -30,
   podcast: -35,
 }
+
+// A handful of fragments is normal on any transcript; a quarter of them is a missing flag.
+const FRAGMENT_WARN_RATIO = 0.1
 
 const DEFAULT_MIN_SILENCE_MS = 300
 const DEFAULT_MARGIN_MS = 100
@@ -178,7 +184,17 @@ export const parseSrt = (content: string): Transcript => {
   }
 
   const multiWordCues = words.filter((word) => word.text.trim().split(/\s+/).length > 1).length
-  return { words, wordLevel: words.length > 0 && multiWordCues === 0 }
+  // One cue per word and one cue per token look identical by cue count, and the difference
+  // decides whether clamping works. A cue that does not open a word is a fragment: whisper
+  // marks a word boundary with a leading space, so a transcript full of cues without one is
+  // split at token boundaries no matter what the flag was called.
+  const fragments = words.filter((word) => word.startsWord !== true).length
+  const fragmentRatio = words.length === 0 ? 0 : fragments / words.length
+  return {
+    words,
+    wordLevel: words.length > 0 && multiWordCues === 0,
+    fragmentRatio,
+  }
 }
 
 // A transcript can outlive the cut it was made from: trim the source afterwards and its tail
@@ -329,7 +345,7 @@ const loadTranscript = (
   warnings: string[],
 ): { transcript: Transcript; path: string | null } => {
   if (path === null) {
-    return { transcript: { words: [], wordLevel: false }, path: null }
+    return { transcript: { words: [], wordLevel: false, fragmentRatio: 0 }, path: null }
   }
   if (!existsSync(path)) {
     throw new Error(`transcript missing: ${path}`)
@@ -337,7 +353,13 @@ const loadTranscript = (
   const transcript = parseSrt(readFileSync(path, 'utf8'))
   if (!transcript.wordLevel) {
     warnings.push(
-      'transcript is not word-level; filler detection skipped. Regenerate with `trx transcribe <input> --words` or `whisper-cli --max-len 1 --output-srt`',
+      'transcript is not word-level; word clamping is off and cuts can land inside a word. Regenerate with `whisper-cli --max-len 1 --split-on-word --output-srt`',
+    )
+  } else if ((transcript.fragmentRatio ?? 0) > FRAGMENT_WARN_RATIO) {
+    // Word-level by cue count and split on tokens in practice, which reads as clean and is
+    // the harder failure: nothing downstream can tell the difference.
+    warnings.push(
+      `${Math.round((transcript.fragmentRatio ?? 0) * 100)}% of transcript cues continue a word rather than starting one, so it was split on tokens. Word clamping will be weak. Regenerate with --split-on-word, and with a large model`,
     )
   }
   return { transcript, path }

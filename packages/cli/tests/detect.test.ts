@@ -148,3 +148,28 @@ describe('withinSource', () => {
     expect(withinSource(candidates, 180_000)).toEqual(candidates)
   })
 })
+
+describe('fragmentRatio', () => {
+  const srt = (cues: string[]): string =>
+    cues.map((text, i) => `${i + 1}\n00:00:0${i},000 --> 00:00:0${i},500\n${text}`).join('\n\n')
+
+  test('reports zero when every cue opens a word', () => {
+    expect(parseSrt(srt([' Hola', ' a', ' todos'])).fragmentRatio).toBe(0)
+  })
+
+  test('counts the cues that continue a word instead of starting one', () => {
+    // What a token split looks like: "Crafter" arrives as two cues, one of them a fragment.
+    expect(parseSrt(srt([' Cra', 'fter', ' Station', ' y'])).fragmentRatio).toBe(0.25)
+  })
+
+  test('still calls a token-split transcript word-level, which is why the ratio exists', () => {
+    // Every cue holds one token and no spaces, so a cue count cannot tell the two apart.
+    const transcript = parseSrt(srt([' Cra', 'fter']))
+    expect(transcript.wordLevel).toBe(true)
+    expect(transcript.fragmentRatio).toBe(0.5)
+  })
+
+  test('reports zero for an empty transcript rather than dividing by nothing', () => {
+    expect(parseSrt('').fragmentRatio).toBe(0)
+  })
+})
