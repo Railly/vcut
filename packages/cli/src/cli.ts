@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-
+import { auditCommand } from './audit-command.ts'
 import { buildEdlCommand } from './build-edl.ts'
 import { detectCommand, positional } from './detect.ts'
 import { run, runInherit } from './exec.ts'
@@ -33,6 +33,7 @@ Usage:
   vcut semantic export|check [flags] Hand the transcript to a model, take back proposals
   vcut render --edl <path> [flags]   Render an EDL to video
   vcut locate --edl <path> [flags]   Translate between master time and source time
+  vcut audit --edl <path> --render <path>  Check a render against the EDL it came from
   vcut say <media> [flags]           Read back what is spoken at a position
   vcut schema [name]                 Print the JSON contract for a command
   vcut skills list|get [name]        Read the bundled agent manual
@@ -259,6 +260,23 @@ const CONTRACTS: Record<string, unknown> = {
       'A window with no words but real level is the interesting case: something audible the transcript never saw. That is what the non-speech classifier is for.',
     ],
   },
+  audit: {
+    version: SCHEMA_VERSION,
+    command: 'vcut audit',
+    output: {
+      segments: 'integer, how many the EDL has',
+      checked: 'integer, how many were long enough to compare',
+      skippedTooShort: 'integer, segments under the minimum window',
+      lookAtBelow: 'number, the correlation below which a segment is reported',
+      suspect: '[{ id, masterMs, sourceMs, correlation, windowMs }], lowest first',
+      checks: 'every comparison, same shape as suspect',
+    },
+    notes: [
+      'Every check the renderer runs is an aggregate: dimensions, frame count, duration. A render whose segments carried the wrong material passes all of them. This compares the audio itself against the source span the EDL points at.',
+      'A low score is a place to look, not a verdict. Envelope correlation is weak over short or quiet windows, and loudness normalisation reshapes quiet passages further. Confirm with vcut say before acting on it.',
+      'Measured on one 22-segment render: 21 boundaries scored above 0.85, and the one below was verified by transcription to carry the right words.',
+    ],
+  },
   locate: {
     version: SCHEMA_VERSION,
     command: 'vcut locate',
@@ -408,6 +426,9 @@ export const route = async (argv: string[]): Promise<void> => {
   }
   if (command === 'render') {
     return renderCommand(rest)
+  }
+  if (command === 'audit') {
+    return auditCommand(rest)
   }
   if (command === 'locate') {
     return locateCommand(rest)
