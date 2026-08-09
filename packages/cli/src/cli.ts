@@ -16,6 +16,7 @@ import {
   UsageError,
 } from './output.ts'
 import { renderCommand } from './render-edl.ts'
+import { semanticCommand } from './semantic.ts'
 
 export const VERSION = '0.1.0'
 export const SCHEMA_VERSION = 1
@@ -26,6 +27,7 @@ Usage:
   vcut <input>                       Shorthand for: vcut detect <input>
   vcut detect <input> [flags]        Find silences, fillers, and review candidates
   vcut edl build [flags]             Turn a detect report into a draft EDL
+  vcut semantic export|check [flags] Hand the transcript to a model, take back proposals
   vcut render --edl <path> [flags]   Render an EDL to video
   vcut schema [name]                 Print the JSON contract for a command
   vcut skills list|get [name]        Read the bundled agent manual
@@ -245,6 +247,9 @@ export const route = async (argv: string[]): Promise<void> => {
       throw new UsageError('Usage: vcut edl build --detect <path> --output <path> --campaign <id>')
     }
     return buildEdlCommand(edlRest)
+  }
+  if (command === 'semantic') {
+    return semanticCommand(rest)
   }
   if (command === 'render') {
     return renderCommand(rest)

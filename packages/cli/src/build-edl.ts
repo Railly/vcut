@@ -16,6 +16,7 @@ import {
   resolveMode,
   UsageError,
 } from './output.ts'
+import { readProposals } from './semantic.ts'
 
 const HELP = `vcut edl build - turn a detect report into a draft edit decision list
 
@@ -32,6 +33,7 @@ Flags:
   --fps <n>             Output frame rate (default: source rate)
   --no-fillers          Cut silences only, ignore filler candidates
   --edge-fade <ms>      Audio ramp at each segment edge (default 50, 0 disables)
+  --semantic <path>     Model proposals from 'vcut semantic'; each lands as material risk
   --json                Force JSON (default when stdout is not a TTY)
   --human               Force the human summary
   --help                Show this message
@@ -88,7 +90,31 @@ export const humanSummary = (summary: BuildSummary): string => {
 }
 
 export type Cut = Interval & {
-  reason: 'silence' | 'filler'
+  reason: 'silence' | 'filler' | 'semantic'
+}
+
+// A segment touching a model-proposed cut carries the risk of that proposal: approving it
+// means agreeing that what was removed next to it was safe to remove. Marking the neighbours
+// is what lets a reviewer find them without reading all 70.
+export const markSemanticRisk = (
+  segments: KeptSegment[],
+  cuts: Cut[],
+  toleranceMs: number,
+): KeptSegment[] => {
+  const edges = cuts
+    .filter((cut) => cut.reason === 'semantic')
+    .flatMap((cut) => [cut.startMs, cut.endMs])
+  if (edges.length === 0) {
+    return segments
+  }
+  return segments.map((segment) => {
+    const touches = edges.some(
+      (edge) =>
+        Math.abs(segment.inMs - edge) <= toleranceMs ||
+        Math.abs(segment.outMs - edge) <= toleranceMs,
+    )
+    return touches ? { ...segment, semanticRisk: 'material' as const } : segment
+  })
 }
 
 export type KeptSegment = {
@@ -99,7 +125,7 @@ export type KeptSegment = {
   reason: string
   handlesMs: { before: number; after: number }
   approval: 'proposed'
-  semanticRisk: 'none'
+  semanticRisk: 'none' | 'low' | 'material'
   crop: null
 }
 
@@ -272,6 +298,7 @@ type CliOptions = {
   fps: number | null
   includeFillers: boolean
   edgeFadeMs: number
+  semanticPath: string | null
 }
 
 // content-factory used 50ms per joint and Hunter approved masters cut with it, so this is
@@ -300,6 +327,7 @@ const parseCli = (args: string[]): CliOptions => {
     fps: numeric('--fps'),
     includeFillers: !args.includes('--no-fillers'),
     edgeFadeMs: edgeFade(numeric('--edge-fade')),
+    semanticPath: value('--semantic') === undefined ? null : resolve(value('--semantic') as string),
   }
 }
 
@@ -382,6 +410,21 @@ export const buildEdlCommand = async (argv: string[]): Promise<void> => {
           .map((cut) => clampToWords(cut, boundaries, report.minSilenceMs))
           .filter((cut): cut is Cut => cut !== null)
 
+  // Refused loudly rather than skipped: a proposal that disappears between check and build
+  // would look like the model chose not to cut there.
+  const semantic =
+    options.semanticPath === null
+      ? { proposals: [], issues: [] }
+      : readProposals(options.semanticPath, report.durationMs)
+  if (semantic.issues.length > 0) {
+    throw new UsageError(
+      `semantic proposals rejected:\n${semantic.issues
+        .map((issue) => `  [${issue.index}] ${issue.problem}`)
+        .join('\n')}`,
+    )
+  }
+  const semanticProposals = semantic.proposals
+
   const probe = await probeSource(report.input)
   const video = probe.streams.find((stream) => stream.codec_type === 'video')
   const audio = probe.streams.find((stream) => stream.codec_type === 'audio')
@@ -393,8 +436,21 @@ export const buildEdlCommand = async (argv: string[]): Promise<void> => {
   const [numerator, denominator] = frameRate.split('/').map(Number)
   const outputFps = options.fps ?? (denominator === 0 ? 30 : numerator / denominator)
 
+  // Semantic spans skip clampToWords on purpose: the model chose those boundaries by
+  // meaning, and snapping them to word edges would undo the judgement being reviewed.
+  const semanticCuts: Cut[] = semanticProposals.map((proposal) => ({
+    startMs: proposal.startMs,
+    endMs: proposal.endMs,
+    reason: 'semantic' as const,
+  }))
+  const allCuts = [...clamped, ...semanticCuts]
+
   const sourceId = slug(report.input.split('/').pop() ?? 'source')
-  const segments = invertToSegments(clamped, probe.durationMs, sourceId, report.marginMs, outputFps)
+  const segments = markSemanticRisk(
+    invertToSegments(allCuts, probe.durationMs, sourceId, report.marginMs, outputFps),
+    semanticCuts,
+    report.marginMs + Math.ceil(1000 / outputFps),
+  )
   assertSegmentCount(segments.length)
 
   const keptMs = segments.reduce((total, segment) => total + segment.outMs - segment.inMs, 0)

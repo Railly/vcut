@@ -61,6 +61,7 @@ export type ReviewCandidate = Interval & {
 
 export type Word = {
   text: string
+  startsWord?: boolean
   startMs: number
   endMs: number
 }
@@ -173,14 +174,21 @@ export const parseSrt = (content: string): Transcript => {
       continue
     }
     const [rawStart, rawEnd] = lines[timeIndex].split('-->')
-    const text = lines
-      .slice(timeIndex + 1)
-      .join(' ')
-      .trim()
+    const raw = lines.slice(timeIndex + 1).join(' ')
+    const text = raw.trim()
     if (text === '') {
       continue
     }
-    words.push({ text, startMs: timestampMs(rawStart), endMs: timestampMs(rawEnd) })
+    // Whisper marks a word boundary with a leading space, and a cue without one continues
+    // the previous word ("Cra" then "fter"). Trimming loses the only evidence of where one
+    // word ends, so it is recorded here; text keeps its trimmed shape for every caller that
+    // matches on it.
+    words.push({
+      text,
+      startsWord: /^\s/.test(raw),
+      startMs: timestampMs(rawStart),
+      endMs: timestampMs(rawEnd),
+    })
   }
 
   const multiWordCues = words.filter((word) => word.text.trim().split(/\s+/).length > 1).length
