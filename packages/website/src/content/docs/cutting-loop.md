@@ -26,17 +26,33 @@ N=1   # bump every round: the renderer refuses to overwrite
 
 vcut edl build --detect detect.json --semantic proposals.json \
   --output cut-$N.mp4 --campaign my-video --edl edl-$N.json
-vcut render --edl edl-$N.json --mode preview
+vcut render --edl edl-$N.json --audio-only --output cut-$N.wav
 
-trx transcribe cut-$N.mp4 --words --language es -m large-v3-turbo
+trx transcribe cut-$N.wav --words --language es -m large-v3-turbo
 
 vcut semantic review --edl edl-$N.json --detect detect.json \
-  --master cut-$N.mp4 --master-transcript cut-$N.srt
+  --master cut-$N.wav --master-transcript <the .srt trx wrote>
 
-python3 skills/core/scripts/non-speech.py cut-$N.mp4 > non-speech-$N.json
+python3 skills/core/scripts/non-speech.py cut-$N.wav > non-speech-$N.json
 ```
 
-Then fold the findings into `proposals.json`, bump `N`, and run it again.
+Then fold the findings into `proposals.json`, bump `N`, and run it again. Render the video once, at the end.
+
+### Iterate on audio
+
+Every question in the round above is about sound: whether a filler survived, whether a boundary clipped a word, whether a pause is still there. The picture cannot answer any of them, and rendering it costs about a hundred times the wall clock. Measured on one 22-segment EDL: **0.25s for the audio against 31.8s with video**, from the same cuts.
+
+`--audio-only` uses the same audio graph the video path uses, edge fades and loudness included, so what you hear while iterating is what the finished file will sound like.
+
+Check the transcript path `trx` reports rather than assuming it: it names the file after its own normalisation step, so the `.srt` beside `cut-1.wav` can arrive as `cut-1_clean.wav.srt`.
+
+### Audit the render before you call it done
+
+```bash
+vcut audit --edl edl-$N.json --render cut-$N.mp4
+```
+
+Everything the renderer validates about itself is an aggregate, so a render whose segments carried the wrong material passes every one of those checks. `audit` compares the audio segment by segment against the source the EDL points at, and names what to inspect. Read the words at any position it flags before believing the number.
 
 ### Transcribe the render every round
 

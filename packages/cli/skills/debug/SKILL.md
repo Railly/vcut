@@ -120,6 +120,31 @@ ffprobe -v error -show_entries format=duration -of csv=p=0 transcribed-audio.wav
 Measured on one 90.538s recording, the audio that reached the model ran 88.966s: **1.572s of
 accumulated drift**, with nothing in the output saying the timeline had changed.
 
+## "The tool did the wrong thing with my input"
+
+**Check your own input first.** Before reporting that a tool mishandled a file or ignored a
+flag, verify that what you handed it is what you think it is.
+
+This trap has the worst record in this file. It was fallen into **twice while writing the very
+commands above**, and both times it produced a bug report against the wrong project.
+
+- A transcript came back with five words for what was believed to be a 90-second recording.
+  The recording was fine; the intermediate `.wav` was **4.096 seconds**, because the ffmpeg
+  extraction that produced it had been truncated and nobody measured it. The tool transcribed
+  the four seconds it was given, correctly.
+- Artifacts landed in the working directory instead of the directory named by a flag. The flag
+  passed was `--output`, which selects an output *format*; the directory flag was
+  `--output-dir`, one hyphen away. The tool did exactly what it was told.
+
+```bash
+ffprobe -v error -show_entries format=duration -of csv=p=0 the-file-you-passed
+<tool> --help | grep -- --the-flag-you-used
+```
+
+Two commands, both faster than writing an issue. A wrong premise produces a report that is
+internally consistent and completely false, and it survives review because every step after
+the premise is sound.
+
 ## When a measurement disagrees with a transcript
 
 Prefer the words. Not because transcripts are more accurate — they are the thing that drifts —

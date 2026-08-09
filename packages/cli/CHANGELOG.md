@@ -2,6 +2,29 @@
 
 Notable changes to `@crafter/vcut`. Entries say what changed and, where it is not obvious, what measurement led to it.
 
+## 0.4.0
+
+Everything here came out of one editing session that took 28 minutes to cut 90 seconds of
+video, and out of measuring where that time went. The answer was not compute: it was that
+several questions an editor asks constantly had no command to ask them with, so each one was
+answered by hand with ffmpeg and arithmetic, and two of those hand-rolled answers were wrong.
+
+### Added
+
+- **`vcut locate`** translates between a position in the master and the source it came from, in either direction. Deriving that mapping by hand is the trap it replaces: accumulating `outMs - inMs` produces a total that can match the rendered file to the millisecond while individual positions land seconds away, with nothing in the agreement to warn you. `--explain` reports the neighbourhood a position sits in; `--render <path>` measures the file rather than trusting the EDL, which records intent. Asking about material that was cut reports it as removed with the next surviving segment, rather than failing.
+- **`vcut audit`** compares a render's audio against the source span the EDL points at, segment by segment. Every check the renderer runs on itself is an aggregate, so a render whose segments carried the wrong material passes all of them. It reports rather than fails and stays out of `render`: envelope correlation is weak over short and quiet windows, and a threshold built on it would block good renders. Measured on one 22-segment render: 1.5s to check, 21 segments above 0.85, and the one below was verified by transcription to hold the right words.
+- **`vcut say`** reads back what is spoken at a position, with the level there and, with `--edl`, which segment it falls in. It reads an existing transcript rather than re-transcribing a slice, which removes a trap instead of warning about it: a window under about two seconds transcribes as noise whatever it contains, so a gibberish result cannot tell a real word from a model's guess. vcut still never calls a model.
+- **`vcut render --audio-only`** renders the audio alone, for the rounds where every question is about sound. Measured on one 22-segment EDL: **0.25s against 31.8s** for the same cuts. The audio graph is unchanged, edge fades and loudness included, so what you hear is what the finished render will sound like: -16.4 LUFS on both paths. Writes lossless audio, because a codec artifact heard while iterating reads as a defect in the cut. Refused in master mode. The result runs a few tens of milliseconds short of the segment sum (31ms on a 54.6s cut), which is `loudnorm` latency draining trailing decay rather than missing material.
+- **`vcut skills get debug`** documents how to investigate a cut that came out wrong: the question, the method, and the trap that makes the obvious method produce a confident wrong answer. Two of its entries were rediscovered while building the commands that replace them.
+
+### Changed
+
+- **`edl build` warns when a segment opens right after a semantic cut.** That is where the tail of removed speech leaks into a render, and it does not arrive looking like a defect: it arrives as a plausible sentence with the wrong meaning. The condition is the kind of cut, not a distance. Keying it on "the removed span contained words" was the first attempt and it fired on 23 of 24 boundaries, because with word clamping every silence cut brushes the margin around a word.
+- **`detect` warns when a word timestamp contradicts measured energy.** Cues drift toward silence, so clamping can hold a boundary open around a pause the detector correctly found. The symptom reads as a threshold problem and the reflex is to change the preset, which does not move it. There is no filter on the warning: measured on one recording the drift ran from 1318ms down to a median of 246ms with no gap to cut at, so it names the worst case with its position instead of inventing a threshold.
+- **`detect --human` says whether word clamping engaged**, and with how many words. Running with and without `--transcript` used to print the same summary while producing different cuts: 22.74% removed against 19.55% on the same recording.
+- **The manual no longer claims `trx --words` is equivalent to a prompted `whisper-cli`.** It is not: without a prompt the transcript comes back cleaned and the hesitations the manual tells you to keep never reach it. It now points at `trx --preset verbatim`.
+- **The loop in the manual carries its commands**, including running `semantic review` every round rather than at the end. It measures the render instead of the plan, which is the only way a pause that survived the cut becomes visible.
+
 ## 0.3.1
 
 ### Added
