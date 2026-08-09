@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url'
 import { buildEdlCommand } from './build-edl.ts'
 import { detectCommand, positional } from './detect.ts'
 import { run, runInherit } from './exec.ts'
+import { locateCommand } from './locate.ts'
 import {
   emitJson,
   fail,
@@ -30,6 +31,7 @@ Usage:
   vcut edl build [flags]             Turn a detect report into a draft EDL
   vcut semantic export|check [flags] Hand the transcript to a model, take back proposals
   vcut render --edl <path> [flags]   Render an EDL to video
+  vcut locate --edl <path> [flags]   Translate between master time and source time
   vcut schema [name]                 Print the JSON contract for a command
   vcut skills list|get [name]        Read the bundled agent manual
   vcut doctor                        Check external dependencies
@@ -236,6 +238,28 @@ const CONTRACTS: Record<string, unknown> = {
       'check exits 1 when anything is malformed, and edl build refuses the whole file rather than skipping entries.',
     ],
   },
+  locate: {
+    version: SCHEMA_VERSION,
+    command: 'vcut locate',
+    output: {
+      query: '{ masterMs } or { sourceMs }, whichever was asked',
+      sourceMs: 'integer, where the master position came from. Absent when asking the other way',
+      masterMs: 'integer, or null when the source position was cut',
+      removed: 'boolean, only when asking --source. true means the span is not in the master',
+      segment: '{ id, sourceId, sourceInMs, sourceOutMs, masterInMs, masterOutMs }',
+      offsetIntoSegmentMs: 'integer, how far into the segment the position falls',
+      cutBeforeSegmentMs: 'integer|null, source removed immediately before it. --explain only',
+      neighbors: '{ before, after }, the adjacent placements. --explain only',
+      render: '{ agrees, expectedMs, observedMs, deltaMs }, only with --render',
+      segments: 'the whole map, only with --all',
+    },
+    notes: [
+      'The map is derived from the EDL, which records intent rather than what was produced.',
+      'Deriving it by hand is the trap this replaces: the accumulated total can match the rendered file to the millisecond while individual positions land seconds away.',
+      'Pass --render to compare the map against a file that exists. Agreement on the total is necessary, not sufficient.',
+      'A --source position that was cut is reported as removed with the next surviving segment, not as an error.',
+    ],
+  },
   render: {
     version: SCHEMA_VERSION,
     command: 'vcut render',
@@ -361,6 +385,9 @@ export const route = async (argv: string[]): Promise<void> => {
   }
   if (command === 'render') {
     return renderCommand(rest)
+  }
+  if (command === 'locate') {
+    return locateCommand(rest)
   }
   if (command === 'schema') {
     return schemaCommand(rest)
