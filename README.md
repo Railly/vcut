@@ -54,9 +54,16 @@ vcut detect recording.mp4 --preset clean > detect.json
 # 2. Draft an edit decision list
 vcut edl build --detect detect.json --output master.mp4 --campaign my-video
 
-# 3. Preview it, watch it, then render the master
+# 3. Iterate on the audio, which is where the decisions are
+vcut render --edl edl.json --audio-only --output cut.wav
+
+# 4. Preview it, watch it, then render the master
 vcut render --edl edl.json --mode preview
 ```
+
+Step 3 exists because a round of edits asks audio questions and rendering the picture to
+answer them costs about a hundred times the wall clock: measured on one 22-segment EDL,
+**0.25s against 31.8s** for the same cuts.
 
 In a terminal you get a summary:
 
@@ -80,6 +87,9 @@ Piped or captured, the same command emits JSON. No flag needed.
 | `vcut detect <input>` | Silences, filler words, clipping, black and frozen frames |
 | `vcut edl build` | Turns a detect report into a draft edit decision list |
 | `vcut render` | Renders an EDL; preview accepts proposals, master needs approval |
+| `vcut locate --edl` | Translates between master time and source time |
+| `vcut audit --edl --render` | Checks a render's audio against the EDL it came from |
+| `vcut say <media>` | Reads back what is spoken at a position |
 | `vcut schema [name]` | The JSON contract per command, versioned |
 | `vcut skills get vcut` | The bundled agent manual, as markdown |
 | `vcut doctor` | Checks external dependencies |
@@ -127,8 +137,14 @@ contents, so the guidance never drifts from the installed version.
 ```bash
 vcut skills list       # what the installed version ships
 vcut skills get core   # the usage guide, as raw markdown
+vcut skills get debug  # how to investigate a cut that came out wrong
 vcut schema detect     # the JSON contract, versioned
 ```
+
+`debug` is worth reading before diagnosing anything. Every method in it is cheap; none of
+them is the obvious one. It exists because for each question there is a more rigorous-looking
+instrument that cannot tell the hypotheses apart, and reaching for it is how confident wrong
+answers get written down.
 
 JSON is emitted automatically when stdout is not a TTY, so an agent never needs `--json`. Data goes to stdout, diagnostics to stderr. Exit code 2 means the invocation was wrong, 1 means the run failed.
 

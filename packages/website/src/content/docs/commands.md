@@ -12,6 +12,9 @@ vcut detect <input> [flags]        Find silences and review candidates
 vcut edl build [flags]             Turn a detect report into a draft EDL
 vcut semantic export|check|review  Hand the transcript to a model, take back proposals
 vcut render --edl <path> [flags]   Render an EDL to video
+vcut locate --edl <path> [flags]   Translate between master time and source time
+vcut audit --edl <path> --render <path>  Check a render against the EDL it came from
+vcut say <media> [flags]           Read back what is spoken at a position
 vcut schema [name]                 Print the JSON contract for a command
 vcut skills list|get [name]        Read the bundled agent manual
 vcut doctor                        Check external dependencies
@@ -131,11 +134,65 @@ vcut render --edl edl.json --mode preview
 | `--edl <path>` | required | The EDL to render |
 | `--output <path>` | from EDL | Override the output path |
 | `--mode <name>` | `preview` | `preview` or `master` |
+| `--audio-only` | off | Render the audio alone, for iterating |
 | `--dry-run` | off | Print the ffmpeg command without running it |
 
 `preview` accepts proposed segments. `master` refuses unless the EDL is approved, every segment is approved, every source hash still matches, and the output path is free. It will not overwrite.
 
 After rendering, vcut probes the file it produced and validates it against the EDL. A mismatch fails the run instead of shipping a bad file.
+
+**Iterate with `--audio-only`.** Nearly every question a round of edits asks is about sound, and answering it through the video path re-encodes every frame for nothing. Measured on one 22-segment EDL: **0.25s against 31.8s** for the same cuts. The audio graph is unchanged, edge fades and loudness included, so what you hear is what the finished render will sound like: -16.4 LUFS on both paths from the same EDL. It writes lossless audio, because a codec artifact heard while iterating reads as a defect in the cut. Refused in `master` mode.
+
+The result runs a few tens of milliseconds short of the segment sum (31ms on a 54.6s cut). That is `loudnorm` latency draining trailing decay, not missing material; a video render hides it because the picture sets the container duration.
+
+### vcut locate
+
+```bash
+vcut locate --edl edl.json --master 50.2 --explain
+vcut locate --edl edl.json --source 80.07
+vcut locate --edl edl.json --all
+```
+
+Translates between a position in the master and the source it came from.
+
+**Do not derive this by hand.** Accumulating `outMs - inMs` across segments gives a total that can match the rendered file to the millisecond while individual positions land seconds away, and nothing in that agreement warns you. `--explain` reports the neighbourhood a position sits in, and `--render <path>` measures the file rather than trusting the EDL, which records intent.
+
+```
+master 50.200           -> source 84.239  (segment-020)
+segment                 source 83.942-85.308, 0.297 in
+previous                segment-019 ends master 49.903
+cut before it           0.367 of source removed
+```
+
+Asking `--source` about material that was cut reports it as removed with the next surviving segment, rather than failing.
+
+### vcut audit
+
+```bash
+vcut audit --edl edl.json --render cut.mp4
+```
+
+Every check the renderer runs on itself is an aggregate: dimensions, frame count, duration. A render whose segments carried the wrong material passes all of them, because the durations are right whatever ended up inside them. This compares the audio itself, segment by segment, against the source span the EDL points at.
+
+```
+audit  22 of 22 segments compared
+  agreeing         21 at or above 0.8 correlation
+  segment-022      correlation 0.330 at master 52.186 (source 86.842)
+```
+
+**A low score is a place to look, not a verdict.** Envelope correlation is weak over short or quiet windows, and loudness normalisation lifts quiet passages by several dB. On the run above, the segment that scored low was carrying exactly the right words. It reports rather than fails, and stays out of `render`, for that reason.
+
+### vcut say
+
+```bash
+vcut say cut.mp4 --transcript cut.srt --at 50.2 --edl edl.json
+```
+
+Reads back what is spoken at a position, with the level there and, with `--edl`, which segment it falls in.
+
+**Do not answer this by transcribing a short slice.** A window under about two seconds comes back as noise regardless of what the audio holds, so a nonsense result cannot tell a real word from a model's guess. This reads the transcript that already exists; vcut never calls a model.
+
+A window with no words but real level is the case worth stopping on: something audible the transcript never saw, which is what the non-speech classifier is for.
 
 ### vcut schema
 
