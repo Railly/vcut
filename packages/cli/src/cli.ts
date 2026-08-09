@@ -140,7 +140,7 @@ const SETUP_HELP = `vcut setup - fetch the optional non-speech classifier
 Usage:
   vcut setup classifier [--force]
 
-Downloads the AudioSet model that skills/non-speech.py uses to find breaths, mic bumps and
+Downloads the AudioSet model that skills/core/scripts/non-speech.py uses to find breaths, mic bumps and
 other audible sound that is not language. Around 320MB, kept under ~/.vcut/panns.
 
 Nothing else in vcut needs it: detect, edl build and render all run without it. Skipping this
@@ -228,7 +228,7 @@ const CONTRACTS: Record<string, unknown> = {
     notes: [
       'vcut never calls a model. Export hands over the lines; you write the proposals back.',
       'A proposal is { startMs, endMs, kind, reason }, kind being false-start | repetition | tangent | filler | non-speech.',
-      'non-speech covers audible sound that is not language, which neither detect nor the transcript can see. skills/non-speech.py finds those with an audio classifier and prints them in this schema.',
+      'non-speech covers audible sound that is not language, which neither detect nor the transcript can see. skills/core/scripts/non-speech.py finds those with an audio classifier and prints them in this schema.',
       'Feed accepted proposals to vcut edl build --semantic <path>. Each lands as semanticRisk material.',
       'check exits 1 when anything is malformed, and edl build refuses the whole file rather than skipping entries.',
     ],
@@ -272,11 +272,18 @@ const skillsCommand = (argv: string[]): void => {
   if (verb === undefined || verb === 'list') {
     const entries = readdirSync(directory, { withFileTypes: true })
     const names = entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name)
-    // Scripts ship beside the guides and are useless if a caller cannot find out they exist.
-    // Listing them here is the difference between an optional tool and a hidden one.
-    const scripts = entries
-      .filter((entry) => entry.isFile() && !entry.name.endsWith('.md'))
-      .map((entry) => ({ name: entry.name, path: join(directory, entry.name) }))
+    // A skill owns its scripts, in <skill>/scripts, which is where the agent-skills layout
+    // puts them. Listing them is the difference between an optional tool and a hidden one:
+    // a caller asking what is available would otherwise never learn the script exists.
+    const scripts = names.flatMap((name) => {
+      const dir = join(directory, name, 'scripts')
+      if (!existsSync(dir)) {
+        return []
+      }
+      return readdirSync(dir, { withFileTypes: true })
+        .filter((entry) => entry.isFile())
+        .map((entry) => ({ skill: name, name: entry.name, path: join(dir, entry.name) }))
+    })
     if (mode === 'json') {
       emitJson({ skills: names, scripts })
       return
@@ -289,7 +296,7 @@ const skillsCommand = (argv: string[]): void => {
           ? []
           : [
               heading('bundled scripts'),
-              ...scripts.map((script) => line(script.name, script.path)),
+              ...scripts.map((script) => line(`${script.skill}/${script.name}`, script.path)),
             ]),
       ].join('\n'),
     )

@@ -277,7 +277,7 @@ vcut semantic review --edl edl-$N.json --detect detect.json \
   --master cut-$N.mp4 --master-transcript cut-$N.srt
 
 # 4. Audible sound that is not language
-python3 skills/non-speech.py cut-$N.mp4 > non-speech-$N.json
+python3 skills/core/scripts/non-speech.py cut-$N.mp4 > non-speech-$N.json
 
 # 5. Fold findings back into proposals.json, bump N, repeat from 1
 ```
@@ -408,7 +408,7 @@ instruments. The silence pass hears energy and calls it speech. The transcript h
 for it, and the model stretches a neighbouring cue over it, so it ends up inside a word's
 span rather than beside it.
 
-`skills/non-speech.py` finds them and prints `kind: "non-speech"` proposals. It runs on the
+`skills/core/scripts/non-speech.py` finds them and prints `kind: "non-speech"` proposals. It runs on the
 **rendered preview**, not the source: on raw footage every pause scores as non-speech,
 correctly and uselessly, while on a finished cut only real intrusions are left.
 
