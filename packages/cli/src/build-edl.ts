@@ -63,6 +63,13 @@ export const matchTarget = (removalPercent: number): string => {
   const hits = TARGET_RANGES.filter(
     (range) => removalPercent >= range.low && removalPercent <= range.high,
   )
+  // Missing every range says nothing about which side you missed it on, and the two mean
+  // opposite things: too little removed is an untouched source, too much is an edit that
+  // took the speaker's thinking out with the dead air.
+  const ceiling = Math.max(...TARGET_RANGES.map((range) => range.high))
+  if (hits.length === 0 && removalPercent > ceiling) {
+    return `above every target range; check the cuts kept the speaker's meaning`
+  }
   return hits.length === 0
     ? 'below every target range; the source may already be edited'
     : `in range for ${hits.map((range) => range.label).join(', ')}`

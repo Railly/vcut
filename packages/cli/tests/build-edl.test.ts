@@ -4,6 +4,7 @@ import {
   type Cut,
   clampToWords,
   invertToSegments,
+  matchTarget,
   mergeIntervals,
   snapToFrame,
   wordBoundaries,
@@ -257,5 +258,19 @@ describe('absorbSlivers', () => {
       60,
     )
     expect(segments).toHaveLength(2)
+  })
+})
+
+describe('matchTarget bounds', () => {
+  test('says above, not below, when more was removed than any range allows', () => {
+    expect(matchTarget(45.4)).toContain('above every target range')
+  })
+
+  test('still says below when the source barely moved', () => {
+    expect(matchTarget(2)).toContain('below every target range')
+  })
+
+  test('names the range at its exact ceiling', () => {
+    expect(matchTarget(45)).toContain('event or interview')
   })
 })

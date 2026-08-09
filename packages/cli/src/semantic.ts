@@ -226,10 +226,15 @@ const INSTRUCTIONS = [
   'false-start: the speaker restarts a sentence. Cut the abandoned attempt, keep the one that lands.',
   'repetition: the same point made twice. Keep the clearer telling.',
   'tangent: a digression the speaker leaves and returns from. Only when the thread survives without it.',
-  'filler: a discourse marker carrying no meaning here. The same word can be load-bearing elsewhere, so judge it in context.',
+  'filler: a discourse marker carrying no meaning here. The hardcoded list finds a handful of obvious tokens and misses the rest, so this is your job, in any language: mark the ones that carry nothing in that sentence and leave the ones doing work. The same word is filler in one clause and content in the next.',
   'reason is read by a human deciding whether to approve. Say what is lost, not what rule matched.',
   'Never cut the end of a sentence whose start you kept, or the answer to a question you kept.',
   'Propose nothing when nothing should go. An empty array is a valid answer.',
+  'Before proposing, list what the recording actually says. One idea told three times is one idea and two cuts, however far apart they sit: distance is not evidence they differ, and a listener hears them together at speed even when the transcript spreads them over a minute.',
+  'Keep the best telling, not the first. The clearest version is usually the last, after the speaker worked out how to say it.',
+  'A span covering a whole paragraph is normal. False starts and restatements run ten or fifteen seconds. If every span you propose is a few hundred milliseconds, you found fillers and missed the redundancy.',
+  'Cut to the end of the clause. Half a sentence surviving its own cut is worse than leaving the passage whole.',
+  'The failure mode is politeness: reading this as an argument to preserve rather than a recording to edit. The human can refuse any cut and it is their voice, so under-proposing takes the decision away from them just as much as over-cutting, only silently.',
 ]
 
 export type SurvivingLine = Line & {

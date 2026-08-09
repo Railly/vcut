@@ -56,7 +56,11 @@ compares whole tokens, and they weaken the word clamping that keeps cuts off spe
 
 Do not report zero fillers as a clean result when the warning is present. Regenerate the transcript and run detect again.
 
-**A filler list matches tokens, not intent.** Spanish `este` is a filler in "y este, entonces" and an ordinary demonstrative in "en este caso"; the detector cannot tell them apart, and cutting the second one mutilates the sentence. Read the filler hits before approving them. This is why they land as `proposed`.
+**The filler list is a floor, not the feature.** It holds six tokens per language, hardcoded, and it will never hold the ones that matter most. Measured on one Spanish recording: the detector found 3 fillers, all `o sea`, while the finished cut still carried 19 in 332 words. `bueno`, `claro`, `¿no?`, `de hecho`, `entonces` and `nada` were every bit as much filler and none of them are on any list, because they are ordinary words that happen to carry no meaning in that sentence.
+
+A list also cannot tell them apart from real use. Spanish `este` is filler in "y este, entonces" and a demonstrative in "en este caso"; `claro` is filler in "y claro, entonces" and an answer on its own. That is why hits land as `proposed`, and why the list can never be extended into a solution: the same token is filler or content depending on the clause around it, and no list has clauses in it.
+
+**Fillers are the model's job, through `vcut semantic`.** Read the exported lines, mark the discourse markers that carry nothing *in that sentence*, and leave the ones doing work. This is also the only approach that survives a language nobody wrote a list for.
 
 `review` entries (clipping, black frames, frozen frames) are candidates for a human to look at. They are never cut automatically.
 
@@ -144,6 +148,38 @@ refusal.
 
 `reason` is read by a human deciding whether to approve. Say what is lost, not what rule
 matched. Proposing nothing is a valid answer.
+
+### How hard to cut
+
+The failure mode here is not cutting something precious. It is being polite: reading the
+transcript as an argument to preserve rather than a recording to edit, and leaving the work
+undone while reporting it finished.
+
+It happened on the run this guidance came from. The speaker made one point, that Crafter
+Station would have grown differently in Argentina, and made it three times, forty seconds
+apart. Each telling read as a separate beat of the argument, so only one was cut. Heard back
+at speed, all three said the same thing and the listener noticed immediately.
+
+Hold this bar:
+
+- **Count the idea, not the sentence.** Before proposing, list what the recording actually
+  says. If one idea appears three times across the transcript, that is one idea and two cuts,
+  however far apart they sit. Distance between them is not evidence they differ.
+- **Keep the best telling, not the first.** The clearest version is often the last one, after
+  the speaker has worked out how to say it. Cut the rehearsals.
+- **A whole paragraph is a normal proposal.** False starts and restatements run for ten or
+  fifteen seconds. A span that only ever covers a few hundred milliseconds means fillers were
+  found and redundancy was not.
+- **Cut to the end of the clause.** Half a sentence surviving its own cut is worse than
+  leaving the passage whole.
+- **Check the target range.** `edl build` prints what the removal percentage is in range for.
+  Raw speech landing in "scripted talking head" usually means the semantic pass was timid,
+  not that the recording was already tight.
+
+The counterweight is real and it is the human's, not yours: it is their voice, and a cut that
+strips the thinking out of a reflection makes it sound like a script. Propose the cut, say
+what is lost in `reason`, and let them refuse it. Under-proposing takes that decision away
+from them just as much as over-cutting does, only silently.
 
 ## Limits
 
