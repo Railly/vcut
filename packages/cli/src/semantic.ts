@@ -2,24 +2,31 @@ import { existsSync, readFileSync } from 'node:fs'
 
 import type { DetectReport, Interval, Transcript, Word } from './detect.ts'
 import { parseSrt } from './detect.ts'
+import { run } from './exec.ts'
 import { emitJson, UsageError } from './output.ts'
 
 const HELP = `vcut semantic - hand the transcript to a model, take back cut proposals
 
 Usage:
-  vcut semantic export --detect <path> [flags]
+  vcut semantic export --detect <path>
   vcut semantic check --proposals <path> --detect <path>
+  vcut semantic review --edl <path> --detect <path>
 
 Flags:
   --detect <path>       Report produced by detect (required)
   --proposals <path>    Proposals to validate (check only)
+  --edl <path>          EDL to read back (review only)
   --help                Show this message
 
 Both subcommands emit JSON: the reader is an agent, not a terminal.
 
 vcut never calls a model. Export gives an agent numbered lines with timings; the
 agent writes proposals back as JSON, and 'vcut edl build --semantic <path>' folds
-them in. Every proposed cut lands as semanticRisk material and stays unapproved.`
+them in. Every proposed cut lands as semanticRisk material and stays unapproved.
+
+review closes the loop: it reads an EDL back and returns the transcript as it
+survives the cuts, so the agent judges the result a viewer hears rather than the
+plan it wrote.`
 
 // Whisper with --max-len 1 emits BPE pieces, not words: "Crafter" arrives as "Cra" + "fter".
 // A model reasoning over raw cues sees fragments and proposes cuts against text nobody
@@ -222,6 +229,158 @@ const INSTRUCTIONS = [
   'Propose nothing when nothing should go. An empty array is a valid answer.',
 ]
 
+export type SurvivingLine = Line & {
+  keptMs: number
+  truncated: boolean
+  precededByCut: boolean
+}
+
+export type DeadAir = {
+  segmentId: string
+  startMs: number
+  endMs: number
+  detail: string
+}
+
+// What a viewer actually hears, which is not what the proposals described. Each cut is sound
+// on its own, and the run of them is what breaks: a sentence whose start survives and whose
+// end went, a pronoun whose antecedent left, two clauses that now collide. Rebuilding the
+// transcript from the segments is the only way to read the result rather than the intent.
+export const survivingLines = (lines: Line[], segments: Interval[]): SurvivingLine[] => {
+  const kept: SurvivingLine[] = []
+
+  for (const [index, line] of lines.entries()) {
+    const overlaps = segments
+      .map((segment) => ({
+        startMs: Math.max(line.startMs, segment.startMs),
+        endMs: Math.min(line.endMs, segment.endMs),
+      }))
+      .filter((overlap) => overlap.endMs > overlap.startMs)
+    if (overlaps.length === 0) {
+      continue
+    }
+    const keptMs = overlaps.reduce((total, overlap) => total + (overlap.endMs - overlap.startMs), 0)
+    const previous = lines[index - 1]
+    kept.push({
+      ...line,
+      keptMs,
+      truncated: keptMs < line.endMs - line.startMs,
+      // A line whose predecessor is gone is where the join lands, and where a broken
+      // transition would be heard.
+      precededByCut:
+        previous !== undefined &&
+        !segments.some(
+          (segment) => previous.endMs > segment.startMs && previous.endMs <= segment.endMs,
+        ),
+    })
+  }
+  return kept
+}
+
+// A segment that is mostly measured silence is a pause the cut left behind: the speech on
+// both sides went and the quiet between them stayed. It is what a viewer calls a gap for no
+// reason.
+//
+// Judged against the silences the detector measured, not the transcript. Whisper stretches
+// each cue to the next word, so a cue routinely covers the pause that follows it and a span
+// of dead air still looks like it holds a word. Audio energy is the evidence here.
+export const silentSegments = (
+  segments: Array<Interval & { id: string }>,
+  silences: Interval[],
+  minMs: number,
+): DeadAir[] =>
+  segments
+    .filter((segment) => segment.endMs - segment.startMs >= minMs)
+    .map((segment) => {
+      const quietMs = silences.reduce((total, silence) => {
+        const overlap =
+          Math.min(segment.endMs, silence.endMs) - Math.max(segment.startMs, silence.startMs)
+        return overlap > 0 ? total + overlap : total
+      }, 0)
+      return { segment, quietMs, spanMs: segment.endMs - segment.startMs }
+    })
+    .filter(({ quietMs, spanMs }) => quietMs / spanMs >= 0.5)
+    .map(({ segment, quietMs, spanMs }) => ({
+      segmentId: segment.id,
+      startMs: segment.startMs,
+      endMs: segment.endMs,
+      detail: `${spanMs}ms segment, ${quietMs}ms of it measured silence`,
+    }))
+
+// The detector cuts by threshold, so a passage just above it survives whole even when it
+// carries almost nothing. Between two cuts that is heard as a gap rather than as speech: the
+// audio around it was removed for being quiet and this stayed for being marginally less so.
+//
+// Judged against the other survivors, not against a fixed dB value, because the floor depends
+// on the mic, the room, and how close the speaker sat. A segment far below its own recording's
+// median is the outlier worth a listen. Reported, never cut: only a listener can tell a held
+// breath from a word said softly.
+export const quietSegments = (
+  levels: Array<{ id: string; startMs: number; endMs: number; meanDb: number }>,
+  belowMedianDb: number,
+): DeadAir[] => {
+  const usable = levels.filter((level) => Number.isFinite(level.meanDb))
+  if (usable.length < 3) {
+    return []
+  }
+  const sorted = [...usable].map((level) => level.meanDb).sort((left, right) => left - right)
+  const median = sorted[Math.floor(sorted.length / 2)]
+  return usable
+    .filter((level) => median - level.meanDb >= belowMedianDb)
+    .map((level) => ({
+      segmentId: level.id,
+      startMs: level.startMs,
+      endMs: level.endMs,
+      detail: `${level.meanDb.toFixed(1)} dB against a ${median.toFixed(1)} dB median for this recording`,
+    }))
+}
+
+// Measured on this corpus: the one segment a listener flagged as an unexplained gap sat
+// 16 dB under the median while every other survivor stayed within 6.
+const QUIET_BELOW_MEDIAN_DB = 12
+
+const segmentLevels = async (
+  input: string,
+  segments: Array<Interval & { id: string }>,
+): Promise<Array<{ id: string; startMs: number; endMs: number; meanDb: number }>> =>
+  Promise.all(
+    segments.map(async (segment) => {
+      const { stderr } = await run('ffmpeg', [
+        '-hide_banner',
+        '-nostats',
+        '-ss',
+        (segment.startMs / 1000).toFixed(3),
+        '-t',
+        ((segment.endMs - segment.startMs) / 1000).toFixed(3),
+        '-i',
+        input,
+        '-af',
+        'volumedetect',
+        '-f',
+        'null',
+        '-',
+      ])
+      const match = stderr.match(/mean_volume:\s*(-?[\d.]+)/)
+      return {
+        id: segment.id,
+        startMs: segment.startMs,
+        endMs: segment.endMs,
+        meanDb: match === null ? Number.NaN : Number(match[1]),
+      }
+    }),
+  )
+
+const REVIEW_INSTRUCTIONS = [
+  'These are the lines that survive the cuts, in the order a viewer hears them. Read the result, not the plan.',
+  'Return a JSON array of problems, nothing else. Each entry: {"lineIndex": number, "problem": string, "fix": string}.',
+  'precededByCut marks a join: the line before it was removed. That is where a transition breaks.',
+  'truncated marks a line the cuts entered: part of it is gone, so check the half that stayed still parses.',
+  'Look for a sentence whose start survived and whose end did not, a pronoun whose antecedent was cut, two clauses that now collide, and an idea that still repeats after the cuts.',
+  'deadAir lists segments that survived carrying no words. Those are pauses left stranded by a cut, and each one is a gap the viewer hears for no reason.',
+  'fix says what to do: extend a cut, shorten it, restore a span. Give timings when you can.',
+  'Report nothing when the result reads clean. An empty array is a valid answer.',
+]
+
 export const semanticCommand = async (argv: string[]): Promise<void> => {
   if (argv.includes('--help') || argv.length === 0) {
     process.stdout.write(`${HELP}\n`)
@@ -242,6 +401,42 @@ export const semanticCommand = async (argv: string[]): Promise<void> => {
       durationMs: report.durationMs,
       lang: report.lang,
       instructions: INSTRUCTIONS,
+      lines,
+    })
+    return
+  }
+
+  if (subcommand === 'review') {
+    const report = readReport(value('--detect'))
+    const edlPath = value('--edl')
+    if (edlPath === undefined) {
+      throw new UsageError(HELP)
+    }
+    if (!existsSync(edlPath)) {
+      throw new UsageError(`edl missing: ${edlPath}`)
+    }
+    const edl = JSON.parse(readFileSync(edlPath, 'utf8')) as {
+      segments: Array<{ id: string; inMs: number; outMs: number }>
+    }
+    const segments = edl.segments.map((segment) => ({
+      id: segment.id,
+      startMs: segment.inMs,
+      endMs: segment.outMs,
+    }))
+    const words = joinWords(loadTranscript(report))
+    const lines = survivingLines(buildLines(words, report.silences, LINE_BREAK_MS), segments)
+    const deadAir = [
+      ...silentSegments(segments, report.silences, report.minSilenceMs),
+      ...quietSegments(await segmentLevels(report.input, segments), QUIET_BELOW_MEDIAN_DB),
+    ]
+    const keptMs = segments.reduce((total, segment) => total + (segment.endMs - segment.startMs), 0)
+    emitJson({
+      status: 'exported',
+      input: report.input,
+      sourceDurationMs: report.durationMs,
+      resultDurationMs: keptMs,
+      instructions: REVIEW_INSTRUCTIONS,
+      deadAir,
       lines,
     })
     return

@@ -1,6 +1,13 @@
 import { describe, expect, test } from 'bun:test'
 import { parseSrt } from '../src/detect.ts'
-import { buildLines, joinWords, validateProposals } from '../src/semantic.ts'
+import {
+  buildLines,
+  joinWords,
+  quietSegments,
+  silentSegments,
+  survivingLines,
+  validateProposals,
+} from '../src/semantic.ts'
 
 const srt = (entries: Array<[string, string, string]>): string =>
   entries
@@ -134,5 +141,99 @@ describe('validateProposals', () => {
 
   test('an empty array is a valid answer', () => {
     expect(validateProposals([], 5_000)).toEqual({ proposals: [], issues: [] })
+  })
+})
+
+describe('survivingLines', () => {
+  const lines = [
+    { index: 1, startMs: 0, endMs: 1_000, text: 'primera' },
+    { index: 2, startMs: 1_000, endMs: 2_000, text: 'segunda' },
+    { index: 3, startMs: 2_000, endMs: 3_000, text: 'tercera' },
+  ]
+
+  test('drops a line the cuts removed entirely', () => {
+    const kept = survivingLines(lines, [
+      { startMs: 0, endMs: 1_000 },
+      { startMs: 2_000, endMs: 3_000 },
+    ])
+    expect(kept.map((line) => line.index)).toEqual([1, 3])
+  })
+
+  test('marks the line after a removed one as a join', () => {
+    const kept = survivingLines(lines, [
+      { startMs: 0, endMs: 1_000 },
+      { startMs: 2_000, endMs: 3_000 },
+    ])
+    expect(kept.find((line) => line.index === 3)?.precededByCut).toBe(true)
+  })
+
+  test('does not call an untouched sequence a join', () => {
+    const kept = survivingLines(lines, [{ startMs: 0, endMs: 3_000 }])
+    expect(kept.every((line) => !line.precededByCut)).toBe(true)
+  })
+
+  test('flags a line the cuts entered', () => {
+    const kept = survivingLines(lines, [{ startMs: 0, endMs: 1_500 }])
+    expect(kept.find((line) => line.index === 2)?.truncated).toBe(true)
+    expect(kept.find((line) => line.index === 1)?.truncated).toBe(false)
+  })
+})
+
+describe('silentSegments', () => {
+  const segment = (id: string, startMs: number, endMs: number) => ({ id, startMs, endMs })
+
+  test('reports a segment that is mostly measured silence', () => {
+    const found = silentSegments([segment('s1', 0, 1_000)], [{ startMs: 100, endMs: 900 }], 300)
+    expect(found).toHaveLength(1)
+    expect(found[0].detail).toContain('800ms of it measured silence')
+  })
+
+  test('leaves a segment carrying speech alone', () => {
+    expect(
+      silentSegments([segment('s1', 0, 1_000)], [{ startMs: 0, endMs: 200 }], 300),
+    ).toHaveLength(0)
+  })
+
+  test('ignores a segment too short to be worth reporting', () => {
+    expect(silentSegments([segment('s1', 0, 200)], [{ startMs: 0, endMs: 200 }], 300)).toHaveLength(
+      0,
+    )
+  })
+})
+
+describe('quietSegments', () => {
+  const level = (id: string, meanDb: number) => ({ id, startMs: 0, endMs: 1_000, meanDb })
+
+  test('reports the segment far below the median of its own recording', () => {
+    const found = quietSegments(
+      [level('s1', -25), level('s2', -26), level('s3', -24), level('s4', -42)],
+      12,
+    )
+    expect(found.map((entry) => entry.segmentId)).toEqual(['s4'])
+  })
+
+  test('reports nothing when every segment sits near the median', () => {
+    expect(quietSegments([level('s1', -25), level('s2', -26), level('s3', -24)], 12)).toHaveLength(
+      0,
+    )
+  })
+
+  test('scales with the recording rather than a fixed threshold', () => {
+    // A quiet recording overall: -40 is the norm here, so it is not an outlier.
+    expect(quietSegments([level('s1', -40), level('s2', -41), level('s3', -39)], 12)).toHaveLength(
+      0,
+    )
+  })
+
+  test('stays silent when there is not enough to compare against', () => {
+    expect(quietSegments([level('s1', -60), level('s2', -20)], 12)).toHaveLength(0)
+  })
+
+  test('ignores a segment whose level could not be measured', () => {
+    const found = quietSegments(
+      [level('s1', -25), level('s2', -26), level('s3', -24), level('s4', Number.NaN)],
+      12,
+    )
+    expect(found).toHaveLength(0)
   })
 })
