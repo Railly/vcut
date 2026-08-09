@@ -347,6 +347,9 @@ export const quietSegments = (
 // Longer than a breath between clauses, short enough to catch a pause that stalls the video.
 const GAP_MS = 600
 
+// Two cuts closer than this leave nothing between them worth a second look.
+const UNREVIEWED_MS = 2_000
+
 // Measured on this corpus: the one segment a listener flagged as an unexplained gap sat
 // 16 dB under the median while every other survivor stayed within 6.
 const QUIET_BELOW_MEDIAN_DB = 12
@@ -382,6 +385,61 @@ const segmentLevels = async (
     }),
   )
 
+// What the EDL removed, which is what the segments do not cover.
+export const gapsBetween = (segments: Interval[]): Interval[] => {
+  const sorted = [...segments].sort((left, right) => left.startMs - right.startMs)
+  const gaps: Interval[] = []
+  for (let index = 0; index < sorted.length - 1; index += 1) {
+    if (sorted[index + 1].startMs > sorted[index].endMs) {
+      gaps.push({ startMs: sorted[index].endMs, endMs: sorted[index + 1].startMs })
+    }
+  }
+  return gaps
+}
+
+// A pass reads what it went looking for. Cuts land where attention was, and the stretches
+// between two cuts are where nothing was ever read: they look reviewed because their
+// neighbours are, which is exactly why a marker can survive four rounds sitting between two
+// spans that were both examined closely.
+//
+// This names them. Not a defect on its own, since a long clean passage is also a long gap
+// between cuts, but it is the list of places a pass has evidence of having skipped.
+export const unreviewedStretches = (
+  lines: Line[],
+  cuts: Interval[],
+  minMs: number,
+): Array<{ startMs: number; endMs: number; text: string }> => {
+  const sorted = [...cuts].sort((left, right) => left.startMs - right.startMs)
+  if (sorted.length === 0) {
+    return []
+  }
+  const stretches: Array<{ startMs: number; endMs: number; text: string }> = []
+
+  for (let index = 0; index < sorted.length - 1; index += 1) {
+    const from = sorted[index].endMs
+    const to = sorted[index + 1].startMs
+    if (to - from < minMs) {
+      continue
+    }
+    // A line belongs to the stretch its middle falls in. Asking for containment loses almost
+    // everything, since a line rarely fits between two cuts; asking for overlap pulls in the
+    // long line on either side and reports the whole recording.
+    const inside = lines.filter((line) => {
+      const middle = (line.startMs + line.endMs) / 2
+      return middle >= from && middle < to
+    })
+    if (inside.length === 0) {
+      continue
+    }
+    stretches.push({
+      startMs: from,
+      endMs: to,
+      text: inside.map((line) => line.text).join(' '),
+    })
+  }
+  return stretches
+}
+
 const REVIEW_INSTRUCTIONS = [
   'These are the lines of the edit, in the order a viewer hears them. Read the result, not the plan.',
   'linesFrom says where they came from. "master" means the render was transcribed again, so this is literally what a listener hears, word for word, including any word the cuts left half-spoken. "source" means the original transcript projected onto the surviving spans, which shows the plan and can hide a mangled join.',
@@ -403,6 +461,7 @@ const REVIEW_INSTRUCTIONS = [
   '5. Nothing survives that can be deleted without changing what the sentence says. Delete the candidate, read what remains, and ask whether a listener learns anything less; if not, it goes. This is a deletion test, never a vocabulary: a word list only finds what someone thought to write down and has to be rewritten per language, while asking what a span does in its sentence works on a construction nobody named. Sweep span by span rather than scanning for shapes you recognise, because what you recognise is gone by the second pass and what stays reads as ordinary grammar. Two things fail the test and stay anyway: a word carrying emphasis the speaker meant, and a beat that gives a listener room before a heavy point.',
   '6. The last line lands. Ending on an abandoned start is worse than ending four seconds sooner.',
   'When a false-start survived its own cut, the span was too narrow, not the judgement wrong: widen the existing proposal rather than adding a new one beside it.',
+  'unreviewed lists the stretches between two cuts that no proposal ever touched. They look reviewed because their neighbours were cut, and that is where a marker survives round after round. Read those first and apply the deletion test to every span in them.',
   'Report nothing when the result reads clean and every invariant holds. An empty array is a valid answer, and it is the signal to stop looping.',
 ]
 
@@ -521,6 +580,7 @@ export const semanticCommand = async (argv: string[]): Promise<void> => {
       instructions: REVIEW_INSTRUCTIONS,
       masterMeasured: masterPath !== undefined,
       linesFrom: masterTranscript === undefined ? 'source' : 'master',
+      unreviewed: unreviewedStretches(lines, gapsBetween(segments), UNREVIEWED_MS),
       deadAir,
       lines,
     })

@@ -231,6 +231,12 @@ obvious once you see the attempt that follows it, so the earliest attempts read 
 while you are looking at them and as preamble once the last one is in view. Extending an
 existing span usually removes more than any new cut placed beside it.
 
+**Read `unreviewed` first.** A pass reads what it went looking for, so cuts land where the
+attention was and the stretches between two cuts are where nothing was ever read. They look
+reviewed because their neighbours are, and that is where a marker survives round after round
+while both spans around it get examined closely. `review` lists them; work that list before
+scanning anywhere else.
+
 **Stop when a pass proposes nothing**, not when the removal percentage looks respectable.
 
 ### Invariants

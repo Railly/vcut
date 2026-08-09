@@ -6,11 +6,13 @@ import { parseSrt } from '../src/detect.ts'
 import { run } from '../src/exec.ts'
 import {
   buildLines,
+  gapsBetween,
   joinWords,
   quietSegments,
   renderedGaps,
   silentSegments,
   survivingLines,
+  unreviewedStretches,
   validateProposals,
 } from '../src/semantic.ts'
 
@@ -301,5 +303,70 @@ describe.if(hasFfmpeg)('renderedGaps', () => {
 describe('renderedGaps without a readable file', () => {
   test('returns nothing rather than failing', async () => {
     expect(await renderedGaps('/nonexistent/master.mp4', -30, 600)).toEqual([])
+  })
+})
+
+describe('unreviewedStretches', () => {
+  const lines = [
+    { index: 1, startMs: 0, endMs: 1_000, text: 'primera' },
+    { index: 2, startMs: 4_000, endMs: 5_000, text: 'del medio' },
+    { index: 3, startMs: 9_000, endMs: 10_000, text: 'ultima' },
+  ]
+  const cuts = [
+    { startMs: 1_000, endMs: 2_000 },
+    { startMs: 7_000, endMs: 8_000 },
+  ]
+
+  test('names the stretch nobody proposed anything in', () => {
+    const found = unreviewedStretches(lines, cuts, 2_000)
+    expect(found).toHaveLength(1)
+    expect(found[0]).toMatchObject({ startMs: 2_000, endMs: 7_000, text: 'del medio' })
+  })
+
+  test('assigns a line by its middle, not by overlap', () => {
+    // Overlaps the stretch but is centred inside the second cut, so it belongs to that cut's
+    // edge, which a proposal already looked at.
+    const straddling = [{ index: 1, startMs: 6_000, endMs: 9_000, text: 'a caballo' }]
+    expect(unreviewedStretches(straddling, cuts, 2_000)).toHaveLength(0)
+  })
+
+  test('ignores a stretch too short to hide anything', () => {
+    expect(unreviewedStretches(lines, cuts, 10_000)).toHaveLength(0)
+  })
+
+  test('reports nothing when there are no cuts to sit between', () => {
+    expect(unreviewedStretches(lines, [], 2_000)).toEqual([])
+  })
+
+  test('skips a stretch with no line in it', () => {
+    const sparse = [{ index: 1, startMs: 0, endMs: 500, text: 'solo al principio' }]
+    expect(unreviewedStretches(sparse, cuts, 2_000)).toHaveLength(0)
+  })
+})
+
+describe('gapsBetween', () => {
+  test('returns what the segments do not cover', () => {
+    const gaps = gapsBetween([
+      { startMs: 0, endMs: 1_000 },
+      { startMs: 3_000, endMs: 4_000 },
+    ])
+    expect(gaps).toEqual([{ startMs: 1_000, endMs: 3_000 }])
+  })
+
+  test('returns nothing for a contiguous run', () => {
+    expect(
+      gapsBetween([
+        { startMs: 0, endMs: 1_000 },
+        { startMs: 1_000, endMs: 2_000 },
+      ]),
+    ).toEqual([])
+  })
+
+  test('sorts before pairing, so segment order does not matter', () => {
+    const gaps = gapsBetween([
+      { startMs: 3_000, endMs: 4_000 },
+      { startMs: 0, endMs: 1_000 },
+    ])
+    expect(gaps).toEqual([{ startMs: 1_000, endMs: 3_000 }])
   })
 })
