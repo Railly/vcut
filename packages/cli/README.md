@@ -149,7 +149,8 @@ JSON is emitted automatically when stdout is not a TTY, so an agent never needs 
 - Semantic cutting is proposal-only. `vcut semantic export` hands the transcript to a model as numbered lines and `edl build --semantic` folds the proposals back in, each one marked `semanticRisk: material`. vcut never calls a model itself: no dependency, no API key, same EDL for the same proposals file.
 - Audio ramps 50ms at each segment edge (`--edge-fade 0` disables it). Not a crossfade: overlapping the two sides would shorten the render against concatenated video and drift the audio out of sync, so each side fades within its own segment. A joint under a fully continuous sentence can still be heard as a dip.
 - A silence detector decides by level, so a soft consonant under the threshold is cut like a pause. If a word loses its opening sound, the fix is the recording or a lower threshold, not a larger margin.
-- External audio, sync offset, and noise reduction are rejected rather than silently ignored.
+- Audio recorded separately works: `detect --audio mic.wav` measures silence on that file, and the EDL carries both sources. `edl build --audio-offset <ms>` corrects two recorders that did not start together.
+- Noise reduction is not offered. There is no safe default: the right amount depends on the room, and on one measured recording a denoiser at a default setting pushed a weak syllable from -45 dB to -57, which is the same defect as a threshold set too high. Loudness normalisation is the part that is safe to automate, and it is on by default.
 - No face tracking or automatic zoom.
 
 ## Design

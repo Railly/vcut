@@ -59,6 +59,21 @@ sits under the threshold, so the detector calls it a pause and cuts it while lea
 after it. If words come back missing their first syllable, lower the threshold rather than
 widening the margin, which only pads around a cut that should not have been there.
 
+**`--audio <path>` when the sound was recorded separately.** Silence is then measured on that
+file rather than on the camera track, which matters because the camera track is the one being
+thrown away: cutting against a waveform nobody will hear puts the cuts in the wrong places.
+`edl build` reads the path from the report and writes both sources into the EDL, so it is only
+named once.
+
+```bash
+vcut detect screen.mp4 --audio mic.wav --preset clean
+vcut edl build --detect detect.json ...        # two sources, no extra flag
+```
+
+Two recordings started by the same app share a clock, so they need no correction. For two
+separate recorders, `--audio-offset <ms>` on `edl build` shifts the window the audio is read
+from; positive means the audio file is ahead of the picture.
+
 Other flags: `--min-silence` (seconds, default 0.3), `--margin` (seconds, default 0.10), `--skip-video-scan` to skip black and frozen frame detection on long sources.
 
 **Word clamping needs word-level timestamps**, meaning one cue per word. A sentence-level SRT turns clamping off, with a warning rather than a guess. Generate a usable transcript with either:
@@ -447,6 +462,10 @@ classifier, keyed on the *absence of speech* rather than the presence of breathi
 
 - Semantic cutting is proposal-only. vcut supplies the transcript and folds in the spans; the judgement is yours and the approval is the human's.
 - Audio ramps 50ms at each segment edge (`--edge-fade 0` disables it). This is not a crossfade: the two sides are not overlapped, because overlapping would shorten the render against concatenated video and drift the audio out of sync. A joint under a fully continuous sentence can still be heard as a dip.
-- External audio, sync offset, and noise reduction are rejected rather than silently ignored.
+- Noise reduction is not offered. Measured on one recording: the background floor already sat
+  at -54 dB, and a denoiser at a default setting pushed a weak syllable from -45 dB to -57,
+  which is the same defect as a threshold set too high. There is no safe default because the
+  right amount depends on the room, and unlike a cut it cannot be undone by editing the EDL.
+  Loudness normalisation is the part that is safe to automate, and that is on by default.
 - No face tracking or automatic zoom.
 - A silence detector decides by level, so a soft consonant under the threshold is cut like a pause. If a word loses its opening sound, the fix is the recording or a lower threshold, not a larger margin.

@@ -189,11 +189,13 @@ const CONTRACTS: Record<string, unknown> = {
       marginMs: 'integer, padding kept around speech',
       lang: 'free-form language tag, passed through to the semantic export',
       transcript: '{ path: string|null, wordLevel: boolean, words: integer }',
+      audioPath: 'absolute path to a separate audio recording, or null',
       silences: '[{ kind: "silence", startMs, endMs, durationMs }]',
       review: '[{ kind: "clipping"|"black"|"frozen", startMs, endMs, detail }]',
       warnings: 'string[], non-fatal conditions worth reading',
     },
     notes: [
+      'With --audio, silences and clipping are measured on that file rather than on the video, since that is the audio the render will carry.',
       'Silence only. Filler words are not detected here: a word list cannot tell a filler from ordinary use, and it never survives a new language. Run vcut semantic for those.',
       'review entries are candidates for a human to inspect. They are never cut automatically.',
     ],

@@ -62,7 +62,14 @@
     "source": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "path", "sha256", "durationMs", "hasVideo", "hasAudio"],
+      "required": [
+        "id",
+        "path",
+        "sha256",
+        "durationMs",
+        "hasVideo",
+        "hasAudio"
+      ],
       "properties": {
         "id": {
           "type": "string",
@@ -88,7 +95,12 @@
         },
         "rotationDegrees": {
           "type": "integer",
-          "enum": [0, 90, 180, 270]
+          "enum": [
+            0,
+            90,
+            180,
+            270
+          ]
         },
         "averageFrameRate": {
           "type": "string",
@@ -98,11 +110,17 @@
           "type": "boolean"
         },
         "sampleRateHz": {
-          "type": ["integer", "null"],
+          "type": [
+            "integer",
+            "null"
+          ],
           "minimum": 1
         },
         "channels": {
-          "type": ["integer", "null"],
+          "type": [
+            "integer",
+            "null"
+          ],
           "minimum": 1
         }
       }
@@ -110,7 +128,15 @@
     "segment": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "sourceId", "inMs", "outMs", "reason", "handlesMs", "approval"],
+      "required": [
+        "id",
+        "sourceId",
+        "inMs",
+        "outMs",
+        "reason",
+        "handlesMs",
+        "approval"
+      ],
       "properties": {
         "id": {
           "type": "string",
@@ -135,7 +161,10 @@
         "handlesMs": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["before", "after"],
+          "required": [
+            "before",
+            "after"
+          ],
           "properties": {
             "before": {
               "type": "integer",
@@ -148,10 +177,18 @@
           }
         },
         "approval": {
-          "enum": ["proposed", "approved", "rejected"]
+          "enum": [
+            "proposed",
+            "approved",
+            "rejected"
+          ]
         },
         "semanticRisk": {
-          "enum": ["none", "low", "material"]
+          "enum": [
+            "none",
+            "low",
+            "material"
+          ]
         },
         "crop": {
           "oneOf": [
@@ -168,7 +205,12 @@
     "crop": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["x", "y", "width", "height"],
+      "required": [
+        "x",
+        "y",
+        "width",
+        "height"
+      ],
       "properties": {
         "x": {
           "type": "number",
@@ -198,7 +240,6 @@
       "required": [
         "speechTargetLufs",
         "truePeakMaxDbtp",
-        "noiseReduction",
         "externalAudioSourceId",
         "syncOffsetMs"
       ],
@@ -213,11 +254,11 @@
           "minimum": -6,
           "maximum": 0
         },
-        "noiseReduction": {
-          "enum": ["off", "light", "manual"]
-        },
         "externalAudioSourceId": {
-          "type": ["string", "null"]
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "syncOffsetMs": {
           "type": "integer"
@@ -293,7 +334,10 @@
           "exclusiveMinimum": 0
         },
         "videoCodec": {
-          "enum": ["h264", "hevc"]
+          "enum": [
+            "h264",
+            "hevc"
+          ]
         },
         "pixelFormat": {
           "type": "string",
@@ -304,7 +348,11 @@
           "minLength": 1
         },
         "audioTrackPolicy": {
-          "enum": ["required", "forbidden", "explicit-silence"]
+          "enum": [
+            "required",
+            "forbidden",
+            "explicit-silence"
+          ]
         },
         "overwrite": {
           "const": false
@@ -314,17 +362,31 @@
     "approval": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["status", "approvedAt", "approvedBy"],
+      "required": [
+        "status",
+        "approvedAt",
+        "approvedBy"
+      ],
       "properties": {
         "status": {
-          "enum": ["draft", "approved", "rejected"]
+          "enum": [
+            "draft",
+            "approved",
+            "rejected"
+          ]
         },
         "approvedAt": {
-          "type": ["string", "null"],
+          "type": [
+            "string",
+            "null"
+          ],
           "format": "date-time"
         },
         "approvedBy": {
-          "type": ["string", "null"]
+          "type": [
+            "string",
+            "null"
+          ]
         }
       }
     }

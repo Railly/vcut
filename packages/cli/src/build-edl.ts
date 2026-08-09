@@ -33,6 +33,7 @@ Flags:
   --fps <n>             Output frame rate (default: source rate)
   --edge-fade <ms>      Audio ramp at each segment edge (default 50, 0 disables)
   --crop <spec>         top|bottom|left|right:<fraction>, or x,y,width,height
+  --audio-offset <ms>   Shift the separate audio; positive delays it (default 0)
   --semantic <path>     Model proposals from 'vcut semantic'; each lands as material risk
   --json                Force JSON (default when stdout is not a TTY)
   --human               Force the human summary
@@ -174,6 +175,7 @@ export type KeptSegment = {
   approval: 'proposed'
   semanticRisk: 'none' | 'low' | 'material'
   crop: Crop | null
+  syncOffsetMs: number
 }
 
 const MAX_SEGMENTS = 999
@@ -403,7 +405,20 @@ const parseCli = (args: string[]): CliOptions => {
     edgeFadeMs: edgeFade(numeric('--edge-fade')),
     semanticPath: value('--semantic') === undefined ? null : resolve(value('--semantic') as string),
     crop: value('--crop') === undefined ? null : parseCrop(value('--crop') as string),
+    syncOffsetMs: syncOffset(numeric('--audio-offset')),
   }
+}
+
+// Two recordings started by the same app share a clock, so zero is the common case and the
+// flag exists for the one where a second recorder did not.
+const syncOffset = (requested: number | null): number => {
+  if (requested === null) {
+    return 0
+  }
+  if (!Number.isFinite(requested)) {
+    throw new UsageError('--audio-offset takes a number of milliseconds')
+  }
+  return Math.round(requested)
 }
 
 // Rejected here rather than in the renderer: a bad value would otherwise reach the EDL as
@@ -438,6 +453,28 @@ const captionPaths = (report: DetectReport) => {
     correctedTranscriptPath: path,
     dictionaryPath: path,
     burnedDerivative: false,
+  }
+}
+
+// A source the EDL will read audio from and nothing else. hasVideo false is what tells the
+// renderer this one is not a picture, and the id is derived so two EDLs built from the same
+// pair name it the same way.
+const describeAudioSource = async (path: string, videoSourceId: string) => {
+  const probe = await probeSource(path)
+  const stream = probe.streams.find((entry) => entry.codec_type === 'audio')
+  if (stream === undefined) {
+    throw new UsageError(`no audio stream in ${path}`)
+  }
+  return {
+    id: `${videoSourceId}-audio`,
+    path,
+    sha256: await sha256(path),
+    durationMs: probe.durationMs,
+    hasVideo: false,
+    hasAudio: true,
+    averageFrameRate: null,
+    sampleRateHz: stream.sample_rate === undefined ? null : Number(stream.sample_rate),
+    channels: stream.channels ?? null,
   }
 }
 
@@ -513,6 +550,12 @@ export const buildEdlCommand = async (argv: string[]): Promise<void> => {
   const allCuts = [...clamped, ...semanticCuts]
 
   const sourceId = slug(report.input.split('/').pop() ?? 'source')
+  // The detect report already knows the separate recording, so the EDL is built from one
+  // answer rather than asking for the path a second time and risking a different file.
+  const externalAudio =
+    report.audioPath === null || report.audioPath === undefined
+      ? null
+      : await describeAudioSource(report.audioPath, sourceId)
   const segments = markSemanticRisk(
     invertToSegments(
       allCuts,
@@ -548,14 +591,14 @@ export const buildEdlCommand = async (argv: string[]): Promise<void> => {
         sampleRateHz: audio?.sample_rate === undefined ? null : Number(audio.sample_rate),
         channels: audio?.channels ?? null,
       },
+      ...(externalAudio === null ? [] : [externalAudio]),
     ],
     segments,
     audio: {
       speechTargetLufs: -16,
       truePeakMaxDbtp: -1,
-      noiseReduction: 'off',
-      externalAudioSourceId: null,
-      syncOffsetMs: 0,
+      externalAudioSourceId: externalAudio === null ? null : externalAudio.id,
+      syncOffsetMs: options.syncOffsetMs,
       edgeFadeMs: options.edgeFadeMs,
     },
     captions: captionPaths(report),
@@ -567,7 +610,10 @@ export const buildEdlCommand = async (argv: string[]): Promise<void> => {
       videoCodec: 'h264',
       pixelFormat: 'yuv420p',
       colorSpace: 'bt709',
-      audioTrackPolicy: audio === undefined ? 'explicit-silence' : 'required',
+      // The question is whether the render will have sound, not whether the picture carries
+      // it: a video recorded mute is exactly the case a separate recorder exists for.
+      audioTrackPolicy:
+        audio === undefined && externalAudio === null ? 'explicit-silence' : 'required',
       overwrite: false,
     },
     approval: {

@@ -26,7 +26,8 @@ Flags:
   --min-silence <sec>   Minimum silence to consider a cut (default 0.3)
   --margin <sec>        Padding kept around speech (default 0.10)
   --lang <code>         es | en | pt (default es), selects the filler list
-  --transcript <path>   SRT used for filler detection; must be word-level
+  --audio <path>        Separate audio recording; silence is measured on this
+  --transcript <path>   SRT used for word clamping; must be word-level
   --skip-video-scan     Skip black and frozen frame detection
   --json                Force JSON (default when stdout is not a TTY)
   --human               Force the human summary
@@ -81,6 +82,9 @@ export type DetectReport = {
     wordLevel: boolean
     words: number
   }
+  // Carried so `edl build` writes the second source without being told twice, and so the
+  // report says which waveform its silences came from.
+  audioPath: string | null
   silences: SilenceCandidate[]
   review: ReviewCandidate[]
   warnings: string[]
@@ -272,6 +276,7 @@ type CliOptions = {
   marginMs: number
   lang: Lang
   transcriptPath: string | null
+  audioPath: string | null
   skipVideoScan: boolean
 }
 
@@ -314,6 +319,7 @@ const parseCli = (args: string[]): CliOptions => {
     lang,
     transcriptPath:
       value('--transcript') === undefined ? null : resolve(value('--transcript') as string),
+    audioPath: value('--audio') === undefined ? null : resolve(value('--audio') as string),
     skipVideoScan: args.includes('--skip-video-scan'),
   }
 }
@@ -396,14 +402,33 @@ export const detectCommand = async (argv: string[]): Promise<void> => {
     throw new Error(`input missing: ${options.input}`)
   }
 
+  if (options.audioPath !== null && !existsSync(options.audioPath)) {
+    throw new Error(`audio missing: ${options.audioPath}`)
+  }
+
   const warnings: string[] = []
   const durationMs = await probeDurationMs(options.input)
   const thresholdDb = PRESET_DB[options.preset]
   const minSilenceSeconds = (options.minSilenceMs / 1000).toString()
 
+  // Silence and clipping are measured on whatever audio will end up in the render. With a
+  // separate recorder that is not the camera track, and measuring the wrong one would cut
+  // against a waveform nobody hears.
+  const audioInput = options.audioPath ?? options.input
+  if (options.audioPath !== null) {
+    const audioMs = await probeDurationMs(options.audioPath)
+    // A drift of a frame or two is normal between two encoders; anything larger means the
+    // recordings do not describe the same take and the cuts would land in the wrong place.
+    if (Math.abs(audioMs - durationMs) > 1000) {
+      warnings.push(
+        `audio runs ${audioMs}ms against a ${durationMs}ms source; check they are the same take`,
+      )
+    }
+  }
+
   const silenceLog = await runFfmpeg([
     '-i',
-    options.input,
+    audioInput,
     '-af',
     `silencedetect=noise=${thresholdDb}dB:d=${minSilenceSeconds}`,
     '-f',
@@ -414,7 +439,7 @@ export const detectCommand = async (argv: string[]): Promise<void> => {
 
   const statsLog = await runFfmpeg([
     '-i',
-    options.input,
+    audioInput,
     '-af',
     'astats=metadata=1:reset=0',
     '-f',
@@ -450,6 +475,7 @@ export const detectCommand = async (argv: string[]): Promise<void> => {
     marginMs: options.marginMs,
     lang: options.lang,
     transcript: { path, wordLevel: transcript.wordLevel, words: transcript.words.length },
+    audioPath: options.audioPath,
     silences,
     review,
     warnings,

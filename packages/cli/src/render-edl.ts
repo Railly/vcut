@@ -49,7 +49,6 @@ export type Edl = {
   audio: {
     speechTargetLufs?: number
     truePeakMaxDbtp?: number
-    noiseReduction: 'off' | 'light' | 'manual'
     externalAudioSourceId: string | null
     syncOffsetMs: number
     edgeFadeMs: number
@@ -124,6 +123,7 @@ const segmentErrors = (
   sourceMap: Map<string, Source>,
   policy: Edl['output']['audioTrackPolicy'],
   mode: Mode,
+  hasExternalAudio: boolean,
 ): string[] => {
   const errors: string[] = []
   const source = sourceMap.get(segment.sourceId)
@@ -134,7 +134,9 @@ const segmentErrors = (
   if (!source.hasVideo) {
     errors.push(`${segment.id}: source lacks video`)
   }
-  if (policy === 'required' && !source.hasAudio) {
+  // Only when the segment is where the sound comes from. With a separate recording the check
+  // belongs to that source, and externalAudioErrors already made it once for the whole EDL.
+  if (policy === 'required' && !hasExternalAudio && !source.hasAudio) {
     errors.push(`${segment.id}: source lacks required audio`)
   }
   if (segment.inMs < 0 || segment.outMs <= segment.inMs || segment.outMs > source.durationMs) {
@@ -172,13 +174,19 @@ export const edlErrors = (edl: Edl, mode: Mode): string[] => {
     ...(edl.output.overwrite === false ? [] : ['output overwrite must be false']),
     ...(edl.output.pixelFormat === 'yuv420p' ? [] : ['unsupported V1 pixel format']),
     ...(edl.output.colorSpace === 'bt709' ? [] : ['unsupported V1 color space']),
-    ...(edl.audio.externalAudioSourceId === null ? [] : ['external audio is not implemented']),
-    ...(edl.audio.syncOffsetMs === 0 ? [] : ['audio sync offset is not implemented']),
-    ...(edl.audio.noiseReduction === 'off' ? [] : ['noise reduction is not implemented']),
+    ...externalAudioErrors(edl),
     ...approvalErrors(edl, mode),
   ]
   for (const segment of edl.segments) {
-    errors.push(...segmentErrors(segment, sourceMap, edl.output.audioTrackPolicy, mode))
+    errors.push(
+      ...segmentErrors(
+        segment,
+        sourceMap,
+        edl.output.audioTrackPolicy,
+        mode,
+        edl.audio.externalAudioSourceId !== null && edl.audio.externalAudioSourceId !== undefined,
+      ),
+    )
   }
   return errors
 }
@@ -220,6 +228,20 @@ const loudnessFilter = (edl: Edl): string => {
   return `,loudnorm=I=${target}:TP=${truePeak}:LRA=11`
 }
 
+// An id that names nothing, or names the picture, would silently fall back to the camera
+// track and produce a render nobody asked for.
+const externalAudioErrors = (edl: Edl): string[] => {
+  const id = edl.audio.externalAudioSourceId
+  if (id === null || id === undefined) {
+    return []
+  }
+  const source = edl.sources.find((entry) => entry.id === id)
+  if (source === undefined) {
+    return [`external audio source '${id}' is not in sources`]
+  }
+  return source.hasAudio ? [] : [`external audio source '${id}' has no audio stream`]
+}
+
 const audioEdgeFade = (segment: Segment, fadeMs: number | undefined): string => {
   // An EDL written before this field existed renders exactly as it did then.
   if (fadeMs === undefined || !Number.isFinite(fadeMs) || fadeMs <= 0) {
@@ -244,6 +266,12 @@ export const buildFfmpegArgs = (edl: Edl, outputPath: string): string[] => {
   const height = edl.output.height
   const fps = edl.output.fps
   const policy = edl.output.audioTrackPolicy
+  // Undefined when every segment reads its own audio, which is the single-source case and has
+  // to keep rendering exactly as it did.
+  const audioInput =
+    edl.audio.externalAudioSourceId === null || edl.audio.externalAudioSourceId === undefined
+      ? undefined
+      : sourceIndex.get(edl.audio.externalAudioSourceId)
 
   for (const [index, segment] of edl.segments.entries()) {
     const input = sourceIndex.get(segment.sourceId)
@@ -258,8 +286,14 @@ export const buildFfmpegArgs = (edl: Edl, outputPath: string): string[] => {
     concatInputs.push(`[v${index}]`)
 
     if (policy === 'required') {
+      // A segment's timings are expressed against the picture. When the sound comes from a
+      // separate recorder, the same instant sits elsewhere in that file, so the window slides
+      // by the offset rather than the audio being shifted after the fact: trimming the right
+      // window keeps every segment its own length, and length is what the validator checks.
+      const audioIn = audioInput ?? input
+      const shift = audioInput === undefined ? 0 : edl.audio.syncOffsetMs
       filters.push(
-        `[${input}:a]atrim=start=${seconds(segment.inMs)}:end=${seconds(segment.outMs)},asetpts=PTS-STARTPTS,aresample=48000,aformat=channel_layouts=stereo${audioEdgeFade(segment, edl.audio.edgeFadeMs)}[a${index}]`,
+        `[${audioIn}:a]atrim=start=${seconds(Math.max(0, segment.inMs + shift))}:end=${seconds(Math.max(0, segment.outMs + shift))},asetpts=PTS-STARTPTS,aresample=48000,aformat=channel_layouts=stereo${audioEdgeFade(segment, edl.audio.edgeFadeMs)}[a${index}]`,
       )
       concatInputs.push(`[a${index}]`)
     }

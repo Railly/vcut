@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { buildFfmpegArgs, type Edl, outputErrors } from '../src/render-edl.ts'
+import { buildFfmpegArgs, type Edl, edlErrors, outputErrors } from '../src/render-edl.ts'
 
 const edl = (
   audioTrackPolicy: Edl['output']['audioTrackPolicy'],
@@ -29,7 +29,6 @@ const edl = (
   audio: {
     speechTargetLufs: -16,
     truePeakMaxDbtp: -1,
-    noiseReduction: 'off',
     externalAudioSourceId: null,
     syncOffsetMs: 0,
     edgeFadeMs,
@@ -171,5 +170,72 @@ describe('loudness normalisation', () => {
 
   test('adds no audio filter chain when the track is forbidden', () => {
     expect(buildFfmpegArgs(edl('forbidden'), '/tmp/master.mp4').join(' ')).not.toContain('loudnorm')
+  })
+})
+
+const withExternalAudio = (syncOffsetMs = 0): Edl => {
+  const base = edl('required')
+  return {
+    ...base,
+    sources: [
+      ...base.sources,
+      {
+        id: 'src-1-audio',
+        path: '/tmp/mic.wav',
+        sha256: 'b'.repeat(64),
+        durationMs: 10_000,
+        hasVideo: false,
+        hasAudio: true,
+      },
+    ],
+    audio: { ...base.audio, externalAudioSourceId: 'src-1-audio', syncOffsetMs },
+  }
+}
+
+describe('external audio', () => {
+  test('reads the audio from the separate source, not from the picture', () => {
+    const graph = buildFfmpegArgs(withExternalAudio(), '/tmp/master.mp4').join(' ')
+    expect(graph).toContain('[1:a]atrim')
+    expect(graph).not.toContain('[0:a]atrim')
+  })
+
+  test('leaves a single-source EDL reading its own audio', () => {
+    const graph = buildFfmpegArgs(edl('required'), '/tmp/master.mp4').join(' ')
+    expect(graph).toContain('[0:a]atrim')
+  })
+
+  test('slides the trim window by the offset instead of shifting the audio after', () => {
+    // Shifting afterwards changes the length, and length is what the duration contract checks.
+    const graph = buildFfmpegArgs(withExternalAudio(500), '/tmp/master.mp4').join(' ')
+    expect(graph).toContain('[1:a]atrim=start=0.5:end=5.5')
+  })
+
+  test('never trims before the start of the file on a negative offset', () => {
+    const graph = buildFfmpegArgs(withExternalAudio(-2_000), '/tmp/master.mp4').join(' ')
+    expect(graph).toContain('atrim=start=0:')
+  })
+
+  test('refuses an id that names no source', () => {
+    const broken = withExternalAudio()
+    broken.audio = { ...broken.audio, externalAudioSourceId: 'nope' }
+    expect(edlErrors(broken, 'preview')).toContain("external audio source 'nope' is not in sources")
+  })
+
+  test('refuses an id that names a source with no audio', () => {
+    const broken = withExternalAudio()
+    // Point at the picture and declare it mute, which is what a mistyped id looks like.
+    broken.sources[0] = { ...broken.sources[0], hasAudio: false }
+    broken.audio = { ...broken.audio, externalAudioSourceId: 'src-1' }
+    expect(edlErrors(broken, 'preview')).toContain(
+      "external audio source 'src-1' has no audio stream",
+    )
+  })
+
+  test('accepts a mute video when the sound comes from elsewhere', () => {
+    // The old rule asked the segment's own source for audio, which is exactly the case a
+    // separate recorder exists for.
+    const mute = withExternalAudio()
+    mute.sources[0] = { ...mute.sources[0], hasAudio: false }
+    expect(edlErrors(mute, 'preview')).toEqual([])
   })
 })
