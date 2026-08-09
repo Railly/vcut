@@ -269,28 +269,44 @@ is checkable against the transcript of the render rather than against intent:
 If the transcript of the render violates one of these, the edit is not done, whatever the
 removal percentage says.
 
-### Non-verbal sound is not detected, and three attempts failed
+### Non-verbal sound needs a classifier, not a statistic
 
-A breath, a mic bump, a laugh: audible, meaningless, and invisible to both instruments. The
-silence pass sees energy and calls it speech. The transcript has no word for it. It is a real
-gap and it stays open.
+A breath, a mic bump, a lip smack: audible, meaningless, and invisible to both
+instruments. The silence pass hears energy and calls it speech. The transcript has no word
+for it, and the model stretches a neighbouring cue over it, so it ends up inside a word's
+span rather than beside it.
 
-What was tried, so nobody spends the day again:
+`skills/non-speech.py` finds them and prints `kind: "non-speech"` proposals. It runs on the
+**rendered master**, not the source: on raw footage every pause scores as non-speech,
+correctly and uselessly, while on a finished cut only real intrusions are left.
+
+```bash
+python3 skills/non-speech.py master.mp4 > non-speech.json
+# map the master timings back through the EDL, then feed them in
+```
+
+It lives outside the CLI because it needs a 300MB torch checkpoint, and vcut has no
+dependencies worth trading for that. Anything emitting the proposal schema works; that
+script is the reference.
+
+**Four energy statistics were tried first and all four failed**, which is worth knowing
+before reaching for a fifth:
 
 | Attempt | Why it cannot work |
 | --- | --- |
-| Sound with no word covering it | The transcript stretches every cue to the next word, so the noise lands *inside* a word's span, never beside it |
-| Gaps between consecutive words | Same cause: on a finished edit the largest gap between two cues was a fraction of a second |
-| Energy swing inside one word | A word with a breath in it swung 28 dB; an ordinary word swung 57. Speech is not smooth, so the spread measures syllables, not intruders |
-| Median level inside one word | Ranks unstressed function words at the bottom. It finds short quiet words, which is not the same question |
+| Sound with no word covering it | The cue stretches over the noise, so it is never uncovered |
+| Gaps between consecutive words | The largest gap in a tight edit is a fraction of a second |
+| Energy swing inside one word | A word holding a breath swung *less* than an ordinary word |
+| Median level inside one word | Ranks unstressed function words first, which is a different question |
 
-The pattern across all four: each measures a **proxy** for non-speech and every proxy is
-dominated by ordinary variation in speech. Separating a breath from a syllable is a
-classification problem about what a sound *is*, and none of these instruments answer that.
+Periodicity gets closer, since voiced speech has vibrating folds and a breath is turbulence,
+but unvoiced consonants are turbulence too: every sibilant becomes a false positive.
 
-If it gets built, it needs something that recognises voice as voice, a VAD or a small
-classifier, not another statistic over energy. Until then, listen for it: the review reports
-silence and text, and a human ear is what covers the rest.
+The pattern is that each measures a **proxy** for non-speech, and every proxy is dominated
+by ordinary variation in speech. Separating a breath from a syllable asks what a sound *is*,
+so it takes something trained on that question. A general VAD is not enough either: one
+scored a breath at 0.87 voice, indistinguishable from words. What worked was an AudioSet
+classifier, keyed on the *absence of speech* rather than the presence of breathing.
 
 ## Limits
 

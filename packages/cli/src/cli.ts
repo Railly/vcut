@@ -155,7 +155,8 @@ const CONTRACTS: Record<string, unknown> = {
     },
     notes: [
       'vcut never calls a model. Export hands over the lines; you write the proposals back.',
-      'A proposal is { startMs, endMs, kind, reason }, kind being false-start | repetition | tangent | filler.',
+      'A proposal is { startMs, endMs, kind, reason }, kind being false-start | repetition | tangent | filler | non-speech.',
+      'non-speech covers audible sound that is not language, which neither detect nor the transcript can see. skills/non-speech.py finds those with an audio classifier and prints them in this schema.',
       'Feed accepted proposals to vcut edl build --semantic <path>. Each lands as semanticRisk material.',
       'check exits 1 when anything is malformed, and edl build refuses the whole file rather than skipping entries.',
     ],

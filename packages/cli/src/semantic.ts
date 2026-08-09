@@ -120,7 +120,7 @@ export const buildLines = (words: Word[], silences: Interval[], breakMs: number)
 export type Proposal = {
   startMs: number
   endMs: number
-  kind: 'false-start' | 'repetition' | 'tangent' | 'filler'
+  kind: 'false-start' | 'repetition' | 'tangent' | 'filler' | 'non-speech'
   reason: string
 }
 
@@ -136,7 +136,7 @@ export const validateProposals = (
   parsed: unknown,
   durationMs: number,
 ): { proposals: Proposal[]; issues: ProposalIssue[] } => {
-  const kinds = new Set(['false-start', 'repetition', 'tangent', 'filler'])
+  const kinds = new Set(['false-start', 'repetition', 'tangent', 'filler', 'non-speech'])
   const issues: ProposalIssue[] = []
   const proposals: Proposal[] = []
 
@@ -227,6 +227,7 @@ const INSTRUCTIONS = [
   'repetition: the same point made twice. Keep the clearer telling.',
   'tangent: a digression the speaker leaves and returns from. Only when the thread survives without it.',
   'filler: a span that can be deleted without a listener learning anything less. Test by deletion, not by matching a vocabulary, so it works in any language and on constructions nobody named. The same words are filler in one clause and content in the next.',
+  'non-speech: audible sound that is not language. A breath, a mic bump, a lip smack, a laugh. The transcript has no word for it and the silence pass hears energy and calls it speech, so it is invisible to both and needs an audio classifier to find. skills/non-speech.py does that; nothing in vcut detects it on its own.',
   'reason is read by a human deciding whether to approve. Say what is lost, not what rule matched.',
   'Never cut the end of a sentence whose start you kept, or the answer to a question you kept.',
   'Propose nothing when nothing should go. An empty array is a valid answer.',
