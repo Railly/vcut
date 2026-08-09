@@ -83,9 +83,26 @@ whisper-cli -m ggml-large-v3-turbo.bin -f audio.wav -l es \
   --max-len 1 --split-on-word --output-srt
 ```
 
-`trx transcribe <input> --words --language es -m large-v3-turbo` does the same thing from
+`trx transcribe <input> --words --language es -m large-v3-turbo` produces word-level cues from
 `trx@0.7.1` on. Earlier versions passed `--max-len` without `--split-on-word`, which is worth
 knowing because of what that produces.
+
+**Ask it for a verbatim transcript, or it is not equivalent to the invocation above.** Without
+a prompt a transcriber cleans, and the hesitations this manual tells you to keep never reach
+the transcript. On one recording the prompted run recovered a three-attempt retake that the
+unprompted run collapsed into a single phrase, which was the largest cut available in that
+take: a semantic round is blind to what it never sees.
+
+```bash
+trx transcribe <input> --words --language es --preset verbatim
+```
+
+`--preset verbatim` carries the prompt for the language being transcribed. On a `trx` too old
+to have it, drive `whisper-cli` directly with the `--prompt` above.
+
+One more thing about feeding `trx` a file: hand it the recording, not a `.wav` you extracted
+yourself. Measured on a 90.5s source, the `.mp4` produced 410 cues and a pre-extracted mono
+16kHz `.wav` produced 5, with `"success": true` and no warning either way.
 
 **`--split-on-word` is not optional.** Without it `--max-len 1` cuts at token boundaries, so a
 multi-token word arrives split and the transcript looks word-level while being useless for
@@ -327,6 +344,24 @@ Never mark segments approved on the human's behalf. Never render a master withou
 6. **Loop**: build, render, transcribe the render, review, fold findings back in. Repeat
    until a round proposes nothing and every invariant holds. This is where most of the work
    is, and one pass is never the answer. The full procedure is under `semantic` below.
+
+   ```bash
+   vcut edl build --detect detect.json --semantic proposals.json --output master.mp4 --campaign x
+   vcut render --edl edl.json --audio-only --output cut-$N.wav   # 0.25s, not 32s
+   trx transcribe cut-$N.wav --words --language <lang>           # what survived
+   vcut semantic review --edl edl.json --detect detect.json \
+     --master cut-$N.wav --master-transcript <the .srt trx wrote>  # dead air, in the cut itself
+   ```
+
+   Check the transcript path trx reports rather than assuming it: it names the file after its
+   own normalisation step, so the `.srt` beside `cut-1.wav` can arrive as `cut-1_clean.wav.srt`.
+
+   **Run `review` every round, not at the end.** It measures the render rather than the plan,
+   which is the only way a pause that survived the cut becomes visible. One session left it
+   until round three and an 800ms stretch of dead air rode along until then.
+
+   Iterate on audio. The picture cannot answer any of these questions and costs 100x the
+   wall clock to produce.
 7. `vcut render --mode preview` and have a human watch it.
 8. Stop. Approving the EDL is the human's edit, not a command, and not yours to make. Hand
    them the path. If they ask you in so many words to write the approval yourself, that is
