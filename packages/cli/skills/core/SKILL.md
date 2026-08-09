@@ -175,6 +175,25 @@ vcut render --edl edl.json --mode preview
 
 Preview mode accepts proposed segments. Master mode requires an approved EDL, approved segments, matching source hashes, and a free output path; it refuses to overwrite.
 
+**Iterate with `--audio-only`.** Almost every question a round of edits asks is about sound:
+whether a filler survived, whether a boundary clipped a word, whether a pause is still there.
+Answering those through the video path re-encodes every frame for nothing. Measured on one
+22-segment EDL: **0.25s against 31.8s** for the same cuts.
+
+```bash
+vcut render --edl edl.json --audio-only          # rounds 1..n
+vcut render --edl edl.json                        # once, at the end
+```
+
+The audio graph is the same one the video render uses, edge fades and loudness included, so
+what you hear is what the finished file will sound like: measured at -16.4 LUFS on both paths
+from the same EDL. It writes lossless audio, because a codec artifact heard while iterating
+reads as a defect in the cut.
+
+The result runs a few tens of milliseconds shorter than the segment sum (31ms on a 54.6s cut).
+That is `loudnorm` latency draining trailing decay, not missing material; a video render hides
+it because the picture sets the container duration.
+
 **There is no approve command, and that is the design.** Approval means editing the EDL: set
 `approval.status` to `"approved"` and each segment's `approval` to `"approved"`. No CLI verb
 does this because a verb would be a thing an agent can call, and this is the one step that

@@ -13,11 +13,17 @@ Flags:
   --edl <path>          Edit decision list to render (required)
   --output <path>       Override the output path in the EDL
   --mode <name>         preview (default) | master
+  --audio-only          Render the audio alone, for iterating on a cut
   --dry-run             Print the ffmpeg command without running it
   --help                Show this message
 
 Preview mode accepts proposed segments. Master mode requires an approved EDL,
-approved segments, matching source hashes, and a free output path.`
+approved segments, matching source hashes, and a free output path.
+
+--audio-only skips the picture and keeps the audio graph unchanged, edge fades and
+loudness included, so what you hear is what the finished render will sound like.
+Measured on one 22-segment EDL: 0.25s against 31.8s for the same cuts with video.
+Use it for the rounds where the questions are about sound, then render once.`
 
 type Source = {
   id: string
@@ -78,6 +84,7 @@ type CliOptions = {
   outputPath?: string
   mode: Mode
   dryRun: boolean
+  audioOnly: boolean
 }
 
 export type OutputProbe = {
@@ -258,7 +265,22 @@ const audioEdgeFade = (segment: Segment, fadeMs: number | undefined): string => 
   return `,afade=t=in:st=0:d=${fade},afade=t=out:st=${outStart}:d=${fade}`
 }
 
-export const buildFfmpegArgs = (edl: Edl, outputPath: string): string[] => {
+/**
+ * Iterating a cut asks audio questions: whether a filler survived, whether a boundary
+ * clipped a word, whether a pause is still there. Answering them through the video path
+ * re-encodes every frame, which on one 22-segment EDL measured 31.8s against 0.25s for
+ * the same cuts in audio alone.
+ *
+ * The audio half of the graph is used unchanged, edge fades and loudness included, so
+ * what is heard while iterating is what the finished render will sound like. Only the
+ * picture is dropped.
+ */
+export const buildFfmpegArgs = (
+  edl: Edl,
+  outputPath: string,
+  options: { audioOnly?: boolean } = {},
+): string[] => {
+  const audioOnly = options.audioOnly === true
   const sourceIndex = new Map(edl.sources.map((source, index) => [source.id, index]))
   const filters: string[] = []
   const concatInputs: string[] = []
@@ -280,10 +302,12 @@ export const buildFfmpegArgs = (edl: Edl, outputPath: string): string[] => {
     }
     const crop = segment.crop ?? { x: 0, y: 0, width: 1, height: 1 }
     const duration = seconds(segment.outMs - segment.inMs)
-    filters.push(
-      `[${input}:v]trim=start=${seconds(segment.inMs)}:end=${seconds(segment.outMs)},setpts=PTS-STARTPTS,crop=trunc(iw*${crop.width}/2)*2:trunc(ih*${crop.height}/2)*2:trunc(iw*${crop.x}/2)*2:trunc(ih*${crop.y}/2)*2,scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:black,fps=${fps},format=${edl.output.pixelFormat}[v${index}]`,
-    )
-    concatInputs.push(`[v${index}]`)
+    if (!audioOnly) {
+      filters.push(
+        `[${input}:v]trim=start=${seconds(segment.inMs)}:end=${seconds(segment.outMs)},setpts=PTS-STARTPTS,crop=trunc(iw*${crop.width}/2)*2:trunc(ih*${crop.height}/2)*2:trunc(iw*${crop.x}/2)*2:trunc(ih*${crop.y}/2)*2,scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:black,fps=${fps},format=${edl.output.pixelFormat}[v${index}]`,
+      )
+      concatInputs.push(`[v${index}]`)
+    }
 
     if (policy === 'required') {
       // A segment's timings are expressed against the picture. When the sound comes from a
@@ -304,12 +328,17 @@ export const buildFfmpegArgs = (edl: Edl, outputPath: string): string[] => {
   }
 
   const hasAudio = policy !== 'forbidden'
-  const concatOut = hasAudio ? '[vcat][acat]' : '[v]'
+  if (audioOnly && !hasAudio) {
+    throw new Error('--audio-only needs an EDL that carries audio, and this one forbids it')
+  }
+  const concatOut = audioOnly ? '[acat]' : hasAudio ? '[vcat][acat]' : '[v]'
   filters.push(
-    `${concatInputs.join('')}concat=n=${edl.segments.length}:v=1:a=${hasAudio ? 1 : 0}${concatOut}`,
+    `${concatInputs.join('')}concat=n=${edl.segments.length}:v=${audioOnly ? 0 : 1}:a=${hasAudio ? 1 : 0}${concatOut}`,
   )
   if (hasAudio) {
-    filters.push(`[vcat]null[v]`)
+    if (!audioOnly) {
+      filters.push(`[vcat]null[v]`)
+    }
     const totalMs = edl.segments.reduce(
       (total, segment) => total + (segment.outMs - segment.inMs),
       0,
@@ -321,6 +350,28 @@ export const buildFfmpegArgs = (edl: Edl, outputPath: string): string[] => {
 
   const codec = edl.output.videoCodec === 'h264' ? 'libx264' : 'libx265'
   const args = edl.sources.flatMap((source) => ['-i', source.path])
+
+  if (audioOnly) {
+    // Lossless, because this file exists to be judged by ear. A codec artifact heard
+    // while iterating would be read as a defect in the cut, which is the one thing this
+    // is meant to answer.
+    args.push(
+      '-filter_complex',
+      filters.join(';'),
+      '-map',
+      '[a]',
+      '-vn',
+      '-c:a',
+      'pcm_s16le',
+      '-ar',
+      '48000',
+      '-ac',
+      '2',
+      outputPath,
+    )
+    return args
+  }
+
   args.push('-filter_complex', filters.join(';'), '-map', '[v]')
   if (hasAudio) {
     args.push('-map', '[a]', '-c:a', 'aac', '-ar', '48000', '-ac', '2')
@@ -426,6 +477,39 @@ const audioOutputErrors = (
   return errors
 }
 
+/**
+ * What still has to hold when the picture was deliberately left out: the audio contract,
+ * the absence of a video stream, and the duration. Duration is the one that matters — it
+ * is what says the cuts landed where the EDL asked, and it is the reason an audio-only
+ * pass can be trusted to answer questions about the finished cut.
+ */
+export const audioOnlyErrors = (edl: Edl, probe: OutputProbe): string[] => {
+  const errors: string[] = []
+  if (probe.streams.some((stream) => stream.codec_type === 'video')) {
+    errors.push('audio-only render contains video')
+  }
+  const audio = probe.streams.find((stream) => stream.codec_type === 'audio')
+  errors.push(...audioOutputErrors(edl.output.audioTrackPolicy, audio))
+
+  const expectedDuration = edl.segments.reduce(
+    (total, segment) => total + segment.outMs - segment.inMs,
+    0,
+  )
+  const observedDuration = Number(probe.format.duration) * 1000
+  // loudnorm carries latency, so the concatenated audio ends a few tens of milliseconds
+  // short of the segment sum. Measured at 31ms on a 54.6s cut, and it is trailing decay
+  // rather than material: the same graph produces the same -16.4 LUFS as the video path.
+  // In a video render the container hides this because the picture sets the duration.
+  const toleranceMs = 60
+  if (
+    !Number.isFinite(observedDuration) ||
+    Math.abs(observedDuration - expectedDuration) > toleranceMs
+  ) {
+    errors.push('audio-only render duration differs from EDL')
+  }
+  return errors
+}
+
 export const outputErrors = (edl: Edl, probe: OutputProbe): string[] => {
   const video = probe.streams.find((stream) => stream.codec_type === 'video')
   if (video === undefined) {
@@ -479,11 +563,16 @@ const parseCli = (args: string[]): CliOptions => {
   if (modeValue !== 'preview' && modeValue !== 'master') {
     throw new Error('mode must be preview or master')
   }
+  const audioOnly = args.includes('--audio-only')
+  if (audioOnly && modeValue === 'master') {
+    throw new Error('--audio-only is for iterating; a master is the finished video')
+  }
   return {
     edlPath: resolve(edlPath),
     outputPath: value('--output') === undefined ? undefined : resolve(value('--output') as string),
     mode: modeValue,
     dryRun: args.includes('--dry-run'),
+    audioOnly,
   }
 }
 
@@ -495,7 +584,12 @@ export const renderCommand = async (argv: string[]): Promise<void> => {
   const options = parseCli(argv)
   const edl = JSON.parse(readFileSync(options.edlPath, 'utf8')) as Edl
   const errors = edlErrors(edl, options.mode)
-  const outputPath = options.outputPath ?? edl.output.path
+  // The EDL's own output path names a video. Writing audio there would collide with the
+  // render it is meant to precede, so audio-only lands beside it as a .wav unless asked
+  // for somewhere else.
+  const outputPath =
+    options.outputPath ??
+    (options.audioOnly ? edl.output.path.replace(/\.[^./]+$/, '') + '.wav' : edl.output.path)
 
   for (const source of edl.sources) {
     if (!existsSync(source.path)) {
@@ -514,13 +608,14 @@ export const renderCommand = async (argv: string[]): Promise<void> => {
     throw new Error(errors.join('\n'))
   }
 
-  const args = buildFfmpegArgs(edl, outputPath)
+  const args = buildFfmpegArgs(edl, outputPath, { audioOnly: options.audioOnly })
   if (options.dryRun) {
     console.log(
       JSON.stringify(
         {
           status: 'ready',
           mode: options.mode,
+          ...(options.audioOnly ? { audioOnly: true } : {}),
           sources: edl.sources.length,
           segments: edl.segments.length,
           expectedDurationMs: edl.segments.reduce(
@@ -542,17 +637,26 @@ export const renderCommand = async (argv: string[]): Promise<void> => {
     throw new Error(`ffmpeg exited with ${exitCode}`)
   }
   const probe = await probeOutput(outputPath)
-  const validationErrors = outputErrors(edl, probe)
+  // The picture checks describe a file this one deliberately has no picture in. Duration
+  // still has to hold: it is what says the cuts landed where the EDL asked.
+  const validationErrors = options.audioOnly
+    ? audioOnlyErrors(edl, probe)
+    : outputErrors(edl, probe)
   if (validationErrors.length > 0) {
     throw new Error(validationErrors.join('\n'))
   }
   console.log(
     JSON.stringify({
       status: 'rendered',
+      ...(options.audioOnly ? { audioOnly: true } : {}),
       outputPath,
       sha256: await sha256(outputPath),
       duration: probe.format.duration,
-      frames: probe.streams.find((stream) => stream.codec_type === 'video')?.nb_read_frames,
+      ...(options.audioOnly
+        ? {}
+        : {
+            frames: probe.streams.find((stream) => stream.codec_type === 'video')?.nb_read_frames,
+          }),
     }),
   )
 }

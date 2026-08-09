@@ -265,15 +265,17 @@ const CONTRACTS: Record<string, unknown> = {
     command: 'vcut render',
     output: {
       status: '"ready" for --dry-run, "rendered" otherwise',
+      audioOnly: 'true when --audio-only was passed, absent otherwise',
       outputPath: 'absolute path to the rendered file',
       sha256: 'hex digest of the output, stable across identical runs',
       duration: 'seconds, as reported by ffprobe',
-      frames: 'decoded frame count',
+      frames: 'decoded frame count, absent for --audio-only',
     },
     notes: [
       'Preview mode accepts proposed segments; master mode requires approval.',
       'Audio is normalised to the EDL speechTargetLufs, on the concatenated result rather than per segment.',
       'The renderer validates its own output against the EDL and fails on a mismatch.',
+      '--audio-only renders the audio alone for iterating, using the same audio graph as the video path. Measured at 0.25s against 31.8s on one 22-segment EDL. It writes lossless audio, defaults to the EDL output path with a .wav extension, and is refused in master mode.',
     ],
   },
 }

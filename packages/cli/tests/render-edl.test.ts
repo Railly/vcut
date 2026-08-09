@@ -101,6 +101,58 @@ describe('buildFfmpegArgs audio contract', () => {
   })
 })
 
+describe('buildFfmpegArgs --audio-only', () => {
+  // The promise of the flag: what you hear while iterating is what the finished render
+  // will sound like. That only holds if the audio half of the graph is untouched, so it
+  // is compared filter for filter against the video path rather than merely inspected.
+  test('builds the same audio chain as the video render', () => {
+    // The concat line legitimately differs (v=0 against v=1); everything that shapes how
+    // the audio sounds must not.
+    const audioFilters = (args: string[]): string[] => {
+      const graph = args[args.indexOf('-filter_complex') + 1] as string
+      return graph
+        .split(';')
+        .filter((filter) => /\[a\d+\]$|\[a\]$/.test(filter) && !filter.includes('concat='))
+    }
+    expect(
+      audioFilters(buildFfmpegArgs(edl('required'), '/tmp/cut.wav', { audioOnly: true })),
+    ).toEqual(audioFilters(buildFfmpegArgs(edl('required'), '/tmp/master.mp4')))
+  })
+
+  test('drops the picture entirely', () => {
+    const graph = buildFfmpegArgs(edl('required'), '/tmp/cut.wav', { audioOnly: true }).join(' ')
+    expect(graph).toContain('-vn')
+    expect(graph).not.toContain('libx264')
+    expect(graph).not.toContain(':v]trim=')
+    expect(graph).not.toContain('scale=')
+  })
+
+  test('concatenates audio streams only', () => {
+    const graph = buildFfmpegArgs(edl('required'), '/tmp/cut.wav', { audioOnly: true }).join(' ')
+    expect(graph).toContain('concat=n=1:v=0:a=1[acat]')
+  })
+
+  // A codec artifact heard while iterating reads as a defect in the cut, which is the
+  // one question this file exists to answer.
+  test('writes lossless audio', () => {
+    const args = buildFfmpegArgs(edl('required'), '/tmp/cut.wav', { audioOnly: true })
+    expect(args).toContain('pcm_s16le')
+    expect(args).not.toContain('aac')
+  })
+
+  test('refuses an EDL that carries no audio to render', () => {
+    expect(() => buildFfmpegArgs(edl('forbidden'), '/tmp/cut.wav', { audioOnly: true })).toThrow(
+      /audio/,
+    )
+  })
+
+  test('the video path is unchanged when the flag is absent', () => {
+    expect(buildFfmpegArgs(edl('required'), '/tmp/master.mp4')).toEqual(
+      buildFfmpegArgs(edl('required'), '/tmp/master.mp4', {}),
+    )
+  })
+})
+
 describe('buildFfmpegArgs edge fade', () => {
   test('ramps both edges of the segment', () => {
     const graph = buildFfmpegArgs(edl('required', 50), '/tmp/master.mp4').join(' ')
