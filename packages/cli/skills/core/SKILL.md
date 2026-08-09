@@ -39,6 +39,23 @@ Presets carry thresholds proven in production. Do not invent new ones.
 | `clean` | -30 dB | Studio, talking head |
 | `podcast` | -35 dB | Intentional pauses |
 
+`--lang` is the language of the recording, free-form and passed through to the semantic
+export so a model knows what it is reading. Nothing parses it. Take it from the speaker, not
+from a default: if you do not know, listen to a few seconds or ask, because the transcription
+model needs the same answer and guessing wrong there costs the whole transcript.
+
+**Picking one, and knowing when it was wrong.** Start from the recording condition in the
+table. Then read the removal percentage `edl build` reports against the target for the
+content type: far under target usually means the threshold is too low for this room, far over
+means it is too high and speech is being cut as silence. Change the preset, not
+`--min-silence` or `--margin`, and rebuild.
+
+The symptom of a threshold set too high is specific and worth recognising, because it reads
+as a transcription error rather than a cut: a word loses its opening sound. A soft consonant
+sits under the threshold, so the detector calls it a pause and cuts it while leaving the vowel
+after it. If words come back missing their first syllable, lower the threshold rather than
+widening the margin, which only pads around a cut that should not have been there.
+
 Other flags: `--min-silence` (seconds, default 0.3), `--margin` (seconds, default 0.10), `--skip-video-scan` to skip black and frozen frame detection on long sources.
 
 **Word clamping needs word-level timestamps**, meaning one cue per word. A sentence-level SRT turns clamping off, with a warning rather than a guess. Generate a usable transcript with either:
@@ -67,6 +84,9 @@ A list also cannot tell filler from real use. Spanish `este` is filler in "y est
 ```bash
 vcut edl build --detect detect.json --output master.mp4 --campaign my-video
 ```
+
+`--campaign` is a required free-form label that rides along in the EDL so a later reader can
+tell which piece of work it belongs to. Nothing parses it; any stable string works.
 
 Inverts the cut intervals into the spans worth keeping, so the EDL always describes surviving material. Boundaries are snapped to whole frames; unsnapped boundaries accumulate rounding error and make the renderer reject the result with a frame count mismatch.
 
@@ -105,6 +125,14 @@ vcut render --edl edl.json --mode preview
 
 Preview mode accepts proposed segments. Master mode requires an approved EDL, approved segments, matching source hashes, and a free output path; it refuses to overwrite.
 
+**There is no approve command, and that is the design.** Approval means editing the EDL: set
+`approval.status` to `"approved"` and each segment's `approval` to `"approved"`. No CLI verb
+does this because a verb would be a thing an agent can call, and this is the one step that
+must not be automatable. **Never make that edit on the human's behalf**, not even when they
+say the preview looks good: hand them the path and let them do it, or ask them to say
+explicitly that they want you to write it. Everything before this point is reversible; this
+is what makes a master.
+
 Audio is normalised to the `speechTargetLufs` the EDL declares, defaulting to -16 LUFS with a -1 dBTP ceiling. This runs on the concatenated result rather than per segment, so a quiet passage stays quieter than a loud one instead of every piece being dragged to the same number. Measured on one recording: -25.4 LUFS in, -16.5 out.
 
 The renderer validates its own output against the EDL: dimensions, pixel format, colour metadata, frame count within one frame, and the audio contract. Identical inputs produce a byte-identical file, so the `sha256` in the result is a reproducibility check.
@@ -133,7 +161,8 @@ Never mark segments approved on the human's behalf. Never render a master withou
    until a round proposes nothing and every invariant holds. This is where most of the work
    is, and one pass is never the answer. The full procedure is under `semantic` below.
 7. `vcut render --mode preview` and have a human watch it.
-8. Only after approval, flip the EDL to approved and render the master.
+8. Stop. Approving the EDL is the human's edit, not a command, and not yours to make. See
+   `render` above.
 
 Step 6 is not optional and its rounds are not interchangeable. Each round can only see what
 the round before it uncovered, so stopping after one leaves work that looks finished and is
@@ -231,17 +260,22 @@ trx transcribe master.mp4 --words --language <lang> -m large-v3-turbo
 vcut semantic review --edl edl.json --detect detect.json \
   --master master.mp4 --master-transcript master.srt
 
-# 4. Audible sound that is not language, if the classifier is installed
+# 4. Audible sound that is not language
 python3 skills/non-speech.py master.mp4 > non-speech.json
 
 # 5. Fold findings back into proposals.json and repeat from 1
 ```
 
-Two things about step 4. Its timings are the **master** timeline, so map them back through
+Three things about step 4. Its timings are the **master** timeline, so map them back through
 the EDL before adding them, and a master span can cross a cut, which means one span maps to
 several source spans and taking only its endpoints yields a range covering everything
 between. Run it on the render, never on the source: on raw footage every pause scores as
 non-speech, correctly and uselessly.
+
+If the classifier is not installed the script says so and exits. Invariant 7 still holds, and
+without the classifier the only instrument left for it is a human ear: say that in the
+handoff rather than reporting the edit as verified. It is the one check that cannot be read
+off any text.
 
 #### Working a round
 
@@ -270,7 +304,12 @@ before proposing it.
 
 #### Before calling it done
 
-Stop when a round proposes nothing, not when the removal percentage looks respectable.
+Stop when a round proposes nothing, not when the removal percentage looks respectable, and
+not when the rounds start finding less. A round that finds three things instead of ten is
+still a round that found something, and what it found was invisible until the previous one
+ran. Diminishing returns is what convergence looks like from the inside, one round before the
+end, every time.
+
 Verify against the transcript of the render, not against the plan:
 
 - Every invariant below holds.
