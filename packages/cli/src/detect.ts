@@ -102,6 +102,52 @@ export const PRESET_DB: Record<Preset, number> = {
 // A handful of fragments is normal on any transcript; a quarter of them is a missing flag.
 const FRAGMENT_WARN_RATIO = 0.1
 
+/**
+ * Words whose claimed start lands inside a span the detector measured as silence.
+ *
+ * A word-level transcript drifts toward silence: the model stretches a cue backwards into
+ * the pause before the word, so the cue claims speech where the waveform has none. Clamping
+ * trusts that claim and holds a boundary open around it, which is how room tone survives a
+ * cut that was correctly detected.
+ *
+ * The symptom is what makes this worth reporting rather than leaving to a reader. Dead air
+ * in the render looks like a threshold that was set too low, so the natural response is to
+ * change the preset. One session spent a round doing exactly that; the more conservative
+ * preset moved the boundary by 12ms and explained nothing, because the detector had been
+ * right all along and the transcript was wrong.
+ *
+ * No invented tolerance: the disagreement is measured against the silence spans this same
+ * run detected, at this run's own threshold. A word starting inside one of them contradicts
+ * the audio by however far into it the cue claims to begin.
+ */
+export const wordsContradictingSilence = (
+  words: Word[],
+  silences: Interval[],
+): Array<{ text: string; startMs: number; silenceStartMs: number; driftMs: number }> => {
+  if (words.length === 0 || silences.length === 0) {
+    return []
+  }
+  const found: Array<{ text: string; startMs: number; silenceStartMs: number; driftMs: number }> =
+    []
+  for (const word of words) {
+    const silence = silences.find(
+      (span) => word.startMs >= span.startMs && word.startMs < span.endMs,
+    )
+    if (silence === undefined) {
+      continue
+    }
+    // How far past the start of measured silence the cue claims a word begins. The audio
+    // says nothing is there until the span ends.
+    found.push({
+      text: word.text,
+      startMs: word.startMs,
+      silenceStartMs: silence.startMs,
+      driftMs: silence.endMs - word.startMs,
+    })
+  }
+  return found
+}
+
 const DEFAULT_MIN_SILENCE_MS = 300
 const DEFAULT_MARGIN_MS = 100
 
@@ -486,6 +532,18 @@ export const detectCommand = async (argv: string[]): Promise<void> => {
   }
 
   const { transcript, path } = loadTranscript(options.transcriptPath, warnings)
+
+  const contradictions = wordsContradictingSilence(transcript.words, silences)
+  if (contradictions.length > 0) {
+    const worst = [...contradictions].sort((left, right) => right.driftMs - left.driftMs)[0]
+    // The count alone is not actionable and the drift has no natural cut-off to filter on:
+    // measured on one recording it ran from 1318ms down to a median of 246ms with no gap,
+    // so naming the worst case with its position beats inventing a threshold to hide the
+    // rest behind.
+    warnings.push(
+      `${contradictions.length} transcript ${contradictions.length === 1 ? 'cue claims a word starts' : 'cues claim a word starts'} inside measured silence. The largest is "${worst?.text}" at ${((worst?.startMs ?? 0) / 1000).toFixed(2)}s, where the audio stays silent for another ${worst?.driftMs}ms. Word clamping trusts those timings, so a boundary can stay open around a pause this run correctly detected. Dead air surviving there is a transcript problem, not a threshold one, and changing the preset will not move it`,
+    )
+  }
 
   const report: DetectReport = {
     version: 1,

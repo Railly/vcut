@@ -102,6 +102,27 @@ model marks where a word begins:
 grep -c '^ ' words.srt      # should be close to the cue count, not a fraction of it
 ```
 
+**Word timings drift toward silence, and detect now says so.** A model stretches a cue
+backwards into the pause before the word, so the cue claims speech where the waveform has
+none. Clamping trusts that claim and holds a boundary open around it, which is how room tone
+survives a cut that was detected correctly:
+
+```
+warning   60 transcript cues claim a word starts inside measured silence. The largest is
+          "honor?" at 75.64s, where the audio stays silent for another 1318ms.
+```
+
+**Read that as a transcript problem, not a threshold one.** Dead air in the render looks
+exactly like a threshold set too low, so the reflex is to change the preset. One session did
+that: the more conservative preset moved the boundary by 12ms and explained nothing, because
+the detector had been right and the transcript was wrong. Check the named position with
+`vcut say` before touching anything.
+
+The count is usually not small — 60 of 217 cues on one recording — because the drift is
+systematic rather than exceptional. There is no threshold to filter it: measured on that same
+recording it ran from 1318ms down to a median of 246ms with no gap anywhere. That is why the
+warning names the worst case with its position instead of pretending a cut-off exists.
+
 **Ask the model to keep the hesitations.** A transcriber cleans by default: it writes what it
 believes was meant, so a stretched vowel or a tag question is dropped as noise. Those are
 exactly the spans worth cutting, and one that never reaches the transcript cannot be proposed.

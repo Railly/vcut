@@ -7,6 +7,7 @@ import {
   parseSilenceLog,
   parseSrt,
   withinSource,
+  wordsContradictingSilence,
 } from '../src/detect.ts'
 
 const realSilenceLog = `
@@ -171,5 +172,54 @@ describe('fragmentRatio', () => {
 
   test('reports zero for an empty transcript rather than dividing by nothing', () => {
     expect(parseSrt('').fragmentRatio).toBe(0)
+  })
+})
+
+describe('wordsContradictingSilence', () => {
+  const word = (text: string, startMs: number, endMs: number) => ({
+    text,
+    startsWord: true,
+    startMs,
+    endMs,
+  })
+  const silence = (startMs: number, endMs: number) => ({ startMs, endMs })
+
+  test('names a word that claims to start inside measured silence', () => {
+    const found = wordsContradictingSilence(
+      [word('que', 36_680, 37_400)],
+      [silence(36_100, 37_110)],
+    )
+    expect(found).toHaveLength(1)
+    expect(found[0]).toMatchObject({ text: 'que', startMs: 36_680, driftMs: 430 })
+  })
+
+  test('says nothing about a word that starts where the audio has energy', () => {
+    expect(wordsContradictingSilence([word('hola', 5000, 5400)], [silence(1000, 2000)])).toEqual([])
+  })
+
+  // A word starting exactly where silence ends is the normal, correct case: the cue and
+  // the waveform agree.
+  test('a word starting at the end of a silence does not contradict it', () => {
+    expect(wordsContradictingSilence([word('ya', 2000, 2400)], [silence(1000, 2000)])).toEqual([])
+  })
+
+  test('reports each contradicting word separately', () => {
+    const found = wordsContradictingSilence(
+      [word('uno', 1200, 1600), word('dos', 1400, 1800), word('tres', 5000, 5400)],
+      [silence(1000, 2000)],
+    )
+    expect(found.map((entry) => entry.text)).toEqual(['uno', 'dos'])
+  })
+
+  test('nothing to check without a transcript or without silences', () => {
+    expect(wordsContradictingSilence([], [silence(1000, 2000)])).toEqual([])
+    expect(wordsContradictingSilence([word('hola', 1200, 1600)], [])).toEqual([])
+  })
+
+  // The drift is measured against this run's own silence spans at this run's threshold,
+  // so the report carries no invented tolerance of its own.
+  test('drift is the distance to the end of the silence, not to its start', () => {
+    const found = wordsContradictingSilence([word('x', 1100, 1500)], [silence(1000, 2000)])
+    expect(found[0]?.driftMs).toBe(900)
   })
 })
