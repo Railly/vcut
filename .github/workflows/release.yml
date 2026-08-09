@@ -5,6 +5,10 @@ on:
     branches: [main]
     paths:
       - "packages/cli/package.json"
+  # A release that fails for a reason unrelated to the version, a red CI or a broken tag
+  # step, otherwise has no way back: the next commit does not touch package.json, so the
+  # path filter never fires again and the bump sits published-in-name-only.
+  workflow_dispatch:
 
 concurrency:
   group: release
