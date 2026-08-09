@@ -18,7 +18,7 @@ import {
 import { renderCommand } from './render-edl.ts'
 import { semanticCommand } from './semantic.ts'
 
-export const VERSION = '0.1.0'
+export const VERSION = '0.1.1'
 export const SCHEMA_VERSION = 1
 
 const HELP = `vcut - cut dead air out of a recording, reproducibly
@@ -144,6 +144,21 @@ const CONTRACTS: Record<string, unknown> = {
     notes: [
       'The EDL itself validates against schemas/edl.schema.json.',
       'Every segment is written as proposed and the EDL as draft. Nothing is approved here.',
+    ],
+  },
+  semantic: {
+    version: SCHEMA_VERSION,
+    command: 'vcut semantic export | vcut semantic check',
+    output: {
+      export:
+        '{ status: "exported", input, durationMs, lang, instructions: string[], lines: [{ index, startMs, endMs, text }] }',
+      check: '{ status: "valid"|"rejected", accepted: integer, issues: [{ index, problem }] }',
+    },
+    notes: [
+      'vcut never calls a model. Export hands over the lines; you write the proposals back.',
+      'A proposal is { startMs, endMs, kind, reason }, kind being false-start | repetition | tangent | filler.',
+      'Feed accepted proposals to vcut edl build --semantic <path>. Each lands as semanticRisk material.',
+      'check exits 1 when anything is malformed, and edl build refuses the whole file rather than skipping entries.',
     ],
   },
   render: {

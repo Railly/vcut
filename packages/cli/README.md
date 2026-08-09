@@ -101,11 +101,16 @@ Filler detection needs word-level timestamps: one cue per word. A normal SRT has
 
 ```bash
 # with trx, which wraps whisper and handles extraction
-trx transcribe recording.mp4 --words --language es
+trx transcribe recording.mp4 --words --language es -m large-v3-turbo
 
 # or with whisper-cli directly
-whisper-cli -m model.bin -f audio.wav --max-len 1 --output-srt
+whisper-cli -m ggml-large-v3-turbo.bin -f audio.wav --max-len 1 --output-srt
 ```
+
+Ask for a large model. One cue per word means one cue per *token*, and what counts as a token
+depends on the model. On the same three minutes of Spanish, `small` returns 26% of its cues as
+word fragments, splitting "Crafter" into `Cra` + `fter`; `large-v3-turbo` returns 0% and costs
+13 seconds. Fragments break filler matching, which compares whole tokens.
 
 ```bash
 vcut detect recording.mp4 --transcript words.srt --lang es
@@ -141,8 +146,9 @@ JSON is emitted automatically when stdout is not a TTY, so an agent never needs 
 
 ## Limits
 
-- No semantic cutting. Repeated lines and false starts need a human or an LLM reading the transcript.
-- No crossfade at the joins yet; segments concatenate directly.
+- Semantic cutting is proposal-only. `vcut semantic export` hands the transcript to a model as numbered lines and `edl build --semantic` folds the proposals back in, each one marked `semanticRisk: material`. vcut never calls a model itself: no dependency, no API key, same EDL for the same proposals file.
+- Audio ramps 50ms at each segment edge (`--edge-fade 0` disables it). Not a crossfade: overlapping the two sides would shorten the render against concatenated video and drift the audio out of sync, so each side fades within its own segment. A joint under a fully continuous sentence can still be heard as a dip.
+- A silence detector decides by level, so a soft consonant under the threshold is cut like a pause. If a word loses its opening sound, the fix is the recording or a lower threshold, not a larger margin.
 - External audio, sync offset, and noise reduction are rejected rather than silently ignored.
 - No face tracking or automatic zoom.
 
