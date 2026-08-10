@@ -2,6 +2,23 @@
 
 Notable changes to `@crafter/vcut`. Entries say what changed and, where it is not obvious, what measurement led to it.
 
+## 0.10.0
+
+Agents ran python3 about twenty times per edit. Reading what they were doing with it split into
+two causes: nine of sixteen were pulling two or three fields out of a JSON object the CLI had
+just handed them, and the rest were hand-rolling the one judgement in this pipeline that had
+never been given a command.
+
+### Added
+
+- **`vcut converge <media> --phrase "..." --from <sec>`** finds where a repeated phrase stops coming back, which is the boundary of a retake. It steps a window forward, transcribing each one, and reports the first that no longer carries the phrase together with every window it read. This was documented as a bash loop to copy, and runs copied it: one ran it twice with nine offsets each, eighteen ffmpeg-plus-transcriber calls for one answer. Measured on the retake three runs cut short: 8.9 seconds, one call, a boundary on the correct side. Matching compares words of four letters or more rather than the phrase as typed, because a short window transcribes without the file's context — the same audio came back as "a la que conocemos" in one window and "ahora que conocemos" in the next, and a literal test called the second one clear and reported a boundary three seconds early. On the case measured, carrying-word overlap scored 1.00 inside the retake and 0.00 past it.
+
+### Changed
+
+- **`converge` reports the far edge of what is safe to remove, and the manual says that is not where to cut.** A retake and the telling that survives it overlap: the last attempt starts before the previous one stops being recognisable. Both cuts were rendered and listened to — ending at the reported 62000ms buys 0.7 seconds and leaves "Conocemos, ya llegamos a mil miembros", while ending at 61192ms keeps "Y a la que conocemos, ya llegamos a mil miembros". Neither transcript reads as broken. The difference is audible and only audible, which is the clearest case yet for why approval is a person's.
+- **The manual says `--human` exists for reading.** Every command takes it and it answers in a few lines what the JSON answers in a few hundred; a run spent nine separate `python3` invocations extracting fields that were already in the summary — removal percentage, silence count, whether word clamping engaged and over how many words.
+- **The debug skill gains the overlap trap**, which produces a cut that is correct by every written invariant and wrong to the ear.
+
 ## 0.9.0
 
 Editing cost 96k tokens and five minutes of work per minute of video, measured across nine runs

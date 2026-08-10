@@ -159,6 +159,25 @@ a cut drawn from them lands mid-repetition. Three runs cut the same retake at 61
 Stepping a window forward until the repeated wording stops coming back is the check; agreement
 between runs is not.
 
+## "The cut is at the right place and the line still sounds wrong"
+
+A retake and the telling that survives it **overlap**. The last attempt begins before the
+previous one has stopped being recognisable, so the point where the repeated wording disappears
+sits past the start of the line worth keeping. Cutting to the first number beheads the second.
+
+```bash
+vcut converge source.mp4 --phrase "<the recurring words>" --from <sec> --lang es
+```
+
+Measured on one recording: `converge` answered 62000ms, and cutting there produced "Conocemos,
+ya llegamos a mil miembros". Ending at 61192ms instead kept "Y a la que conocemos, ya llegamos a
+mil miembros" — the whole line, for 0.7 seconds more runtime.
+
+**Trap: reading either transcript as broken.** Neither is. "Conocemos, ya llegamos a mil
+miembros" parses, carries the fact, and passes every invariant in the manual. The defect is
+audible and only audible, which is why the last check before approval is a person listening
+rather than another measurement.
+
 ## "The tool did the wrong thing with my input"
 
 **Check your own input first.** Before reporting that a tool mishandled a file or ignored a

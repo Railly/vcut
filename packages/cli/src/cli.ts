@@ -4,6 +4,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { auditCommand } from './audit-command.ts'
 import { buildEdlCommand } from './build-edl.ts'
+import { convergeCommand } from './converge.ts'
 import { detectCommand, positional } from './detect.ts'
 import { run, runInherit } from './exec.ts'
 import { locateCommand } from './locate.ts'
@@ -59,6 +60,7 @@ Usage:
   vcut locate --edl <path> [flags]   Translate between master time and source time
   vcut audit --edl <path> --render <path>  Check a render against the EDL it came from
   vcut say <media> [flags]           Read back what is spoken at a position
+  vcut converge <media> [flags]      Find where a repeated phrase stops coming back
   vcut schema [name]                 Print the JSON contract for a command
   vcut skills list|get [name]        Read the bundled agent manual
   vcut doctor                        Check external dependencies
@@ -444,6 +446,9 @@ export const route = async (argv: string[]): Promise<void> => {
       throw new UsageError('Usage: vcut edl build --detect <path> --output <path> --campaign <id>')
     }
     return buildEdlCommand(edlRest)
+  }
+  if (command === 'converge') {
+    return convergeCommand(rest)
   }
   if (command === 'suspects') {
     return suspectsCommand(rest)

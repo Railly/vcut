@@ -40,6 +40,13 @@ way, and a first pass that stops there ships a recording with its retakes in it.
 
 Every command writes data to stdout and diagnostics to stderr. JSON is emitted automatically when stdout is not a TTY, so an agent never needs `--json`, though passing it is harmless. Exit code 2 means the invocation was wrong, 1 means the run failed.
 
+**`--human` when you are reading rather than parsing.** Every command takes it, and it answers
+in a few lines what the JSON answers in a few hundred. A run spent nine separate `python3`
+invocations pulling two or three fields out of objects it had just received, and every one of
+those fields is in the human summary already: removal percentage, silence count, whether word
+clamping engaged and over how many words, what the review candidates are. Parse the JSON when a
+later command needs a value from it; read the summary when you need to know what happened.
+
 Run `vcut schema detect|edl|render` for the field-by-field contract instead of parsing `--help`.
 
 ## detect
@@ -439,6 +446,48 @@ A window with **no words but real level** is the case worth stopping on. Somethi
 that the transcript never saw, which is what `skills/core/scripts/non-speech.py` exists to
 find.
 
+## converge
+
+```bash
+vcut converge <media> --phrase "the wording that keeps recurring" --from <sec> --lang es
+```
+
+Where a repeated phrase stops coming back, which is the boundary of a retake. Steps a window
+forward from `--from`, transcribing each one, and reports the first that no longer carries the
+phrase along with every window it read getting there.
+
+It exists because that judgement went wrong more often than any other: three runs cut the same
+retake at 61000, 61020 and 61192ms, all about 1772ms short, and each had verified its number.
+Every attempt at a retake says the same words, so a window opened anywhere inside one comes
+back complete and convincing.
+
+Matching is on the carrying words rather than the phrase as typed. A short window transcribes
+without the context the rest of the file gives, so the same audio came back as "a la que
+conocemos" in one window and "ahora que conocemos" in the next; comparing words of four letters
+or more survives that, and separated cleanly on the case measured — 1.00 inside the retake,
+0.00 past it.
+
+`--to` bounds the search and defaults to twelve seconds past `--from`. A null `boundaryMs` with
+exit 1 means the phrase was still recurring at the end of that span, which is a reason to widen
+it rather than evidence there is nothing to cut.
+
+**The boundary it reports is where the repetition ends, which is not where the telling you are
+keeping begins.** Those differ, and cutting to the first is how you lose the opening of the
+last attempt. On the recording above it answered 62000ms — past that the audio reads "ya
+llegamos a mil miembros" — while the surviving segment starts at 61192ms and carries "Y a la
+que conocemos, ya llegamos a mil miembros", the whole line. The last attempt begins before the
+previous one has finished being recognisable.
+
+So read the boundary as the far edge of what is safe to remove, then walk back to the start of
+the final telling and end the cut there. `edl build` clamps to measured silence, which usually
+lands it correctly, but the span you propose should already name the line you mean to keep
+rather than the point where the words stopped repeating.
+
+Both cuts were rendered and listened to. Ending at 61192ms keeps "Y a la que conocemos, ya
+llegamos a mil miembros". Ending at 62000ms buys 0.7 seconds and leaves "Conocemos, ya llegamos
+a mil miembros" — the line beheaded, and audibly wrong. Neither transcript reads as broken; the
+difference only shows up in the ear, which is the reason the approval step is a human's.
+
 ## When something comes out wrong
 
 ```bash
@@ -782,21 +831,25 @@ Three of those look like a clean start. A window whose start you chose from a hy
 confirm the hypothesis, which is how three runs each verified a boundary and each was wrong.
 
 The test that does settle it is the phrase, not the timestamp: **step the window forward until
-the repeated wording stops coming back at all.** As a loop, since doing it by eye is where runs
-give up and guess:
+the repeated wording stops coming back at all.** That is one command:
 
 ```bash
-for start in 59 60 61 62 63; do
-  ffmpeg -v error -y -ss $start -t 3.5 -i source.mp4 -vn -ac 1 -ar 16000 -c:a pcm_s16le w.wav
-  printf '%s: ' "$start"
-  trx transcribe w.wav --language es --preset verbatim | python3 -c 'import json,sys; print(json.load(sys.stdin)["text"][:70])'
-done
+vcut converge source.mp4 --phrase "a la que conocemos" --from 59 --lang es
 ```
 
-The boundary is the first start whose text no longer contains the repeated phrase. Do not anchor
-the search on a segment boundary `edl build` already snapped to: one run did, got the right
-answer, and said afterwards it would have inherited the error had the snap been wrong. The snap
-comes from the same transcript being questioned. The boundary is where the transcript of the
+It reports the first offset whose transcript no longer carries the phrase, and every window it
+read on the way, so the answer arrives with its evidence. Measured on the retake three runs cut
+short: 8.9 seconds, one call, and a boundary on the correct side of it.
+
+Read the trace rather than only the answer. On that recording the window at 60.5s came back
+reading like the line worth keeping, while the audio under it was still an earlier attempt at
+saying it: a short window transcribes what it hears into the sentence it expects. The wording
+alone cannot tell you which attempt you are standing in, which is why a window you chose from a
+hypothesis cannot settle this and stepping until the phrase leaves can.
+
+Do not anchor the search on a segment boundary `edl build` already snapped to: one run did, got
+the right answer, and said afterwards it would have inherited the error had the snap been wrong.
+The snap comes from the same transcript being questioned. The boundary is where the transcript of the
 window no longer contains the phrase being cut, not where a window happens to begin with
 something that parses.
 

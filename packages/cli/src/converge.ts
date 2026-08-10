@@ -1,0 +1,245 @@
+/**
+ * Where a repeated phrase stops coming back.
+ *
+ * A retake says the same words every time, so a window opened anywhere inside one returns
+ * something grammatically complete that reads like the telling worth keeping. Three separate
+ * runs cut the same retake at 61000, 61020 and 61192ms, each about 1772ms short of the boundary
+ * that removed it, and each had verified its answer: a window whose start comes from a
+ * hypothesis confirms the hypothesis.
+ *
+ * The test that settles it is the phrase rather than the timestamp — step forward until the
+ * wording stops recurring. That was documented as a bash loop to copy, and runs copied it: one
+ * ran it twice with nine offsets each, eighteen ffmpeg-plus-transcriber calls to answer one
+ * question. The judgement in this pipeline that most often goes wrong was the only one left as
+ * a snippet instead of a command.
+ *
+ * vcut still calls no model of its own. It runs the transcriber already on the caller's PATH,
+ * the same way every measurement here runs ffmpeg.
+ */
+
+import { existsSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join, resolve } from 'node:path'
+
+import { run } from './exec.ts'
+import { emitJson, heading, line, nextStep, resolveMode, UsageError } from './output.ts'
+
+const HELP = `vcut converge - find where a repeated phrase stops coming back
+
+Usage:
+  vcut converge <media> --phrase "<words>" --from <sec> [flags]
+
+Flags:
+  --phrase <words>      The wording that keeps recurring (required)
+  --from <sec>          Where to start stepping (required)
+  --to <sec>            Where to give up (default: 12s past --from)
+  --step <sec>          How far to move each try (default 0.5)
+  --window <sec>        How much audio each try transcribes (default 3.5)
+  --lang <code>         Language passed to the transcriber
+  --json / --human      Output mode
+  --help                Show this message
+
+Reports the first offset whose transcript no longer contains the phrase, and every window it
+read on the way. A retake repeats the same words, so any window inside one comes back reading
+like a clean start: the phrase leaving is the signal, not a window that parses.`
+
+export type Probe = { atMs: number; text: string; contains: boolean }
+
+const DEFAULT_STEP_S = 0.5
+const DEFAULT_WINDOW_S = 3.5
+const DEFAULT_SPAN_S = 12
+
+/** Punctuation and case are delivery, not words: a match that respects them finds nothing. */
+export const normalise = (text: string): string =>
+  text
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+
+/**
+ * Matching the phrase literally is too brittle. A short window is transcribed without the
+ * context the rest of the file gives, so the same audio came back as "a la que conocemos" in
+ * one window and "ahora que conocemos" in the next: a literal test calls the second one clear
+ * and reports a boundary three seconds early, which is the failure this command exists to
+ * prevent.
+ *
+ * Comparing only the carrying words survives that. Short words are grammar and drift between
+ * transcriptions of the same audio; a word of four letters or more is what the sentence is
+ * about, and a retake repeats those exactly. On the case above this separates cleanly rather
+ * than narrowly: every window inside the retake scores 1.00 and every window past it 0.00,
+ * so the result does not depend on where the bar sits between them.
+ */
+const OVERLAP = 0.6
+const CARRIES_MEANING = 4
+
+export const containsPhrase = (text: string, phrase: string): boolean => {
+  const words = normalise(phrase).split(' ').filter(Boolean)
+  // A phrase of nothing but short words has no carrying words to compare, so it falls back to
+  // all of them rather than to none.
+  const carrying = words.filter((word) => word.length >= CARRIES_MEANING)
+  const wanted = carrying.length > 0 ? carrying : words
+  if (wanted.length === 0) {
+    return false
+  }
+  const heard = new Set(normalise(text).split(' ').filter(Boolean))
+  const hits = wanted.filter((word) => heard.has(word)).length
+  return hits / wanted.length >= OVERLAP
+}
+
+export const firstClear = (probes: Probe[]): Probe | null =>
+  probes.find((probe) => !probe.contains) ?? null
+
+const transcribe = async (
+  media: string,
+  startMs: number,
+  windowMs: number,
+  language: string | undefined,
+): Promise<string> => {
+  const clip = join(tmpdir(), `vcut-converge-${process.pid}-${startMs}.wav`)
+  const cut = await run('ffmpeg', [
+    '-v',
+    'error',
+    '-y',
+    '-ss',
+    (startMs / 1000).toFixed(3),
+    '-t',
+    (windowMs / 1000).toFixed(3),
+    '-i',
+    media,
+    '-vn',
+    '-ac',
+    '1',
+    '-ar',
+    '16000',
+    '-c:a',
+    'pcm_s16le',
+    clip,
+  ])
+  if (cut.exitCode !== 0) {
+    throw new UsageError(cut.stderr.trim() || 'ffmpeg could not cut the window')
+  }
+  try {
+    const args = ['transcribe', clip, '--preset', 'verbatim']
+    if (language !== undefined) {
+      args.push('--language', language)
+    }
+    const said = await run('trx', args)
+    if (said.exitCode !== 0) {
+      throw new UsageError(
+        said.stderr.trim() || 'trx could not transcribe the window. Is it installed?',
+      )
+    }
+    const parsed = JSON.parse(said.stdout) as { text?: unknown }
+    return typeof parsed.text === 'string' ? parsed.text.replace(/\s+/g, ' ').trim() : ''
+  } finally {
+    rmSync(clip, { force: true })
+  }
+}
+
+const numberFlag = (argv: string[], flag: string, fallback: number): number => {
+  const index = argv.indexOf(flag)
+  if (index === -1) {
+    return fallback
+  }
+  const parsed = Number(argv[index + 1])
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    throw new UsageError(`${flag} needs a number`)
+  }
+  return parsed
+}
+
+export const convergeCommand = async (argv: string[]): Promise<void> => {
+  if (argv.includes('--help') || argv.length === 0) {
+    process.stdout.write(`${HELP}\n`)
+    return
+  }
+  const value = (flag: string) => {
+    const index = argv.indexOf(flag)
+    return index === -1 ? undefined : argv[index + 1]
+  }
+  const positional = argv.find(
+    (arg, index) => !arg.startsWith('-') && (index === 0 || !argv[index - 1].startsWith('--')),
+  )
+  const media = value('--media') ?? positional
+  const phrase = value('--phrase')
+  const from = value('--from')
+
+  if (media === undefined || phrase === undefined || from === undefined) {
+    throw new UsageError(HELP)
+  }
+  const resolved = resolve(media)
+  if (!existsSync(resolved)) {
+    throw new UsageError(`no media at ${resolved}`)
+  }
+
+  const fromMs = Number(from) * 1000
+  if (!Number.isFinite(fromMs)) {
+    throw new UsageError('--from needs a position in seconds')
+  }
+  const toMs = numberFlag(argv, '--to', Number(from) + DEFAULT_SPAN_S) * 1000
+  const stepMs = numberFlag(argv, '--step', DEFAULT_STEP_S) * 1000
+  const windowMs = numberFlag(argv, '--window', DEFAULT_WINDOW_S) * 1000
+  if (stepMs <= 0) {
+    throw new UsageError('--step needs to be greater than zero')
+  }
+
+  const probes: Probe[] = []
+  for (let atMs = fromMs; atMs <= toMs; atMs += stepMs) {
+    const text = await transcribe(resolved, atMs, windowMs, value('--lang'))
+    const contains = containsPhrase(text, phrase)
+    probes.push({ atMs: Math.round(atMs), text, contains })
+    // Stopping at the first clear window is the answer, and every further call costs a
+    // transcription to confirm something already known.
+    if (!contains) {
+      break
+    }
+  }
+
+  const clear = firstClear(probes)
+  const mode = resolveMode(argv, Boolean(process.stdout.isTTY))
+
+  if (mode === 'human') {
+    const lines = [heading('converge'), line('phrase', phrase)]
+    for (const probe of probes) {
+      lines.push(
+        line(
+          `${(probe.atMs / 1000).toFixed(2)}s`,
+          `${probe.contains ? 'still there' : 'CLEAR'}  ${probe.text.slice(0, 60)}`,
+        ),
+      )
+    }
+    lines.push(
+      clear === null
+        ? line('result', `still present at ${(toMs / 1000).toFixed(2)}s, widen --to`)
+        : line('boundary', `${clear.atMs}ms`),
+    )
+    if (clear !== null) {
+      lines.push(
+        nextStep(
+          `walk back from ${clear.atMs}ms to where the telling you are keeping starts, and end the cut there`,
+        ),
+      )
+    }
+    console.log(lines.join('\n'))
+    return
+  }
+
+  emitJson({
+    input: resolved,
+    phrase,
+    windowMs,
+    stepMs,
+    // Null means it never stopped recurring inside the span searched, which is a reason to
+    // widen --to rather than evidence there is nothing to cut.
+    // Where the repetition ends, which is past where the surviving telling begins: the last
+    // attempt starts before the previous one has finished being recognisable. Cutting to this
+    // number removes the opening of the line being kept.
+    boundaryMs: clear === null ? null : clear.atMs,
+    means: 'the far edge of what is safe to remove, not the start of the telling you keep',
+    probes,
+  })
+  if (clear === null) {
+    process.exitCode = 1
+  }
+}

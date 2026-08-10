@@ -16,6 +16,7 @@ vcut render --edl <path> [flags]   Render an EDL to video
 vcut locate --edl <path> [flags]   Translate between master time and source time
 vcut audit --edl <path> --render <path>  Check a render against the EDL it came from
 vcut say <media> [flags]           Read back what is spoken at a position
+vcut converge <media> [flags]      Find where a repeated phrase stops coming back
 vcut schema [name]                 Print the JSON contract for a command
 vcut skills list|get [name]        Read the bundled agent manual
 vcut doctor                        Check external dependencies
