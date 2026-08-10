@@ -20,7 +20,8 @@ vcut converge <media> [flags]      Find where a repeated phrase stops coming bac
 vcut schema [name]                 Print the JSON contract for a command
 vcut skills list|get [name]        Read the bundled agent manual
 vcut doctor                        Check external dependencies
-vcut setup [classifier]            Check what a first run needs, or fetch the classifier
+vcut init [--no-skills]            Install everything a first run needs
+vcut setup classifier              Fetch the optional non-speech classifier
 vcut version                       Print the version
 ```
 

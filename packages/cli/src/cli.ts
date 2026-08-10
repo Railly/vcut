@@ -64,7 +64,8 @@ Usage:
   vcut schema [name]                 Print the JSON contract for a command
   vcut skills list|get [name]        Read the bundled agent manual
   vcut doctor                        Check external dependencies
-  vcut setup [classifier]            Check what a first run needs, or fetch the classifier
+  vcut init [--no-skills]            Install everything a first run needs
+  vcut setup classifier              Fetch the optional non-speech classifier
   vcut version                       Print the version
 
 Global flags:
@@ -169,7 +170,7 @@ const doctorCommand = async (argv: string[]): Promise<void> => {
 const SETUP_HELP = `vcut setup - fetch the optional non-speech classifier
 
 Usage:
-  vcut setup                        What is installed and what is left to run
+  vcut init [--no-skills]           Install everything a first run needs
   vcut setup classifier [--force]   Fetch the non-speech classifier
 
 Downloads the AudioSet model that skills/core/scripts/non-speech.py uses to find breaths, mic bumps and
@@ -181,69 +182,124 @@ leaves invariant 7 to a human ear, which is a real answer, not a broken state.
 The script also needs Python with panns-inference:
   pip install panns-inference scipy numpy`
 
-// Everything a first run needs, in one answer. Getting started meant four commands from three
-// projects, and the one that is easy to skip is the transcription model: without it the semantic
-// pass has nothing to read, and the failure arrives later as a bad cut rather than an error.
+// Everything a first run needs, done rather than listed.
 //
-// This installs what it can and names what it cannot. Package managers and model downloads
-// belong to the tools that own them, so it reports those as commands to run rather than running
-// them: a setup command that shells out to brew is a setup command that breaks on the first
-// machine that does not have brew.
-const setupAll = async (): Promise<void> => {
-  const deps = await Promise.all(
-    DEPENDENCIES.map(async (dependency) => {
-      try {
-        const { exitCode } = await run(dependency.name, ['-version'])
-        return { name: dependency.name, ok: exitCode === 0 }
-      } catch {
-        return { name: dependency.name, ok: false }
+// An earlier version printed the commands and left them to the reader, which reads as prudence
+// and is really the work unfinished: the step people skip is the transcription model, and
+// skipping it does not fail, it produces a worse cut. A setup that hands you four commands has
+// four chances to be half-followed.
+//
+// So it runs what it can and reports what it cannot. Installing a package manager is not this
+// tool's business, and neither is deciding to write into a project directory without being
+// asked, so those two stay as instructions with everything else already done around them.
+const step = async (
+  label: string,
+  command: string,
+  args: string[],
+): Promise<{ ok: boolean; detail: string }> => {
+  // Announced before it runs and settled on its own line after, rather than overwritten in
+  // place: these steps shell out to installers that write to the terminal themselves, and a
+  // carriage return cannot take back a line something else has already scrolled past.
+  console.log(line(label, 'installing...'))
+  try {
+    const { exitCode, stderr } = await run(command, args)
+    const ok = exitCode === 0
+    console.log(line(label, ok ? 'done' : 'failed'))
+    return { ok, detail: ok ? 'done' : (stderr.trim().split('\n')[0] ?? 'failed') }
+  } catch (error) {
+    console.log(line(label, 'failed'))
+    return { ok: false, detail: error instanceof Error ? error.message : 'failed' }
+  }
+}
+
+const has = async (command: string, args: string[]): Promise<boolean> => {
+  try {
+    const { exitCode } = await run(command, args)
+    return exitCode === 0
+  } catch {
+    return false
+  }
+}
+
+const setupAll = async (argv: string[]): Promise<void> => {
+  const skipSkills = argv.includes('--no-skills')
+  const modelPath = join(homedir(), '.trx', 'models', 'ggml-large-v3-turbo.bin')
+  const blocked: string[] = []
+
+  console.log(heading('setup'))
+
+  for (const dependency of DEPENDENCIES) {
+    if (await has(dependency.name, ['-version'])) {
+      console.log(line(dependency.name, 'found'))
+      continue
+    }
+    // Homebrew is the one dependency this cannot bootstrap, and guessing a package manager on
+    // an unknown machine is how a setup command breaks the machine it was meant to prepare.
+    if (await has('brew', ['--version'])) {
+      const result = await step(dependency.name, 'brew', ['install', dependency.name])
+      if (!result.ok) {
+        blocked.push(`brew install ${dependency.name}`)
       }
-    }),
-  )
-  const transcriber = await run('trx', ['--version']).catch(() => null)
+    } else {
+      console.log(line(dependency.name, 'missing, and no brew to install it with'))
+      blocked.push(`install ${dependency.name} however your system does it`)
+    }
+  }
+
+  if (await has('trx', ['--version'])) {
+    console.log(line('trx', 'found'))
+  } else if (await has('npm', ['--version'])) {
+    const result = await step('trx', 'npm', ['install', '-g', '@crafter/trx'])
+    if (!result.ok) {
+      blocked.push('npm install -g @crafter/trx')
+    }
+  } else {
+    blocked.push('npm install -g @crafter/trx')
+  }
+
+  if (existsSync(modelPath)) {
+    console.log(line('transcription model', 'large-v3-turbo'))
+  } else if (await has('trx', ['--version'])) {
+    // The small default splits words mid-token, which reads as a transcript and cuts like
+    // noise, so the model is named rather than left to a default nobody chose.
+    const result = await step('transcription model', 'trx', ['init', '--model', 'large-v3-turbo'])
+    if (!result.ok) {
+      blocked.push('trx init --model large-v3-turbo')
+    }
+  } else {
+    blocked.push('trx init --model large-v3-turbo')
+  }
+
+  if (skipSkills) {
+    console.log(line('skills', 'skipped'))
+  } else if (await has('npx', ['--version'])) {
+    // Writes into the current directory, which is why --no-skills exists: a machine-wide setup
+    // run from a home directory should not scatter a project's files there.
+    const result = await step('skills', 'npx', ['-y', 'skills', 'add', 'Railly/vcut'])
+    if (!result.ok) {
+      blocked.push('npx skills add Railly/vcut')
+    }
+  } else {
+    blocked.push('npx skills add Railly/vcut')
+  }
+
   const classifier = CLASSIFIER_FILES.every((file) => existsSync(join(CLASSIFIER_HOME, file.name)))
-  const missing = deps.filter((dep) => !dep.ok).map((dep) => dep.name)
+  console.log(line('classifier', classifier ? 'installed' : 'not installed, optional (320MB)'))
 
-  const todo: string[] = []
-  if (missing.length > 0) {
-    todo.push(`brew install ${missing.join(' ')}`)
+  console.log(
+    blocked.length === 0
+      ? '\n  Ready. Point an agent at a recording: /vcut <file>'
+      : ['\n  Left to run:', ...blocked.map((item) => `    ${item}`)].join('\n'),
+  )
+  if (blocked.length > 0) {
+    process.exitCode = 1
   }
-  if (transcriber === null || transcriber.exitCode !== 0) {
-    todo.push('npm install -g @crafter/trx')
-  }
-  // Model size is the one default worth overriding out loud: the small model splits words
-  // mid-token, which reads as a transcript and cuts like noise. A run that starts without a
-  // large model does not fail, it produces a worse cut, which is the harder failure to notice.
-  const largeModel = existsSync(join(homedir(), '.trx', 'models', 'ggml-large-v3-turbo.bin'))
-  if (!largeModel) {
-    todo.push('trx init --model large-v3-turbo')
-  }
-  if (!classifier) {
-    todo.push('vcut setup classifier             (optional, 320MB, finds breaths and mic bumps)')
-  }
-
-  const lines = [
-    heading('setup'),
-    ...deps.map((dep) => line(dep.name, dep.ok ? 'found' : 'missing')),
-    line('trx', transcriber !== null && transcriber.exitCode === 0 ? 'found' : 'missing'),
-    line(
-      'transcription model',
-      existsSync(join(homedir(), '.trx', 'models', 'ggml-large-v3-turbo.bin'))
-        ? 'large-v3-turbo'
-        : 'missing; the small default splits words mid-token',
-    ),
-    line('classifier', classifier ? 'installed' : 'not installed, optional'),
-    '',
-    todo.length === 0 ? '  Nothing left to install.' : '  Run these, then vcut doctor:',
-    ...todo.map((step) => `    ${step}`),
-  ]
-  console.log(lines.join('\n'))
 }
 
 const setupCommand = async (argv: string[]): Promise<void> => {
   const target = positional(argv)
   if (target === 'all' || target === undefined) {
-    return setupAll()
+    return setupAll(argv)
   }
   if (target !== 'classifier') {
     throw new UsageError(SETUP_HELP)
@@ -539,6 +595,9 @@ export const route = async (argv: string[]): Promise<void> => {
   }
   if (command === 'doctor') {
     return doctorCommand(rest)
+  }
+  if (command === 'init') {
+    return setupAll(rest)
   }
   if (command === 'setup') {
     return setupCommand(rest)

@@ -2,6 +2,13 @@
 
 Notable changes to `@crafter/vcut`. Entries say what changed and, where it is not obvious, what measurement led to it.
 
+## 0.13.0
+
+### Added
+
+- **`vcut init` installs everything a first run needs.** 0.12.0 printed the commands and left them to the reader, which reads as prudence and is really the work unfinished: four commands across three projects have four chances to be half-followed, and the one people skip is the transcription model, whose absence produces a worse cut rather than an error. `init` installs ffmpeg through brew when it is missing, the transcriber through npm, the model through `trx init`, and the skills through `npx skills add`, then reports anything it could not do and exits non-zero. `--no-skills` leaves the current directory alone, since a machine-wide setup run from a home directory should not scatter a project's files there. Bootstrapping a package manager stays out of scope: guessing one on an unknown machine is how a setup command breaks the machine it was meant to prepare.
+- **`vcut setup classifier` is unchanged** and still fetches the optional non-speech model.
+
 ## 0.12.0
 
 ### Added

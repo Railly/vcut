@@ -95,6 +95,7 @@ Piped or captured, the same command emits JSON. No flag needed.
 | `vcut converge <media>` | Finds where a repeated phrase stops coming back |
 | `vcut schema [name]` | The JSON contract per command, versioned |
 | `vcut skills get vcut` | The bundled agent manual, as markdown |
+| `vcut init` | Installs everything a first run needs, and reports what it could not |
 | `vcut doctor` | Checks external dependencies |
 | `vcut setup classifier` | Fetches the optional non-speech classifier |
 | `vcut <input>` | Shorthand for `vcut detect` |
