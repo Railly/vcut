@@ -2,6 +2,12 @@
 
 Notable changes to `@crafter/vcut`. Entries say what changed and, where it is not obvious, what measurement led to it.
 
+## 0.4.2
+
+### Fixed
+
+- **`vcut --version` reported a version the binary was not.** The number lived in a constant in `cli.ts` as well as in `package.json`, and 0.4.1 shipped to npm with the constant still reading `0.4.0`: the release bumps `package.json` alone, so the second copy drifted the moment nobody looked, and `--version` stopped being evidence of what was installed. It is now read from `package.json` at startup, with a test that fails if the two ever disagree.
+
 ## 0.4.1
 
 ### Fixed

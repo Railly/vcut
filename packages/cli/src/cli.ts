@@ -21,7 +21,29 @@ import { renderCommand } from './render-edl.ts'
 import { sayCommand } from './say.ts'
 import { semanticCommand } from './semantic.ts'
 
-export const VERSION = '0.4.0'
+// Read rather than restated, because a hand-maintained copy drifts silently: 0.4.1 shipped to
+// npm with this constant still reading 0.4.0, so the published binary reported a version it
+// was not. The release only bumps package.json, which makes that the one place worth trusting.
+const packageVersion = (): string => {
+  let dir = dirname(fileURLToPath(import.meta.url))
+  for (let depth = 0; depth < 5; depth += 1) {
+    const candidate = join(dir, 'package.json')
+    if (existsSync(candidate)) {
+      const parsed = JSON.parse(readFileSync(candidate, 'utf8')) as { version?: string }
+      if (typeof parsed.version === 'string') {
+        return parsed.version
+      }
+    }
+    const parent = dirname(dir)
+    if (parent === dir) {
+      break
+    }
+    dir = parent
+  }
+  return 'unknown'
+}
+
+export const VERSION = packageVersion()
 export const SCHEMA_VERSION = 1
 
 const HELP = `vcut - cut dead air out of a recording, reproducibly
