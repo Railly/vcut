@@ -35,6 +35,17 @@ vcut render --edl edl.json --mode preview   # watch it before approving
 
 The EDL exists so a human can read and disagree with the edit before any file is written.
 
+Two commands sit beside that pipeline and matter most on anything longer than a couple of
+minutes, because they turn a file you have to read into a list you have to check:
+
+```bash
+vcut suspects --detect detect.json          # where to look, ranked, no transcript needed
+vcut say <media> --transcribe --at 57.5     # what is actually said there
+```
+
+`suspects` reports where, never what. `say --transcribe` asks the audio rather than a
+whole-file transcript, which is the only way to see a passage the transcript flattened.
+
 ## Two rules that matter before you run anything
 
 **Nothing self-approves.** `vcut edl build` writes every segment as `proposed` and the EDL as `draft`. `vcut render --mode master` refuses until a human changes that. There is no `--yes`. Never mark segments approved on the human's behalf.

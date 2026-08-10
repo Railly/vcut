@@ -30,13 +30,26 @@ vcut render --edl edl-$N.json --audio-only --output cut-$N.wav
 
 trx transcribe cut-$N.wav --words --language es -m large-v3-turbo
 
-vcut semantic review --edl edl-$N.json --detect detect.json \
-  --master cut-$N.wav --master-transcript <the .srt trx wrote>
+vcut semantic review --edl edl-$N.json --detect detect.json --terse \
+  --master cut-$N.wav --master-transcript <the .srt trx wrote> > review-$N.json
 
-python3 skills/core/scripts/non-speech.py cut-$N.wav > non-speech-$N.json
+vcut semantic check --proposals proposals.json --detect detect.json \
+  --review review-$N.json          # exit 2 while a repeated phrase goes unnamed
 ```
 
-Then fold the findings into `proposals.json`, bump `N`, and run it again. Render the video once, at the end.
+Then fold the findings into `proposals.json`, bump `N`, and run it again. Render the video once, at the end, and run `vcut audit` and the non-speech classifier there — they need a picture and answer a question no round is asking.
+
+`--terse` drops the instructions block, which is identical every round and was 72% of one measured payload. Read it once on the first call, then leave it out.
+
+### Where to look first
+
+```bash
+vcut suspects --detect detect.json
+```
+
+Ranked positions computed from the pauses `detect` already measured, no transcript involved. On a short take, read every line the export gives you. On anything long, this is the order to read in: measured across four recordings it fires 5.3 to 6.3 times a minute on hesitant material and 1.0 on a take read from a script, and the rate falls as sources get longer rather than rising.
+
+It replaces neither the reading nor the loop. A repetition delivered fluently leaves no rhythmic trace and only the prose shows it. What it replaces is scanning a file you have not read to decide where to spend attention.
 
 ### Iterate on audio
 

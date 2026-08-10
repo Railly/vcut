@@ -24,7 +24,7 @@
 </p>
 
 <p align="center">
-  Finds the silences, filler words, and technical faults in a raw take, proposes an
+  Finds the silences and technical faults in a raw take, proposes an
   edit as data, and renders it only after a human approves.
 </p>
 
@@ -84,15 +84,18 @@ Piped or captured, the same command emits JSON. No flag needed.
 
 | Command | What it does |
 |---------|--------------|
-| `vcut detect <input>` | Silences, filler words, clipping, black and frozen frames |
+| `vcut detect <input>` | Silences, clipping, black and frozen frames |
+| `vcut suspects --detect` | Where to look first, ranked, from the pauses detect measured |
 | `vcut edl build` | Turns a detect report into a draft edit decision list |
+| `vcut semantic export\|check\|review` | Hands the transcript to a model, takes proposals back, reads the result |
 | `vcut render` | Renders an EDL; preview accepts proposals, master needs approval |
 | `vcut locate --edl` | Translates between master time and source time |
 | `vcut audit --edl --render` | Checks a render's audio against the EDL it came from |
-| `vcut say <media>` | Reads back what is spoken at a position |
+| `vcut say <media>` | Reads back what is spoken at a position, from a transcript or by asking the audio |
 | `vcut schema [name]` | The JSON contract per command, versioned |
 | `vcut skills get vcut` | The bundled agent manual, as markdown |
 | `vcut doctor` | Checks external dependencies |
+| `vcut setup classifier` | Fetches the optional non-speech classifier |
 | `vcut <input>` | Shorthand for `vcut detect` |
 
 ## Presets
@@ -107,23 +110,14 @@ Tune with `--min-silence` (seconds, default 0.3) and `--margin` (seconds, defaul
 
 ## Filler words
 
-Filler detection needs word-level timestamps: one cue per word. A normal SRT has one cue per sentence, which is not enough to cut a single word without guessing. vcut tells you when this is the case instead of silently reporting zero.
+A word list cannot tell a filler from ordinary use — `este` is a filler in "y este, entonces"
+and a demonstrative in "en este caso" — so `detect` does not scan for them. They are proposed
+by whoever reads the transcript, through `vcut semantic`, which is also why every cut lands
+as a proposal rather than a decision.
 
-```bash
-# with trx, which wraps whisper and handles extraction
-trx transcribe recording.mp4 --words --language es
-
-# or with whisper-cli directly
-whisper-cli -m model.bin -f audio.wav --max-len 1 --output-srt
-```
-
-```bash
-vcut detect recording.mp4 --transcript words.srt --lang es
-```
-
-Lists ship for `es`, `en`, and `pt`.
-
-A filler list matches tokens, not intent. Spanish `este` is a filler in "y este, entonces" and an ordinary demonstrative in "en este caso"; the detector cannot tell them apart. That is one reason every hit lands in the EDL as `proposed`: read them before approving.
+Cutting a single word needs word-level timestamps (one cue per word). `detect` says when the
+transcript it was given is not word-level rather than silently reporting zero. Details, and
+how to produce one, are in `vcut skills get core`.
 
 ## For agents
 

@@ -19,6 +19,23 @@ vcut render          ->  master.mp4    (preview renders freely; master needs app
 `vcut semantic` is optional and sits beside `edl build`: it hands you the transcript as lines
 and folds your proposals back in. It never calls a model on its own.
 
+Silence removal is one round of several, and the rounds after it are where most of the work is.
+Read **semantic** before starting a real edit — the commands above will produce a render either
+way, and a first pass that stops there ships a recording with its retakes in it.
+
+## What to read
+
+| If you are | Read |
+|---|---|
+| running the whole edit | **Workflow for an agent**, then **semantic** |
+| deciding where to look in a long file | **suspects** |
+| asking what is spoken somewhere | **say** |
+| deciding whether a cut is worth making | **semantic → How hard to cut** |
+| trying to stop the loop | **semantic → Before calling it done** |
+| looking at a render that came out wrong | **When something comes out wrong** |
+| wondering what vcut refuses to do | **Human decision boundary**, **Limits** |
+| about to run this for the first time | **What eleven runs taught** — 7 habits, and four of the eleven shipped a defect without them |
+
 ## Output contract
 
 Every command writes data to stdout and diagnostics to stderr. JSON is emitted automatically when stdout is not a TTY, so an agent never needs `--json`, though passing it is harmless. Exit code 2 means the invocation was wrong, 1 means the run failed.
@@ -153,7 +170,15 @@ around the word rather than trusting either reading:
 
 ```bash
 vcut say <media> --transcript words.srt --at <the position the warning names> --window 4
+vcut say <media> --transcribe --lang es --at <position> --window 4   # ask the audio instead
 ```
+
+`--transcribe` cuts the window and runs the transcriber over it rather than reading the
+whole-file transcript, which is the only way to see what a fused region actually contains. On
+one recording, reading gave "la que conocemos, ya llegamos a" at a position where transcribing
+the same window gave "Y a la que conocemos, ya llegue. Y a la que conocemos" — the repetition
+that four runs failed to find. It needs the media, not a transcript, and costs one transcriber
+call.
 
 Normalise duration per character before comparing anything, or long words look pathological on
 their length alone: on one recording `emprendedores,` ran 980ms and came to 70ms per character,
@@ -193,6 +218,35 @@ A list also cannot tell filler from real use. Spanish `este` is filler in "y est
 **Fillers are the model's job, through `vcut semantic`.** Read the exported lines, mark the discourse markers that carry nothing *in that sentence*, and leave the ones doing work. `kind: "filler"` exists in the proposal schema for exactly this.
 
 `review` entries (clipping, black frames, frozen frames) are candidates for a human to look at. They are never cut automatically.
+
+## suspects
+
+```bash
+vcut suspects --detect detect.json
+```
+
+Where to look first, ranked, computed from the silences `detect` already measured. No
+transcript, no model, no second pass over the audio.
+
+A speaker correcting themselves breaks delivery into short pauses that land close together;
+fluent speech spaces them out. The threshold is a fraction of **this recording's own median
+gap**, so it adapts to the speaker rather than needing a number per file: measured across four
+recordings, hesitant material fires 5.3 to 6.3 times a minute and a take read from a script
+fires 1.0, and a speaker whose median gap was 8916ms against another's 1170ms did not saturate
+it.
+
+It also means longer sources fire *less* per minute, not more — a long take carries more
+thinking pauses, its median rises, and the bar rises with it. Measured: 6.3 a minute at three
+minutes, 2.8 to 3.5 at four and six, which projects to 55-70 positions for twenty minutes
+rather than the 120 a linear guess predicts.
+
+**It says where, never what.** Telling a discarded retake from a speaker pausing to pick a
+related thought lives in content, and rhythm is all this measures. Run `say --transcribe` on a
+position to find out what is there.
+
+`--pause-ratio` defaults to 0.4, the middle of a plateau where 0.3, 0.4 and 0.5 all found every
+defect with no false positives. That plateau was measured on one recording, which is why it is
+a flag.
 
 ## edl build
 
@@ -416,7 +470,11 @@ Never mark segments approved on the human's behalf. Never render a master withou
 2. Transcribe the source word-level with a large model.
 3. `vcut detect <input>` with the preset that matches the recording condition.
 4. Read the warnings. If the transcript is not word-level, say so: clamping is off and cuts can land inside a word.
-5. `vcut semantic export`, read the lines, write proposals.
+5. `vcut suspects --detect detect.json` for where to look, then `vcut semantic export --terse`
+   for the lines. On a short take, read every line. On anything long, the suspects list is the
+   order to read in: it costs one call and turns a file you have to read into a list you have
+   to check. Neither replaces the other — a repetition with no hesitation around it has no
+   rhythm signal at all and only the prose shows it.
 6. **Loop**: build, render, transcribe the render, review, fold findings back in. Repeat
    until a round proposes nothing and every invariant holds, and **never stop at one round** —
    the empty round has to come after a round that found something, because it reads a text the
@@ -428,7 +486,7 @@ Never mark segments approved on the human's behalf. Never render a master withou
    vcut edl build --detect detect.json --semantic proposals.json --output master.mp4 --campaign x
    vcut render --edl edl.json --audio-only --output cut-$N.wav   # 0.25s, not 32s
    trx transcribe cut-$N.wav --words --language <lang>           # what survived
-   vcut semantic review --edl edl.json --detect detect.json \
+   vcut semantic review --edl edl.json --detect detect.json --terse \
      --master cut-$N.wav --master-transcript <the .srt trx wrote> > review-$N.json
    vcut semantic check --proposals proposals-$N.json --detect detect.json \
      --review review-$N.json                                      # exit 2 = repeats unanswered
@@ -959,6 +1017,43 @@ by ordinary variation in speech. Separating a breath from a syllable asks what a
 so it takes something trained on that question. A general VAD is not enough either: one
 scored a breath at 0.87 voice, indistinguishable from words. What worked was an AudioSet
 classifier, keyed on the *absence of speech* rather than the presence of breathing.
+
+## What eleven runs taught
+
+Eleven agents edited the same recording with nothing but this manual. Four shipped a defect a
+listener caught immediately. What separates the runs that worked is not effort — every run read
+the transcript, every run ran the checks — so these are the habits worth carrying, each with
+what it cost to learn.
+
+**Never let the empty round be the first.** Four of the five failures reported nothing after one
+pass. The round that finds the largest cut is usually the second, because it reads a text the
+first round produced and nobody had seen. The shortest run cut 33.78% and called itself done;
+the one required to continue cut 44.04% and was right.
+
+**Read the result, not the plan.** Every failure was a run that read its own proposals and
+called them the outcome. The render's transcript is the only description of what a viewer hears.
+
+**A number is not a verdict.** A repeated phrase, a low correlation, a classifier hit, a removal
+percentage outside its range: each is a place to look. Three of them fired on runs whose masters
+were perfect, and one detector was hardened into a gate that pushed toward deleting a line the
+author wanted. Anything counting words cannot tell a callback from a retake.
+
+**Say what you decided, in a reason.** Keeping a repeat is often right and leaves no trace on its
+own, which makes it indistinguishable from missing it. A reason is the difference between a
+judgement someone can review and one nobody can find.
+
+**Distrust a boundary you verified.** Every attempt at a retake says the same words, so a window
+opened anywhere inside one comes back complete and convincing. Three runs each verified a
+boundary and each was wrong by about 1772ms. Step the window forward until the phrase stops
+coming back; agreement between runs means they read the same wrong number.
+
+**Spend on reading, save on auditing.** The run that cut fastest also cut worst. `audit` and the
+non-speech pass never changed a decision across eleven runs — they are cheap insurance, run once
+at the end, not a source of findings. The transcript is where the defects are.
+
+**Check the input before reporting a bug.** Two bug reports in this project were filed against
+the wrong project, both after a premise nobody measured. `ffprobe` on the file you passed costs
+less than an issue.
 
 ## Limits
 

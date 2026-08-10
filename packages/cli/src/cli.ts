@@ -20,6 +20,7 @@ import {
 import { renderCommand } from './render-edl.ts'
 import { sayCommand } from './say.ts'
 import { semanticCommand } from './semantic.ts'
+import { suspectsCommand } from './suspects.ts'
 
 // Read rather than restated, because a hand-maintained copy drifts silently: 0.4.1 shipped to
 // npm with this constant still reading 0.4.0, so the published binary reported a version it
@@ -51,8 +52,9 @@ const HELP = `vcut - cut dead air out of a recording, reproducibly
 Usage:
   vcut <input>                       Shorthand for: vcut detect <input>
   vcut detect <input> [flags]        Find silences and review candidates
+  vcut suspects --detect <path>      Where to look first, ranked, without reading the file
   vcut edl build [flags]             Turn a detect report into a draft EDL
-  vcut semantic export|check [flags] Hand the transcript to a model, take back proposals
+  vcut semantic export|check|review  Hand the transcript to a model, take proposals back
   vcut render --edl <path> [flags]   Render an EDL to video
   vcut locate --edl <path> [flags]   Translate between master time and source time
   vcut audit --edl <path> --render <path>  Check a render against the EDL it came from
@@ -442,6 +444,9 @@ export const route = async (argv: string[]): Promise<void> => {
       throw new UsageError('Usage: vcut edl build --detect <path> --output <path> --campaign <id>')
     }
     return buildEdlCommand(edlRest)
+  }
+  if (command === 'suspects') {
+    return suspectsCommand(rest)
   }
   if (command === 'semantic') {
     return semanticCommand(rest)

@@ -15,8 +15,9 @@
  * vcut never calls a model, here as everywhere else.
  */
 
-import { existsSync, readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { existsSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join, resolve } from 'node:path'
 
 import { parseSrt, type Word } from './detect.ts'
 import { run } from './exec.ts'
@@ -28,9 +29,13 @@ const HELP = `vcut say - read back what is spoken at a position
 
 Usage:
   vcut say <media> --transcript <path> --at <seconds> [flags]
+  vcut say <media> --transcribe --at <seconds> [flags]
 
 Flags:
-  --transcript <path>   Word-level SRT to read from (required)
+  --transcript <path>   Word-level SRT to read from (required unless --transcribe)
+  --transcribe          Ask the audio instead of the transcript: cuts the window and runs
+                        trx over it. The answer a fused region cannot give from text
+  --lang <code>         Language passed to the transcriber (--transcribe only)
   --at <sec>            Position to read around (required)
   --window <sec>        How much context to include (default 2)
   --media <path>        Media to measure the level on, if not the positional argument
@@ -113,6 +118,62 @@ const numericFlag = (argv: string[], name: string): number | undefined => {
   return value
 }
 
+// Reading an existing transcript is the cheap path and stays the default. It is also the wrong
+// one over a fused region, where the whole-file pass wrote once what the audio says three times
+// and no amount of re-reading recovers the difference. There the only answer is to ask the audio
+// again over a shorter span, which a run did fifteen times by hand with ffmpeg and trx before
+// this flag existed.
+//
+// vcut still calls no model: this runs the transcriber the caller already has on their PATH,
+// the same way every other measurement here runs ffmpeg.
+const transcribeWindow = async (
+  mediaPath: string,
+  startMs: number,
+  endMs: number,
+  language: string | undefined,
+): Promise<string> => {
+  const clip = join(tmpdir(), `vcut-say-${process.pid}-${startMs}.wav`)
+  const cut = await run('ffmpeg', [
+    '-v',
+    'error',
+    '-y',
+    '-ss',
+    (startMs / 1000).toFixed(3),
+    '-to',
+    (endMs / 1000).toFixed(3),
+    '-i',
+    mediaPath,
+    '-vn',
+    '-ac',
+    '1',
+    '-ar',
+    '16000',
+    '-c:a',
+    'pcm_s16le',
+    clip,
+  ])
+  if (cut.exitCode !== 0) {
+    throw new UsageError(cut.stderr.trim() || 'ffmpeg could not cut the window')
+  }
+  try {
+    const args = ['transcribe', clip, '--preset', 'verbatim']
+    if (language !== undefined) {
+      args.push('--language', language)
+    }
+    const said = await run('trx', args)
+    if (said.exitCode !== 0) {
+      throw new UsageError(
+        said.stderr.trim() ||
+          'trx could not transcribe the window. Install it, or drop --transcribe and pass --transcript',
+      )
+    }
+    const parsed = JSON.parse(said.stdout) as { text?: unknown }
+    return typeof parsed.text === 'string' ? parsed.text.replace(/\s+/g, ' ').trim() : ''
+  } finally {
+    rmSync(clip, { force: true })
+  }
+}
+
 export const sayCommand = async (argv: string[]): Promise<void> => {
   if (argv.includes('--help') || argv.length === 0) {
     console.log(HELP)
@@ -127,11 +188,15 @@ export const sayCommand = async (argv: string[]): Promise<void> => {
   const transcriptPath = flagValue(argv, '--transcript')
   const at = numericFlag(argv, '--at')
 
-  if (transcriptPath === undefined || at === undefined) {
+  const transcribe = argv.includes('--transcribe')
+  if (at === undefined || (transcriptPath === undefined && !transcribe)) {
     throw new UsageError(HELP)
   }
-  const resolvedTranscript = resolve(transcriptPath)
-  if (!existsSync(resolvedTranscript)) {
+  if (transcribe && mediaPath === undefined) {
+    throw new UsageError('--transcribe needs the media to read from')
+  }
+  const resolvedTranscript = transcriptPath === undefined ? undefined : resolve(transcriptPath)
+  if (resolvedTranscript !== undefined && !existsSync(resolvedTranscript)) {
     throw new UsageError(`no transcript at ${resolvedTranscript}`)
   }
 
@@ -141,8 +206,9 @@ export const sayCommand = async (argv: string[]): Promise<void> => {
   const startMs = Math.max(0, atMs - windowMs / 2)
   const endMs = atMs + windowMs / 2
 
-  const transcript = parseSrt(readFileSync(resolvedTranscript, 'utf8'))
-  const words = wordsInWindow(transcript.words, startMs, endMs)
+  const transcript =
+    resolvedTranscript === undefined ? null : parseSrt(readFileSync(resolvedTranscript, 'utf8'))
+  const words = transcript === null ? [] : wordsInWindow(transcript.words, startMs, endMs)
 
   let level: { peakDb: number | null; meanDb: number | null } = { peakDb: null, meanDb: null }
   if (mediaPath !== undefined) {
@@ -165,7 +231,15 @@ export const sayCommand = async (argv: string[]): Promise<void> => {
     segment = hit === null ? null : { id: hit.placement.id, sourceMs: hit.sourceMs }
   }
 
-  const text = words.map((word) => word.text).join(' ')
+  const heard = transcribe
+    ? await transcribeWindow(
+        resolve(mediaPath as string),
+        startMs,
+        endMs,
+        flagValue(argv, '--lang'),
+      )
+    : null
+  const text = heard ?? words.map((word) => word.text).join(' ')
 
   if (mode === 'json') {
     emitJson({
@@ -180,7 +254,9 @@ export const sayCommand = async (argv: string[]): Promise<void> => {
       peakDb: level.peakDb,
       meanDb: level.meanDb,
       ...(edlPath === undefined ? {} : { segment }),
-      ...(transcript.wordLevel ? {} : { warning: 'transcript is not word-level' }),
+      ...(transcript === null || transcript.wordLevel
+        ? {}
+        : { warning: 'transcript is not word-level' }),
     })
     return
   }
@@ -205,7 +281,7 @@ export const sayCommand = async (argv: string[]): Promise<void> => {
   if (segment !== null) {
     lines.push(line('segment', `${segment.id}, source ${seconds(segment.sourceMs)}`))
   }
-  if (!transcript.wordLevel) {
+  if (transcript !== null && !transcript.wordLevel) {
     lines.push(line('warning', 'transcript is not word-level'))
   }
   console.log(lines.join('\n'))

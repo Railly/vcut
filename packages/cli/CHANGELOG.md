@@ -2,6 +2,27 @@
 
 Notable changes to `@crafter/vcut`. Entries say what changed and, where it is not obvious, what measurement led to it.
 
+## 0.9.0
+
+Editing cost 96k tokens and five minutes of work per minute of video, measured across nine runs
+on one 90-second take. The cost scaled with how long the recording was rather than with how much
+was wrong, which is what makes twenty minutes unaffordable rather than merely slow. These are the
+two commands that change what it scales with, and a pass over every doc surface, which had drifted
+apart from the CLI and from each other.
+
+### Added
+
+- **`vcut suspects --detect <path>`** reports where to look first, ranked, from the silences `detect` already measured. No transcript, no model, no second pass over the audio. A speaker correcting themselves breaks delivery into short pauses that land close together, and the threshold is a fraction of the recording's own median gap rather than a fixed duration, so it adapts to the speaker. Measured across four recordings: hesitant material fires 5.3 to 6.3 times a minute, a take read from a script fires 1.0, and a speaker whose median gap was 8916ms against another's 1170ms did not saturate it. Longer sources fire less per minute rather than more, because a long take carries more thinking pauses and the bar rises with the median — 55 to 70 positions projected for twenty minutes, not the 120 a linear guess predicts. It says where and never what: rhythm cannot tell a discarded retake from a speaker pausing to pick a related thought.
+- **`vcut say --transcribe`** asks the audio instead of reading a transcript, which is the only way to see what a fused region contains. Reading at 57.5s on one recording gave "la que conocemos, ya llegamos a"; transcribing the same window gave "Y a la que conocemos, ya llegue. Y a la que conocemos" — a repetition four separate runs failed to find, because the text they read did not contain it. `--transcript` is no longer required when this flag is used. vcut still calls no model of its own: it runs the transcriber already on the caller's PATH, the same way it runs ffmpeg.
+- **`--terse` on `semantic export`**, which carried the same static block `review` did. Measured: 1662 to 1043 tokens on one export.
+
+### Changed
+
+- **The manual leads with what to read.** At a thousand lines and thirteen sections, finding the right one mattered more than adding another. `suspects` also moved to sit beside `detect`, which is where it belongs in the flow rather than between the approval boundary and the workflow.
+- **A new section, "What eleven runs taught."** Eleven agents edited the same recording with nothing but this manual and four shipped a defect a listener caught immediately. Seven habits, each with what it cost to learn: never let the empty round be the first, read the result rather than the plan, a number is not a verdict, say what you decided in a reason, distrust a boundary you verified, spend on reading and save on auditing, check the input before reporting a bug.
+- **The debug skill gains the two traps this took to find**: a listener hearing something the transcript does not show, which no amount of re-reading recovers, and a boundary read off a fused region, where three runs cut the same retake at 61000, 61020 and 61192ms and each had verified it.
+- **Every doc surface audited against the CLI.** The root README promised filler-word detection that `detect` explicitly does not do, both READMEs showed a `detect` summary line the CLI stopped printing, their command tables disagreed with each other and were missing three commands, and `vcut --help` itself listed `semantic export|check` while `review` had existed for versions. The website's command reference gained `suspects`, the full `say` flag table, `--terse`, and `check --review` with its exit-2 contract. The loop doc gained all three, since the loop is what motivates them. Two duplicated sections were replaced by pointers at `vcut skills get core`, which is the rule this project already applies to the skill stub and had not applied to itself.
+
 ## 0.8.2
 
 Three gaps a run reported after passing the loop clean for the fourth version running. None cost

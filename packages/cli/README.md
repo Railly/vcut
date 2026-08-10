@@ -73,7 +73,7 @@ recording.mp4  6m 22s
   net after margins       ##..................  10.3%  (~39s once 100ms is kept on each side)
   silences                119 spans, 1m 03s
   longest silence         1s at 6m 20s
-  filler words            not scanned; run vcut semantic
+  filler words            not scanned; a word list cannot tell filler from ordinary use. Run vcut semantic.
   review candidates       1 (never cut automatically)
                           clipping: peak level -0.24 dB exceeds -1 dBFS
 ```
@@ -85,12 +85,13 @@ Piped or captured, the same command emits JSON. No flag needed.
 | Command | What it does |
 |---------|--------------|
 | `vcut detect <input>` | Silences, clipping, black and frozen frames |
+| `vcut suspects --detect` | Where to look first, ranked, from the pauses detect measured |
 | `vcut edl build` | Turns a detect report into a draft edit decision list |
 | `vcut semantic export\|check\|review` | Hands the transcript to a model, takes proposals back, reads the result |
 | `vcut render` | Renders an EDL; preview accepts proposals, master needs approval |
 | `vcut locate --edl` | Translates between master time and source time |
 | `vcut audit --edl --render` | Checks a render's audio against the EDL it came from |
-| `vcut say <media>` | Reads back what is spoken at a position |
+| `vcut say <media>` | Reads back what is spoken at a position, from a transcript or by asking the audio |
 | `vcut schema [name]` | The JSON contract per command, versioned |
 | `vcut skills get vcut` | The bundled agent manual, as markdown |
 | `vcut doctor` | Checks external dependencies |
@@ -104,18 +105,16 @@ the one above it is gone: a pause two adjoining segments create together did not
 either of them, a broken join only reads as broken once both sides are adjacent, and a
 discourse marker is inaudible inside loose speech and obvious inside tight speech.
 
+The loop, its stopping condition, and what has already been tried and failed live in the
+manual the CLI serves, which always matches the version installed:
+
 ```bash
-vcut edl build --detect detect.json --semantic proposals.json --output cut-1.mp4 --campaign x --edl edl-1.json
-vcut render --edl edl-1.json --mode preview
-trx transcribe cut-1.mp4 --words --language es -m large-v3-turbo
-vcut semantic review --edl edl-1.json --detect detect.json --master cut-1.mp4 --master-transcript cut-1.srt
+vcut skills get core      # the procedure, the invariants, what eleven runs taught
+vcut skills get debug     # how to investigate a cut that came out wrong
 ```
 
-`review` reports what survives, the silence measured on the render itself, and `unreviewed`:
-the stretches between two cuts that no proposal ever touched. Those look reviewed because
-their neighbours are, and that is where a defect survives round after round.
-
-Stop when a round proposes nothing, not when the removal percentage looks respectable.
+Stop when a round proposes nothing, not when the removal percentage looks respectable, and
+never on the first round.
 
 ## Beyond silence
 

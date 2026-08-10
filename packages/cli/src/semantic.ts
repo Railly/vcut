@@ -9,7 +9,7 @@ import { emitJson, UsageError } from './output.ts'
 const HELP = `vcut semantic - hand the transcript to a model, take back cut proposals
 
 Usage:
-  vcut semantic export --detect <path>
+  vcut semantic export --detect <path> [--terse]
   vcut semantic check --proposals <path> --detect <path> [--review <path>]
   vcut semantic review --edl <path> --detect <path> [--master <path>]
                        [--master-transcript <path>]
@@ -23,8 +23,8 @@ Flags:
   --edl <path>          EDL to read back (review only)
   --master <path>       Rendered file to measure silence on (review only)
   --master-transcript <path>  Word-level SRT of the master; lines come from it (review only)
-  --terse               Omit the instructions block, which is identical every round and
-                        was 72% of the payload on one measured run (review only)
+  --terse               Omit the instructions block, which is identical every call and
+                        was 72% of the payload on one measured run (export and review)
   --help                Show this message
 
 Both subcommands emit JSON: the reader is an agent, not a terminal.
@@ -641,7 +641,9 @@ export const semanticCommand = async (argv: string[]): Promise<void> => {
       input: report.input,
       durationMs: report.durationMs,
       lang: report.lang,
-      instructions: INSTRUCTIONS,
+      ...(argv.includes('--terse')
+        ? { instructionsOmitted: INSTRUCTIONS.length }
+        : { instructions: INSTRUCTIONS }),
       lines,
     })
     return

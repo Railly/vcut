@@ -9,8 +9,9 @@ order: 2
 ```
 vcut <input>                       Shorthand for: vcut detect <input>
 vcut detect <input> [flags]        Find silences and review candidates
+vcut suspects --detect <path>      Where to look first, ranked, without reading the file
 vcut edl build [flags]             Turn a detect report into a draft EDL
-vcut semantic export|check|review  Hand the transcript to a model, take back proposals
+vcut semantic export|check|review  Hand the transcript to a model, take proposals back
 vcut render --edl <path> [flags]   Render an EDL to video
 vcut locate --edl <path> [flags]   Translate between master time and source time
 vcut audit --edl <path> --render <path>  Check a render against the EDL it came from
@@ -89,6 +90,26 @@ It also reports a removal percentage. Compare it against the content type:
 
 A number far below target usually means the source was already edited.
 
+### vcut suspects
+
+```bash
+vcut suspects --detect detect.json
+```
+
+Where to look first, ranked, computed from the silences `detect` already measured. No transcript, no model, no second pass over the audio.
+
+A speaker correcting themselves breaks delivery into short pauses that land close together; fluent speech spaces them out. The threshold is a fraction of **this recording's own median gap**, so it adapts to the speaker instead of needing a number per file. Measured across four recordings: hesitant material fires 5.3 to 6.3 times a minute, a take read from a script fires 1.0, and a speaker whose median gap was 8916ms against another's 1170ms did not saturate it.
+
+Longer sources fire *less* per minute rather than more, because a long take carries more thinking pauses and the bar rises with the median: 6.3 a minute at three minutes, 2.8 to 3.5 at four and six.
+
+| Flag | What it does |
+| --- | --- |
+| `--detect <path>` | Report produced by detect (required) |
+| `--pause-ratio <n>` | How close two pauses must be, as a fraction of the file's median gap (default 0.4) |
+| `--limit <n>` | Return at most this many positions, tightest first |
+
+**It says where, never what.** Telling a discarded retake from a speaker pausing to pick a related thought lives in content, and rhythm is all this measures. Run `vcut say --transcribe` on a position to find out what is there.
+
 ### vcut semantic
 
 Repeated lines, false starts, digressions and filler words need something reading the transcript. **vcut never calls a model.** It exports the lines and takes proposals back, so the judgement stays with whoever is reading.
@@ -104,11 +125,15 @@ vcut edl build --detect detect.json --semantic proposals.json ...
 | --- | --- |
 | `export --detect <path>` | Numbered lines with timings, rebuilt into words and split on measured pauses |
 | `check --proposals <path> --detect <path>` | Validates proposals without building |
+| `check --review <path>` | Also fails the round while a repeated phrase goes unnamed |
 | `review --edl <path> --detect <path>` | Reads an EDL back: what survives, and where nobody looked |
+| `--terse` (export, review) | Omits the instructions block, identical every call and 72% of one measured payload |
 
 A proposal is `{startMs, endMs, kind, reason}` where `kind` is `false-start`, `repetition`, `tangent`, `filler`, or `non-speech`. Every semantic cut lands as `semanticRisk: material` on the segments around it, so a reviewer can find them without reading all of them.
 
 Nothing malformed passes: an inverted span, a span past the end of the source, an unknown kind, or an empty `reason` is refused by index and aborts the build. A proposal that vanished between check and build would read as the model choosing not to cut there, which is worse than a refusal.
+
+**`check --review` is the gate on a round.** Hand it the JSON `review` wrote and it exits **2** while any phrase in `repeated` goes unmentioned by every proposal reason. Naming is the bar, not agreeing: keeping a repeat is often right, and saying why in a reason puts the decision where a human approving the EDL can find it. A phrase still present in the render is reported as `survivingRepeats` and does **not** fail the check, because a callback repeats on purpose and nothing counting words can tell one from a retake. When repeats are named and kept, the status reads `valid-with-kept-repeats` and the exit is 0: a finished round, not a pending one.
 
 **`review` closes the loop.** With `--master` it measures silence on the render itself, and with `--master-transcript` it returns the lines of the render rather than the source projected forward. It also reports `unreviewed`: the stretches between two cuts that no proposal ever touched, which is where a defect survives round after round because its neighbours look worked on.
 
@@ -185,12 +210,25 @@ audit  22 of 22 segments compared
 ### vcut say
 
 ```bash
-vcut say cut.mp4 --transcript cut.srt --at 50.2 --edl edl.json
+vcut say cut.mp4 --transcript cut.srt --at 50.2 --edl edl.json    # read the transcript
+vcut say cut.mp4 --transcribe --lang es --at 57.5 --window 4      # ask the audio
 ```
 
 Reads back what is spoken at a position, with the level there and, with `--edl`, which segment it falls in.
 
-**Do not answer this by transcribing a short slice.** A window under about two seconds comes back as noise regardless of what the audio holds, so a nonsense result cannot tell a real word from a model's guess. This reads the transcript that already exists; vcut never calls a model.
+| Flag | What it does |
+| --- | --- |
+| `--at <sec>` | Position to read around (required) |
+| `--transcript <path>` | Word-level SRT to read from (required unless `--transcribe`) |
+| `--transcribe` | Cut the window and run the transcriber over it instead of reading |
+| `--lang <code>` | Language passed to the transcriber (`--transcribe` only) |
+| `--window <sec>` | How much context to include (default 2) |
+| `--media <path>` | Media to measure level on, if not the positional argument |
+| `--edl <path>` | Report which segment the position falls in |
+
+**Reading is the default and the cheap path.** A window under about two seconds transcribes as noise regardless of what the audio holds, so a nonsense result from a slice cannot tell a real word from a guess. The existing transcript already knows.
+
+**`--transcribe` is for the case reading cannot answer.** A whole-file pass averages: where a speaker said a line three times it can write it once, and no amount of re-reading recovers the difference. Measured on one recording, reading at 57.5s gave "la que conocemos, ya llegamos a" where transcribing the same window gave "Y a la que conocemos, ya llegue. Y a la que conocemos" — the repetition four runs failed to find. Use a window of four seconds or more, and note it costs one transcriber call. vcut still calls no model of its own: it runs the transcriber already on your PATH, the same way it runs ffmpeg.
 
 A window with no words but real level is the case worth stopping on: something audible the transcript never saw, which is what the non-speech classifier is for.
 
@@ -234,5 +272,7 @@ It also reports the optional non-speech classifier, which is a supported absence
 | `0` | Success |
 | `1` | The run failed |
 | `2` | The invocation was wrong |
+
+One command overloads `2` deliberately: `semantic check --review` exits 2 when a repeated phrase in the round went unnamed by every proposal reason. The invocation was fine; the round was not finished. An agent driving the loop should treat that case as "answer the repeats and run again" rather than as a usage error.
 
 Data always goes to stdout, diagnostics always to stderr.

@@ -54,7 +54,7 @@ recording.mp4  6m 22s
   net after margins       ##..................  10.3%  (~39s once 100ms is kept on each side)
   silences                119 spans, 1m 03s
   longest silence         1s at 6m 20s
-  filler words            not scanned; run vcut semantic
+  filler words            not scanned; a word list cannot tell filler from ordinary use. Run vcut semantic.
   review candidates       1 (never cut automatically)
                           clipping: peak level -0.24 dB exceeds -1 dBFS
 ```

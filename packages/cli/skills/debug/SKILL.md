@@ -84,6 +84,20 @@ and 9 words "fully removed"; re-transcribing showed nothing had been lost — th
 Re-transcribe the render and diff. The words that survived are the evidence, not the timings
 that claim where they were.
 
+## "Where do I even start on a file I have not read?"
+
+```bash
+vcut suspects --detect detect.json
+```
+
+Ranked positions from the pauses `detect` already measured, no transcript involved. It answers
+where, never what: run `say --transcribe` on the top few.
+
+**Trap: expecting it to find every defect.** It measures rhythm. A repetition delivered fluently
+leaves no rhythmic trace and only shows up in the prose. Measured across four recordings it
+fires 5.3 to 6.3 times a minute on hesitant material and 1.0 on a take read from a script, which
+is a reading order rather than a defect list.
+
 ## "Did the classifier flag something real?"
 
 Check whether the span falls inside a word in the word-level transcript. Sibilants and word
@@ -119,6 +133,31 @@ ffprobe -v error -show_entries format=duration -of csv=p=0 transcribed-audio.wav
 
 Measured on one 90.538s recording, the audio that reached the model ran 88.966s: **1.572s of
 accumulated drift**, with nothing in the output saying the timeline had changed.
+
+## "A listener heard something the transcript does not show"
+
+**Believe the listener.** A whole-file pass averages: where a speaker said a line three times,
+it can write it once, and nothing in the output says so. Every instrument downstream then agrees
+with each other and with nothing that happened.
+
+```bash
+# ask the audio over a short span instead of reading the file-wide transcript
+vcut say source.mp4 --transcribe --lang es --at <seconds> --window 4
+```
+
+Measured on one recording: reading the transcript at 57.5s gave "la que conocemos, ya llegamos
+a"; transcribing that same window gave "Y a la que conocemos, ya llegue. Y a la que conocemos".
+Four separate runs failed to find the repetition, not because they read badly but because the
+text they read did not contain it.
+
+**Trap: re-reading the same transcript more carefully.** It cannot recover what it never wrote.
+Only a fresh pass over a shorter span can.
+
+**Trap: trusting a boundary read off a fused region.** Inside one, cue timings are averaged, so
+a cut drawn from them lands mid-repetition. Three runs cut the same retake at 61000, 61020 and
+61192ms, each about 1772ms short of the boundary that removed it, and each had "verified" it.
+Stepping a window forward until the repeated wording stops coming back is the check; agreement
+between runs is not.
 
 ## "The tool did the wrong thing with my input"
 
