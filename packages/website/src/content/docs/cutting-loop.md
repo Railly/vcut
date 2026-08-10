@@ -37,7 +37,9 @@ vcut semantic check --proposals proposals.json --detect detect.json \
   --review review-$N.json          # exit 2 while a repeated phrase goes unnamed
 ```
 
-Then fold the findings into `proposals.json`, bump `N`, and run it again. Render the video once, at the end, and run `vcut audit` and the non-speech classifier there — they need a picture and answer a question no round is asking.
+Then fold the findings into `proposals.json`, bump `N`, and run it again. Render the video once, at the end, and run `vcut audit` and `vcut nonspeech --verify` there — they need a picture and answer a question no round is asking.
+
+Close a `nonspeech` hit with `--verify`, not by reading the whole-file transcript. That transcript is exactly the instrument that could not see this class of sound in the first place, so checking a hit against it is circular: measured on a real 7.5-minute run, 18 spans closed that way were all read as breaths and seven were audible "eeeh" fillers a listener caught immediately. `--verify` re-transcribes a short window around each span instead and reports which are `vocalization-suspect`, `words-around`, or `empty`.
 
 `--terse` drops the instructions block, which is identical every round and was 72% of one measured payload. Read it once on the first call, then leave it out.
 
@@ -142,7 +144,7 @@ Four energy statistics were tried and all four failed:
 
 Each measures a **proxy** for non-speech, and every proxy is dominated by ordinary variation in speech. Periodicity gets closer, since voiced speech has vibrating folds and a breath is turbulence, but unvoiced consonants are turbulence too and every sibilant becomes a false positive.
 
-A general voice-activity detector is not enough either: one scored a breath at 0.87 voice, indistinguishable from words. What worked was an AudioSet classifier keyed on the **absence of speech** rather than the presence of breathing. That is what `skills/core/scripts/non-speech.py` does, and why it lives outside the CLI: it needs Python and a 300MB checkpoint, and vcut otherwise runs anywhere ffmpeg does.
+A general voice-activity detector is not enough either: one scored a breath at 0.87 voice, indistinguishable from words. What worked was an AudioSet classifier keyed on the **absence of speech** rather than the presence of breathing. `vcut nonspeech` runs that classifier (`skills/core/scripts/non-speech.py`) as a subprocess rather than a built-in dependency: it needs Python and a 300MB checkpoint, and vcut otherwise runs anywhere ffmpeg does. `--verify`, which turns a raw span into a `reading`, lives in the CLI itself and needs no Python beyond what the classifier already needed.
 
 ### Noise reduction is not offered
 

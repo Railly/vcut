@@ -6,6 +6,7 @@ import { parseSrt } from '../src/detect.ts'
 import { run } from '../src/exec.ts'
 import {
   buildLines,
+  foldDiacritics,
   gapsBetween,
   joinWords,
   quietSegments,
@@ -499,6 +500,38 @@ describe('unaddressedRepeats', () => {
   test('ignores a proposal whose reason is not a string', () => {
     expect(unaddressedRepeats([repeat('es un honor')], [{ reason: 42 }])).toHaveLength(1)
   })
+
+  // The mismatch measured on the corpus that motivated this: the repeated phrase comes off
+  // the transcript with its accents, and a reason typed by hand routinely drops them. Before
+  // NFD folding this failed unaddressedRepeats' includes() and cost a full build cycle.
+  test('closes on a reason missing the diacritics the phrase carries', () => {
+    expect(
+      unaddressedRepeats(
+        [repeat('así que nada')],
+        [{ reason: 'cutting the retake, asi que nada stays only in the second telling' }],
+      ),
+    ).toEqual([])
+  })
+
+  test('an unrelated reason still fails to close a phrase missing its diacritics', () => {
+    expect(
+      unaddressedRepeats(
+        [repeat('así que nada')],
+        [{ reason: 'pre-roll countdown before the take' }],
+      ),
+    ).toHaveLength(1)
+  })
+})
+
+describe('foldDiacritics', () => {
+  test('strips combining marks after NFD decomposition', () => {
+    expect(foldDiacritics('así que nada')).toBe('asi que nada')
+    expect(foldDiacritics('¿Es un honor? Sí, señor')).toBe('¿Es un honor? Si, senor')
+  })
+
+  test('leaves text with no diacritics unchanged', () => {
+    expect(foldDiacritics('nothing to fold here')).toBe('nothing to fold here')
+  })
 })
 
 // Naming a phrase in a reason is not removing it. A run quoted the repeated line in an honest
@@ -547,6 +580,22 @@ describe('survivingRepeats', () => {
 
   test('says nothing when review found no repeats', () => {
     expect(survivingRepeats([], [line(1, 'anything at all')])).toEqual([])
+  })
+
+  // Unlike unaddressedRepeats, both sides here come from the same transcript pass:
+  // repeatedPhrases() derives entry.phrase from the render lines, and survivingRepeats is
+  // handed the same lines back. There is no independently-typed reason in the middle to
+  // drop an accent, so a phrase carrying diacritics already matches without folding.
+  // Verified rather than assumed: this fails if that symmetry ever breaks.
+  test('already matches a phrase carrying diacritics, with no folding needed', () => {
+    const found = survivingRepeats(
+      [repeat('así que nada')],
+      [
+        line(1, 'entonces decidimos cambiar el enfoque, así que nada, seguimos'),
+        line(2, 'Y así que nada, terminamos publicando la version anterior'),
+      ],
+    )
+    expect(found.map((entry) => entry.phrase)).toEqual(['así que nada'])
   })
 })
 

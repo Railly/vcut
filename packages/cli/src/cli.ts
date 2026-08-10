@@ -8,6 +8,7 @@ import { convergeCommand } from './converge.ts'
 import { detectCommand, positional } from './detect.ts'
 import { run, runInherit } from './exec.ts'
 import { locateCommand } from './locate.ts'
+import { nonspeechCommand } from './nonspeech.ts'
 import {
   emitJson,
   fail,
@@ -21,7 +22,10 @@ import {
 import { renderCommand } from './render-edl.ts'
 import { sayCommand } from './say.ts'
 import { semanticCommand } from './semantic.ts'
+import { skillsDir } from './skills-dir.ts'
 import { suspectsCommand } from './suspects.ts'
+
+export { skillsDir } from './skills-dir.ts'
 
 // Read rather than restated, because a hand-maintained copy drifts silently: 0.4.1 shipped to
 // npm with this constant still reading 0.4.0, so the published binary reported a version it
@@ -61,6 +65,7 @@ Usage:
   vcut audit --edl <path> --render <path>  Check a render against the EDL it came from
   vcut say <media> [flags]           Read back what is spoken at a position
   vcut converge <media> [flags]      Find where a repeated phrase stops coming back
+  vcut nonspeech <render> [--verify] Find audible sound that is not language
   vcut schema [name]                 Print the JSON contract for a command
   vcut skills list|get [name]        Read the bundled agent manual
   vcut doctor                        Check external dependencies
@@ -75,26 +80,6 @@ Global flags:
 
 Every command writes data to stdout and diagnostics to stderr. Exit code 2 means
 the invocation was wrong, 1 means the run failed.`
-
-const here = dirname(fileURLToPath(import.meta.url))
-
-export const skillsDir = (): string => {
-  const candidates = [
-    process.env.VCUT_SKILLS_DIR,
-    join(here, 'skills'),
-    join(here, '..', 'skills'),
-    join(here, '..', '..', 'skills'),
-  ].filter((candidate): candidate is string => candidate !== undefined)
-
-  for (const candidate of candidates) {
-    if (existsSync(candidate)) {
-      return candidate
-    }
-  }
-  throw new Error(
-    'could not find skills/ near the executable. Set VCUT_SKILLS_DIR to its location.',
-  )
-}
 
 const DEPENDENCIES = [
   { name: 'ffmpeg', why: 'silence detection and rendering' },
@@ -444,6 +429,26 @@ const CONTRACTS: Record<string, unknown> = {
       'A --source position that was cut is reported as removed with the next surviving segment, not as an error.',
     ],
   },
+  nonspeech: {
+    version: SCHEMA_VERSION,
+    command: 'vcut nonspeech',
+    output: {
+      status: '"ok" | "classifier-absent"',
+      detail: 'string, present only when status is "classifier-absent"',
+      verified: 'boolean, present and true only when --verify was passed',
+      spans:
+        'without --verify: [{ startMs, endMs }]. With --verify: [{ startMs, endMs, text, peakDb, meanDb, reading }]',
+      reading: '"vocalization-suspect" | "words-around" | "empty", --verify only',
+      means: 'a one-line gloss of what each reading means, --verify only',
+    },
+    notes: [
+      'Runs skills/core/scripts/non-speech.py against a rendered preview. Run it on the render, not the source: on raw footage every pause scores as non-speech, correctly and uselessly.',
+      'The classifier is optional (python3, panns-inference, and a ~320MB model under ~/.vcut/panns). Its absence is a supported state, reported as status "classifier-absent" with exit 0, the same policy vcut doctor already applies. Without it, invariant 7 needs a human ear.',
+      "vcut calls no model of its own: python3 and trx are binaries on the caller's PATH, exactly like ffmpeg.",
+      '--verify exists because reading the whole-file transcript to close a classifier hit is circular for this class of sound: the transcript is exactly what could not see it. It re-transcribes a window of the span plus 1.2s of context on each side and reports what that window actually says.',
+      'vocalization-suspect means the windowed transcript names a hesitation sound (eh, ehm, mmm, aah, tolerant of a stretched vowel), or the span has real level with no words inside it. words-around means the window transcribes to ordinary words sitting either side of the span, i.e. a breath in a pause. empty means no words and no real level. A span whose windowed transcript is genuinely empty at real level is still a question for a listener, not a false positive to wave off.',
+    ],
+  },
   render: {
     version: SCHEMA_VERSION,
     command: 'vcut render',
@@ -586,6 +591,9 @@ export const route = async (argv: string[]): Promise<void> => {
   }
   if (command === 'say') {
     return sayCommand(rest)
+  }
+  if (command === 'nonspeech') {
+    return nonspeechCommand(rest)
   }
   if (command === 'schema') {
     return schemaCommand(rest)

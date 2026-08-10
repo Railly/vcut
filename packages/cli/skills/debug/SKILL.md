@@ -100,8 +100,22 @@ is a reading order rather than a defect list.
 
 ## "Did the classifier flag something real?"
 
-Check whether the span falls inside a word in the word-level transcript. Sibilants and word
-onsets produce false positives, and both are inside real speech rather than intrusions on it.
+```bash
+vcut nonspeech master.mp4 --verify --lang <lang>
+```
+
+**Trap: checking the span against the whole-file transcript.** That transcript is exactly the
+instrument that could not see the sound the classifier is asking about, so checking a hit
+against it answers "does the pass that already missed this still miss it," which is always
+yes. Measured on a real 7.5-minute run: 18 spans closed that way were all read as breaths and
+seven of them were audible "eeeh" fillers a listener caught on the first playback.
+
+`--verify` re-transcribes a short window around each span instead and reports a `reading`.
+`words-around` (ordinary words either side of the span, nothing unusual inside it) needs no
+ear — that is the sibilant-and-word-onset false positive this section used to send you toward
+the transcript to rule out, and `--verify` rules it out from the window's own text. `empty` at
+real level is the case worth a listener: no words, no hesitation token, and something audible
+is there that neither instrument explains.
 
 ## "Dead air survived the cut. Is the threshold wrong?"
 

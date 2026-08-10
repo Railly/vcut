@@ -2,6 +2,18 @@
 
 Notable changes to `@crafter/vcut`. Entries say what changed and, where it is not obvious, what measurement led to it.
 
+## 0.14.0
+
+### Added
+
+- **`vcut nonspeech <render> [--verify]`.** The classifier that finds breaths and mic bumps used to be a bare script (`skills/core/scripts/non-speech.py`), invoked with raw `python3` and closed by reading the whole-file transcript with `vcut say` — which is circular for this class of sound, since that transcript is exactly the instrument that could not see it. On a real 7.5-minute run (2026-08-10), 18 classifier spans were closed that way, all read as "breath" against the transcript, four spot-checked and cleared: seven of them were audible "eeeh" fillers the listener caught on the first playback. `nonspeech` now runs the classifier through vcut's normal output contract (JSON off a TTY, human summary on one, exit 2/1 for usage/run errors), and `--verify` breaks the circularity: it cuts a window of each span plus 1.2s of context on either side, transcribes it with `trx --preset verbatim`, measures peak/mean dB over the span itself, and attaches a `reading` — `vocalization-suspect` for a hesitation token (eh, ehm, mmm, aah, tolerant of a stretched vowel) or real level with no words inside the span, `words-around` for ordinary words either side of it, `empty` for neither. Re-run against the render the original 18 spans came from: 5 of 18 came back `vocalization-suspect`, all naming real "eh" fillers by their text, and the span at 19520ms — a breath, not a filler — correctly read `words-around`. The classifier itself stays a subprocess (`python3`, panns-inference, a ~320MB model); its absence is a supported state and `nonspeech` says so and exits 0, the same policy `vcut doctor` already applies.
+- **`transcribeWindow` is a shared module.** `say --transcribe` and `converge` had each grown an identical four-step implementation (cut a clip with ffmpeg, run `trx transcribe --preset verbatim`, read the text, delete the clip) because each was built to answer its own question without looking at the other's source. `nonspeech --verify` needed the same four steps a third time, which is what made the duplication worth removing: it now lives once in `transcribe-window.ts` and all three commands call it. Along the way, `trx transcribe`'s own output artifacts (`*_clean.wav`, `.srt`) are now pinned to the same directory as the temp clip with `--output-dir`, since `trx` otherwise writes them to the caller's cwd rather than the clip's — a run invoked from any working directory used to scatter those files there.
+- **`vcut schema nonspeech`** documents the contract, versioned like the rest.
+
+### Fixed
+
+- **`semantic check` no longer fails a repeat naming over accents.** `unaddressedRepeats` matched a proposal's `reason` against the repeated phrase with a plain lowercase `includes()`; the phrase comes off the transcript with its diacritics ("así que nada") and a reason typed by hand routinely drops them ("asi que nada"), which failed the match and cost a full build cycle on the run that surfaced it. Both sides are now folded through Unicode NFD plus combining-mark stripping before comparing. `survivingRepeats` was checked against the same failure mode and does not have it: both the phrase and the render lines it is compared against come from the same transcript pass, with no independently-typed text in between to drop an accent, so it was left alone and a test now pins that symmetry.
+
 ## 0.13.0
 
 ### Added

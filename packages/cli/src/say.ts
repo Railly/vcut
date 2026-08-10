@@ -15,15 +15,15 @@
  * vcut never calls a model, here as everywhere else.
  */
 
-import { existsSync, readFileSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { existsSync, readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 
 import { parseSrt, type Word } from './detect.ts'
 import { run } from './exec.ts'
 import { masterToSource, placements } from './locate.ts'
 import { emitJson, heading, line, type Mode, resolveMode, UsageError } from './output.ts'
 import type { Edl } from './render-edl.ts'
+import { transcribeWindow } from './transcribe-window.ts'
 
 const HELP = `vcut say - read back what is spoken at a position
 
@@ -123,57 +123,8 @@ const numericFlag = (argv: string[], name: string): number | undefined => {
 // one over a fused region, where the whole-file pass wrote once what the audio says three times
 // and no amount of re-reading recovers the difference. There the only answer is to ask the audio
 // again over a shorter span, which a run did fifteen times by hand with ffmpeg and trx before
-// this flag existed.
-//
-// vcut still calls no model: this runs the transcriber the caller already has on their PATH,
-// the same way every other measurement here runs ffmpeg.
-const transcribeWindow = async (
-  mediaPath: string,
-  startMs: number,
-  endMs: number,
-  language: string | undefined,
-): Promise<string> => {
-  const clip = join(tmpdir(), `vcut-say-${process.pid}-${startMs}.wav`)
-  const cut = await run('ffmpeg', [
-    '-v',
-    'error',
-    '-y',
-    '-ss',
-    (startMs / 1000).toFixed(3),
-    '-to',
-    (endMs / 1000).toFixed(3),
-    '-i',
-    mediaPath,
-    '-vn',
-    '-ac',
-    '1',
-    '-ar',
-    '16000',
-    '-c:a',
-    'pcm_s16le',
-    clip,
-  ])
-  if (cut.exitCode !== 0) {
-    throw new UsageError(cut.stderr.trim() || 'ffmpeg could not cut the window')
-  }
-  try {
-    const args = ['transcribe', clip, '--preset', 'verbatim']
-    if (language !== undefined) {
-      args.push('--language', language)
-    }
-    const said = await run('trx', args)
-    if (said.exitCode !== 0) {
-      throw new UsageError(
-        said.stderr.trim() ||
-          'trx could not transcribe the window. Install it, or drop --transcribe and pass --transcript',
-      )
-    }
-    const parsed = JSON.parse(said.stdout) as { text?: unknown }
-    return typeof parsed.text === 'string' ? parsed.text.replace(/\s+/g, ' ').trim() : ''
-  } finally {
-    rmSync(clip, { force: true })
-  }
-}
+// this flag existed. transcribeWindow lives in transcribe-window.ts now, shared with converge
+// and nonspeech --verify, which needed the identical four steps for the identical reason.
 
 export const sayCommand = async (argv: string[]): Promise<void> => {
   if (argv.includes('--help') || argv.length === 0) {
@@ -247,6 +198,7 @@ export const sayCommand = async (argv: string[]): Promise<void> => {
         startMs,
         endMs,
         flagValue(argv, '--lang'),
+        'vcut-say',
       )
     : null
   const text = heard ?? words.map((word) => word.text).join(' ')
