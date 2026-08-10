@@ -14,6 +14,7 @@ import {
   repeatedPhrases,
   silentSegments,
   survivingLines,
+  unaddressedRepeats,
   unreviewedStretches,
   validateProposals,
 } from '../src/semantic.ts'
@@ -445,5 +446,54 @@ describe('review instructions', () => {
     const text = REVIEW_INSTRUCTIONS.join('\n')
     expect(text).toContain('otra vez')
     expect(text).toContain('A speaker judging their own take is a cut')
+  })
+})
+
+// Listing repeated wording was not enough on its own: a run read its own list, decided one
+// entry was a deliberate turn, wrote no proposal, and shipped the repetition. A field can be
+// skipped in silence, so the answer has to be something a command can check.
+describe('unaddressedRepeats', () => {
+  const repeat = (phrase: string) => ({ phrase, count: 2, lineIndexes: [5, 6] })
+
+  test('reports a repeated phrase no proposal mentions', () => {
+    const found = unaddressedRepeats(
+      [repeat('la que conocemos')],
+      [{ reason: 'pre-roll countdown before the take' }],
+    )
+    expect(found).toHaveLength(1)
+    expect(found[0].phrase).toBe('la que conocemos')
+  })
+
+  // Naming, not agreeing. Keeping a repeat is often right; leaving no trace of the decision
+  // is what turns a judgement call into something nobody downstream can review.
+  test('accepts a phrase a proposal names, whatever it decided about it', () => {
+    expect(
+      unaddressedRepeats(
+        [repeat('la que conocemos')],
+        [{ reason: 'keeping the second telling of "la que conocemos", cutting the first' }],
+      ),
+    ).toEqual([])
+  })
+
+  test('reads through the case a reason is written in', () => {
+    expect(
+      unaddressedRepeats([repeat('es un honor')], [{ reason: 'The "Es Un Honor" retake' }]),
+    ).toEqual([])
+  })
+
+  test('says nothing when review found no repeats', () => {
+    expect(unaddressedRepeats([], [{ reason: 'anything' }])).toEqual([])
+  })
+
+  // An empty round is the normal way to end a loop, and it is exactly the round where an
+  // unanswered repeat matters most: there is nothing after it to catch one.
+  test('reports every repeat when a round proposes nothing', () => {
+    expect(
+      unaddressedRepeats([repeat('es un honor'), repeat('la que conocemos')], []),
+    ).toHaveLength(2)
+  })
+
+  test('ignores a proposal whose reason is not a string', () => {
+    expect(unaddressedRepeats([repeat('es un honor')], [{ reason: 42 }])).toHaveLength(1)
   })
 })

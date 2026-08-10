@@ -429,7 +429,9 @@ Never mark segments approved on the human's behalf. Never render a master withou
    vcut render --edl edl.json --audio-only --output cut-$N.wav   # 0.25s, not 32s
    trx transcribe cut-$N.wav --words --language <lang>           # what survived
    vcut semantic review --edl edl.json --detect detect.json \
-     --master cut-$N.wav --master-transcript <the .srt trx wrote>  # dead air, in the cut itself
+     --master cut-$N.wav --master-transcript <the .srt trx wrote> > review-$N.json
+   vcut semantic check --proposals proposals-$N.json --detect detect.json \
+     --review review-$N.json                                      # exit 2 = repeats unanswered
    ```
 
    Check the transcript path trx reports rather than assuming it: it names the file after its
@@ -707,6 +709,11 @@ reading more found every one of them.
 Verify against the transcript of the render, not against the plan:
 
 - Every invariant below holds.
+- `semantic check --review <the review JSON>` exits 0. It fails with exit 2 while any phrase in
+  `repeated` goes unmentioned by every proposal reason, which is the round saying it read the
+  list without answering it. Naming is the bar, not agreeing: keeping a repeat is often right,
+  and writing why in a reason is what leaves the decision where a human approving the EDL can
+  find it.
 - `repeated` is empty, or every entry in it has an answer naming which telling survives and why
   the others are not the same thing. It lists wording that occurs more than once in the render,
   which is not a verdict — a name, a term the piece is about, and a deliberate echo all repeat

@@ -2,6 +2,20 @@
 
 Notable changes to `@crafter/vcut`. Entries say what changed and, where it is not obvious, what measurement led to it.
 
+## 0.6.0
+
+0.5.0 listed repeated wording so that keeping it had to be a decision about a named phrase. The
+next run read its own list, decided one entry was a deliberate turn, wrote no proposal, and
+shipped the repetition anyway. A field can be skipped in silence.
+
+### Added
+
+- **`semantic check --review <path>` exits 2 while any repeated phrase goes unanswered.** It takes the JSON a previous `review` wrote and checks each entry in `repeated` against the reasons the round's proposals carry. A phrase no reason mentions means the round read the list without answering it, and that is not a finished round. Naming is the bar rather than agreeing: keeping a repeat is often right, and writing why in a reason puts the decision where a human approving the EDL can find it. The flag is optional, since a first round has no review to check against, and `check` without it behaves exactly as before.
+
+### Changed
+
+- **The loop in the manual runs `check --review` every round**, and the closing checklist requires it to exit 0.
+
 ## 0.5.0
 
 Five runs of one recording through the loop. Four shipped a repetition, and not one of them

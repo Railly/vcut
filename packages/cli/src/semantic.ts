@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 
 import type { DetectReport, Interval, Transcript, Word } from './detect.ts'
 import { parseSilenceLog, parseSrt } from './detect.ts'
@@ -9,13 +10,15 @@ const HELP = `vcut semantic - hand the transcript to a model, take back cut prop
 
 Usage:
   vcut semantic export --detect <path>
-  vcut semantic check --proposals <path> --detect <path>
+  vcut semantic check --proposals <path> --detect <path> [--review <path>]
   vcut semantic review --edl <path> --detect <path> [--master <path>]
                        [--master-transcript <path>]
 
 Flags:
   --detect <path>       Report produced by detect (required)
   --proposals <path>    Proposals to validate (check only)
+  --review <path>       JSON a previous 'review' wrote; exits 2 if its repeated
+                        phrases are unanswered by any proposal reason (check only)
   --edl <path>          EDL to read back (review only)
   --master <path>       Rendered file to measure silence on (review only)
   --master-transcript <path>  Word-level SRT of the master; lines come from it (review only)
@@ -440,6 +443,24 @@ export const repeatedPhrases = (
     .sort((left, right) => right.count - left.count || left.phrase.localeCompare(right.phrase))
 }
 
+// A repeated phrase nobody wrote about is a round that is not finished. Listing them in review
+// was not enough on its own: a run read its own list, decided one entry was a deliberate turn,
+// wrote no proposal, and shipped the repetition — the same failure as before the field existed,
+// one level up. A field can be skipped in silence. A non-zero exit cannot.
+//
+// The bar is naming, not agreeing. Deciding a repeat is intentional is a valid answer and
+// keeping it is often right, but the decision has to appear in a reason where a human reading
+// the EDL can find it, rather than in a judgement that left no trace.
+export const unaddressedRepeats = (
+  repeated: Array<{ phrase: string; count: number; lineIndexes: number[] }>,
+  proposals: Array<{ reason?: unknown }>,
+): Array<{ phrase: string; count: number; lineIndexes: number[] }> => {
+  const written = proposals
+    .map((proposal) => (typeof proposal.reason === 'string' ? proposal.reason.toLowerCase() : ''))
+    .join('\n')
+  return repeated.filter((entry) => !written.includes(entry.phrase))
+}
+
 // A pass reads what it went looking for. Cuts land where attention was, and the stretches
 // between two cuts are where nothing was ever read: they look reviewed because their
 // neighbours are, which is exactly why a marker can survive four rounds sitting between two
@@ -645,13 +666,27 @@ export const semanticCommand = async (argv: string[]): Promise<void> => {
       throw new UsageError(HELP)
     }
     const { proposals, issues } = readProposals(path, report.durationMs)
+    // Optional, because a first round has no review to check against: the field is born from
+    // transcribing a render that does not exist yet. Passed on later rounds, it turns the list
+    // of repeated wording from something to read into something to answer.
+    const reviewPath = value('--review')
+    const repeated =
+      reviewPath === undefined
+        ? []
+        : ((JSON.parse(readFileSync(resolve(reviewPath), 'utf8')) as { repeated?: unknown })
+            .repeated as Array<{ phrase: string; count: number; lineIndexes: number[] }>) ?? []
+    const unaddressed = unaddressedRepeats(repeated, proposals)
+    const rejected = issues.length > 0
     emitJson({
-      status: issues.length === 0 ? 'valid' : 'rejected',
+      status: rejected ? 'rejected' : unaddressed.length > 0 ? 'unaddressed-repeats' : 'valid',
       accepted: proposals.length,
       issues,
+      ...(reviewPath === undefined ? {} : { unaddressedRepeats: unaddressed }),
     })
-    if (issues.length > 0) {
+    if (rejected) {
       process.exitCode = 1
+    } else if (unaddressed.length > 0) {
+      process.exitCode = 2
     }
     return
   }
