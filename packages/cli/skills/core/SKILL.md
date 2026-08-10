@@ -749,7 +749,11 @@ Verify against the transcript of the render, not against the plan:
 - Every invariant below holds.
 - `semantic check --review <the review JSON>` exits 0. It fails with exit 2 on two counts: a
   phrase in `repeated` that no proposal reason mentions, and a phrase still present in the
-  render's own lines as often as review found it. The second is the one a reason cannot talk
+  render's own lines as often as review found it. Those two are cleared differently: a reason
+  clears the first, only a cut clears the second. A round that decides a surviving repeat is
+  deliberate has not finished — it has a question for whoever approves the EDL, and saying so
+  is the honest end. Reporting the result clean while this exits 2 is the failure six runs
+  made, three of them after naming the phrase correctly. The second is the one a reason cannot talk
   its way past — a run quoted the repeated line in an honest reason, cut a boundary 1772ms
   short of where the repetition ended, and passed a check that only looked at reasons while
   the render still said it twice. Naming is the bar, not agreeing: keeping a repeat is often right,

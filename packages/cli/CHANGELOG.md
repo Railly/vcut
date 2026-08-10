@@ -2,6 +2,17 @@
 
 Notable changes to `@crafter/vcut`. Entries say what changed and, where it is not obvious, what measurement led to it.
 
+## 0.7.2
+
+0.7.0 reported a repeat still present in the render, and 0.7.1 told rounds to run the check.
+The next run did both, read `survivingRepeats`, wrote a reason calling the phrase a deliberate
+callback, and reported the result clean while the check exited 2. The contract said naming was
+the bar; it is the bar for one of the two failures, and the wrong one.
+
+### Changed
+
+- **`unaddressedRepeats` and `survivingRepeats` are cleared differently, and the instructions now say so.** A reason clears the first. Only a cut clears the second, because the phrase is still in the file and no wording changes that. A round that judges a surviving repeat deliberate has a question for whoever approves the EDL rather than a finished result, and saying so is the honest end — reporting clean while the check exits 2 is what six runs did, three of them after naming the phrase correctly.
+
 ## 0.7.1
 
 Six runs on one recording. The gate added in 0.6.0 and 0.7.0 catches every defect they shipped —
