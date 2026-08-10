@@ -120,6 +120,22 @@ measured pause.
 
 Fixing the transcript moves it. Changing the preset does not.
 
+## "I need to see several positions, or a whole span"
+
+```bash
+vcut locate --edl edl.json --sources 20,53.86,61.2      # a list, not a loop
+vcut say <media> --transcript words.srt --at 53 --through 63
+```
+
+Both exist because runs built them by hand: two shell loops around `locate` with a JSON parser
+inside each, and thirty lines of SRT parsing to read a span the command already had loaded.
+
+**Trap: passing milliseconds to a flag that takes seconds.** Every JSON field here is
+milliseconds and every position flag is seconds, so the mistake is natural and the answer used
+to look real: a run asked `locate` about nine positions in milliseconds, got `removed: true` for
+all nine, and read that as nine spans it had successfully cut. Those flags now refuse a position
+past the end of the file, but the older habit is worth naming.
+
 ## "The transcript positions do not match the audio at all"
 
 Check that whatever produced the transcript did not rewrite the timeline. A tool that removes

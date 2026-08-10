@@ -176,10 +176,18 @@ The result runs a few tens of milliseconds short of the segment sum (31ms on a 5
 ```bash
 vcut locate --edl edl.json --master 50.2 --explain
 vcut locate --edl edl.json --source 80.07
+vcut locate --edl edl.json --sources 20,53.86,61.2      # several at once
 vcut locate --edl edl.json --all
 ```
 
 Translates between a position in the master and the source it came from.
+
+**Positions are seconds.** The JSON that comes back speaks milliseconds, so passing those back
+in is the natural mistake, and it used to be answered as if it made sense: a run asked about
+nine positions in milliseconds, got `removed: true` for all nine, and read that as nine spans it
+had cut. Both flags now refuse a position past the end of the file and name the unit they
+expected. `--sources` takes a comma-separated list, which is a round asking about every boundary
+it proposed without a shell loop around it.
 
 **Do not derive this by hand.** Accumulating `outMs - inMs` across segments gives a total that can match the rendered file to the millisecond while individual positions land seconds away, and nothing in that agreement warns you. `--explain` reports the neighbourhood a position sits in, and `--render <path>` measures the file rather than trusting the EDL, which records intent.
 
@@ -219,7 +227,8 @@ Reads back what is spoken at a position, with the level there and, with `--edl`,
 
 | Flag | What it does |
 | --- | --- |
-| `--at <sec>` | Position to read around (required) |
+| `--at <sec>` | Position to read around, or the start of a range with `--through` |
+| `--through <sec>` | Read everything from `--at` to here rather than a window around it |
 | `--transcript <path>` | Word-level SRT to read from (required unless `--transcribe`) |
 | `--transcribe` | Cut the window and run the transcriber over it instead of reading |
 | `--lang <code>` | Language passed to the transcriber (`--transcribe` only) |
@@ -232,6 +241,29 @@ Reads back what is spoken at a position, with the level there and, with `--edl`,
 **`--transcribe` is for the case reading cannot answer.** A whole-file pass averages: where a speaker said a line three times it can write it once, and no amount of re-reading recovers the difference. Measured on one recording, reading at 57.5s gave "la que conocemos, ya llegamos a" where transcribing the same window gave "Y a la que conocemos, ya llegue. Y a la que conocemos" — the repetition four runs failed to find. Use a window of four seconds or more, and note it costs one transcriber call. vcut still calls no model of its own: it runs the transcriber already on your PATH, the same way it runs ffmpeg.
 
 A window with no words but real level is the case worth stopping on: something audible the transcript never saw, which is what the non-speech classifier is for.
+
+### vcut converge
+
+```bash
+vcut converge source.mp4 --phrase "a la que conocemos" --from 59 --lang es
+```
+
+Finds where a repeated phrase stops coming back, which is the boundary of a retake. Steps a window forward from `--from`, transcribing each one, and reports the first that no longer carries the phrase along with every window it read getting there.
+
+| Flag | What it does |
+| --- | --- |
+| `--phrase <words>` | The wording that keeps recurring (required) |
+| `--from <sec>` | Where to start stepping (required) |
+| `--to <sec>` | Where to give up (default: 12s past `--from`) |
+| `--step <sec>` | How far to move each try (default 0.5) |
+| `--window <sec>` | How much audio each try transcribes (default 3.5) |
+| `--lang <code>` | Language passed to the transcriber |
+
+It exists because that judgement went wrong more often than any other: three runs cut the same retake at 61000, 61020 and 61192ms, all about 1772ms short, and each had verified its number. Every attempt at a retake says the same words, so a window opened anywhere inside one comes back complete and convincing.
+
+**`boundaryMs` is not where to cut.** A retake and the telling that survives it overlap, so the point where the wording disappears sits past the start of the line worth keeping. Cutting to it beheads that line: on one recording, ending at the reported 62000ms gave "Conocemos, ya llegamos a mil miembros" where ending at 61192ms kept "Y a la que conocemos, ya llegamos a mil miembros". Both were rendered and listened to; neither transcript reads as broken. `lastWithPhraseMs` carries that telling in full and sat 308ms from the correct boundary against 808ms for the far edge.
+
+Exit 1 with a null `boundaryMs` means the phrase was still recurring at `--to`, which is a reason to widen the span rather than evidence there is nothing to cut.
 
 ### vcut schema
 

@@ -2,6 +2,19 @@
 
 Notable changes to `@crafter/vcut`. Entries say what changed and, where it is not obvious, what measurement led to it.
 
+## 0.11.1
+
+0.10.0 and 0.11.0 shipped three commands and two flags and only updated the core manual. This is
+the rest of the surfaces, which had drifted apart from the CLI again within hours.
+
+### Changed
+
+- **`converge` has a section in the command reference** rather than only a row in a table, including that `boundaryMs` is not where to cut and why.
+- **`locate --sources` and `say --through` are documented** in the flag tables that claim to list every flag, along with the rule that positions are seconds while the JSON is milliseconds.
+- **The loop doc covers `converge`**, since the retake boundary is the step it describes and the one three runs got wrong.
+- **The landing page lists `suspects` and `converge`**, and no longer claims `detect` finds filler words by language — it does not, and says so itself in its own summary.
+- **The debug skill gains the millisecond trap** and the two commands that answer a list or a span, which runs had been building out of shell loops.
+
 ## 0.11.0
 
 A run edited a real 7.5-minute recording and reached for python about thirty-seven times. Reading

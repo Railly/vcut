@@ -44,7 +44,12 @@ vcut say <media> --transcribe --at 57.5     # what is actually said there
 ```
 
 `suspects` reports where, never what. `say --transcribe` asks the audio rather than a
-whole-file transcript, which is the only way to see a passage the transcript flattened.
+whole-file transcript, which is the only way to see a passage the transcript flattened, and
+`say --at X --through Y` reads a whole span rather than a window around a point.
+
+When a retake turns up, `vcut converge <media> --phrase "..." --from <sec>` finds where the
+wording stops recurring. That boundary went wrong in three separate runs by about 1772ms each,
+which is the reason it is a command rather than a technique.
 
 ## Two rules that matter before you run anything
 

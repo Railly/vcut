@@ -49,6 +49,19 @@ vcut suspects --detect detect.json
 
 Ranked positions computed from the pauses `detect` already measured, no transcript involved. On a short take, read every line the export gives you. On anything long, this is the order to read in: measured across four recordings it fires 5.3 to 6.3 times a minute on hesitant material and 1.0 on a take read from a script, and the rate falls as sources get longer rather than rising.
 
+When a round finds a retake, the boundary is its own question and the one that goes wrong most:
+
+```bash
+vcut converge source.mp4 --phrase "the recurring words" --from 59 --lang es
+```
+
+Three runs cut the same retake at 61000, 61020 and 61192ms, all about 1772ms short, each having
+verified its number against a window that read like a clean start. What the command reports is
+the far edge of what is safe to remove; the cut usually ends nearer `lastWithPhraseMs`, where
+the telling being kept begins. Ending at the far edge on one recording gave "Conocemos, ya
+llegamos a mil miembros" instead of "Y a la que conocemos, ya llegamos a mil miembros" — both
+transcripts read fine, and only one sounds right.
+
 It replaces neither the reading nor the loop. A repetition delivered fluently leaves no rhythmic trace and only the prose shows it. What it replaces is scanning a file you have not read to decide where to spend attention.
 
 ### Iterate on audio

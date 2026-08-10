@@ -1,6 +1,6 @@
 {
   "name": "@crafter/vcut",
-  "version": "0.11.0",
+  "version": "0.11.1",
   "description": "Cut dead air out of a recording, reproducibly. Agent-first CLI over ffmpeg.",
   "type": "module",
   "license": "MIT",

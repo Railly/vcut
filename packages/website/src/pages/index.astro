@@ -19,8 +19,13 @@ recording.mp4  6m 22s
 const commands = [
   {
     title: 'detect',
-    desc: 'Silences by preset, filler words by language, clipping, black and frozen frames. Writes candidates, decides nothing.',
+    desc: 'Silences by preset, clipping, black and frozen frames. Writes candidates, decides nothing. Filler words are a judgement, not a word list, so they belong to the semantic pass.',
     code: 'vcut detect recording.mp4 --preset clean --lang es',
+  },
+  {
+    title: 'suspects',
+    desc: 'Where to look first, ranked, from the pauses detect already measured. Hesitant material fires five to six times a minute, a take read from a script fires once. It says where, never what.',
+    code: 'vcut suspects --detect detect.json',
   },
   {
     title: 'edl build',
@@ -31,6 +36,11 @@ const commands = [
     title: 'render',
     desc: 'Preview accepts proposals. Master needs an approved EDL, matching source hashes, and a free output path.',
     code: 'vcut render --edl edl.json --mode preview',
+  },
+  {
+    title: 'converge',
+    desc: 'Where a repeated phrase stops coming back. Every attempt at a retake says the same words, so a window opened inside one reads like a clean start: three runs each verified a boundary and each was wrong by about 1772ms.',
+    code: 'vcut converge take.mp4 --phrase "a la que conocemos" \\\n  --from 59 --lang es',
   },
   {
     title: 'schema',
