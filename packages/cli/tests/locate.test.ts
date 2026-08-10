@@ -120,7 +120,14 @@ describe('checkAgainstRender', () => {
 // as nine spans it had successfully cut.
 describe('a position past the end of the source', () => {
   const map = [
-    { id: 'segment-001', sourceId: 'source-1', sourceInMs: 0, sourceOutMs: 5_000, masterInMs: 0, masterOutMs: 5_000 },
+    {
+      id: 'segment-001',
+      sourceId: 'source-1',
+      sourceInMs: 0,
+      sourceOutMs: 5_000,
+      masterInMs: 0,
+      masterOutMs: 5_000,
+    },
   ]
 
   test('is not the same answer as a position that was cut', () => {

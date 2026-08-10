@@ -246,7 +246,10 @@ describe('absorbSlivers', () => {
   })
 
   test('a merged cut reports as silence when its parts disagree', () => {
-    const merged = absorbSlivers([cut(0, 500), { startMs: 600, endMs: 900, reason: 'semantic' }], 300)
+    const merged = absorbSlivers(
+      [cut(0, 500), { startMs: 600, endMs: 900, reason: 'semantic' }],
+      300,
+    )
     expect(merged[0].reason).toBe('silence')
   })
 
