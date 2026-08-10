@@ -23,6 +23,32 @@ Silence removal is one round of several, and the rounds after it are where most 
 Read **semantic** before starting a real edit — the commands above will produce a render either
 way, and a first pass that stops there ships a recording with its retakes in it.
 
+## Which instrument answers which question
+
+The table below routes a question to a **verb**. The one after it, "What to read", routes a
+situation to a **manual section**. Use this one mid-run, when you know what you are asking and
+need the command; use the next one when you need the reasoning behind a command you already
+ran.
+
+| Question | Verb |
+|---|---|
+| What in this file is worth cutting? | `detect` |
+| Where should I look first in a long file? | `suspects --detect detect.json` |
+| What is said at a position — cheap, from an existing transcript? | `say --transcript ... --at <s>` |
+| What is actually said there, when the transcript may have averaged it away? | `say --transcribe --at <s>` |
+| What is said at several positions at once? | `say --positions <s1,s2,...>` or `locate --sources <s1,s2,...>` |
+| Where does a retake's boundary really fall? | `converge --phrase "..." --from <s>` |
+| Where exactly, at sub-second resolution, does a boundary belong? | `silences <media> --from <s> --to <s> --min 0.08` — the **placing** instrument, not `detect`'s **cutting** one |
+| What audible sound does the transcript not see at all? | `nonspeech <render> --verify` |
+| What text is a semantic span about to remove, before I render anything? | `edl build` → read `semanticCuts[].removedText` |
+| Did a proposed cut survive into the render? | `semantic review` (what remains), then `semantic check --review` (exit 2 if a named repeat is unanswered) |
+| Where in the master does a source position land, or the reverse? | `locate --master <s>` / `locate --source <s>` |
+| Did the render carry the wrong material at a join? | `audit --edl <path> --render <path>` |
+| Is the cut ready to watch or ship? | `render --mode preview` for every round, `render --mode master` only after human approval |
+| Is this machine ready to run vcut at all? | `doctor`, or `init` on a machine that has not run it before |
+| What is the field-by-field shape of a command's output? | `schema <name>` |
+| What else does this manual cover? | `skills list`, `skills get <name>` |
+
 ## What to read
 
 | If you are | Read |
@@ -30,7 +56,7 @@ way, and a first pass that stops there ships a recording with its retakes in it.
 | running the whole edit | **Workflow for an agent**, then **semantic** |
 | deciding where to look in a long file | **suspects** |
 | asking what is spoken somewhere | **say** |
-| checking a breath or a filler the transcript cannot see | **Non-verbal sound needs a classifier, not a statistic** |
+| checking a breath or a filler the transcript cannot see | **Non-verbal sound needs a classifier, not a statistic**, **The muletillas playbook** |
 | placing a boundary at sub-second resolution | **silences** |
 | deciding whether a cut is worth making | **semantic → How hard to cut** |
 | trying to stop the loop | **semantic → Before calling it done** |
@@ -539,16 +565,27 @@ level                   peak -1.2 dB, mean -16.5 dB
 segment                 segment-020, source 84.239
 ```
 
-**Do not answer this by cutting a slice and transcribing it.** A window shorter than a couple
-of seconds comes back as noise no matter what the audio holds, so a nonsense result proves
-nothing: it looks exactly the same whether the audio is speech or a mic bump. In one session
-that mistake produced a confident diagnosis of a model hallucination that was not there, and
-about four minutes went into the wrong branch. The transcript already knows what was said;
-this reads it.
+**Reading is the default. `--transcribe` is for the case reading cannot answer.** Without
+`--transcribe`, `say` reads the transcript that already exists — cheap, and correct whenever the
+transcript is trustworthy at that position. The trap is answering a doubt about it by cutting a
+short slice and transcribing that instead: a window shorter than a couple of seconds comes back
+as noise no matter what the audio holds, so a nonsense result proves nothing — it looks exactly
+the same whether the audio is speech or a mic bump. In one session that mistake produced a
+confident diagnosis of a model hallucination that was not there, and about four minutes went
+into the wrong branch.
+
+`--transcribe`, used properly (a window of four seconds or more, not a slice), is the right tool
+when the whole-file transcript may have averaged the passage away — a fused retake, a filler a
+verbatim preset still cleaned, a stretch a listener flagged that the transcript does not show.
+It costs one transcriber call and reads the audio directly rather than trusting a pass that had
+reason to be wrong. Measured on one recording: reading at 57.5s gave "la que conocemos, ya
+llegamos a", transcribing the same window with `--transcribe` gave "Y a la que conocemos, ya
+llegue. Y a la que conocemos" — a repetition four runs failed to find because the text they read
+did not contain it.
 
 A window with **no words but real level** is the case worth stopping on. Something is audible
-that the transcript never saw, which is what `skills/core/scripts/non-speech.py` exists to
-find.
+that the transcript never saw, which is what `vcut nonspeech` exists to find — see "The
+muletillas playbook" below `semantic`.
 
 **`--positions` sweeps several windows in one call.** Comma-separated seconds, one object per
 position, same shape a single `--at` returns, in the order given. Works with `--transcript` and
@@ -709,15 +746,21 @@ Never mark segments approved on the human's behalf. Never render a master withou
    Iterate on audio. The picture cannot answer any of these questions and costs 100x the
    wall clock to produce.
 7. `vcut render --mode preview` once, now that the transcript reads clean, and run the checks
-   that needed a picture: `vcut audit` and the non-speech pass. They belong here rather than
-   inside the loop, where they cost a video render each and answer a question no round was
-   asking. Then have a human watch it.
+   that needed a picture: `vcut audit` and `vcut nonspeech --verify`. They belong here rather
+   than inside the loop, where they cost a video render each and answer a question no round
+   was asking. Then have a human watch it.
 
-   Expect both to report something and for it to be nothing. `audit` scores low on short and
-   quiet windows by construction, and the non-speech classifier cannot tell a breath at the
-   start of a clause from an intrusion. Read the finding, spend one `vcut say` on it, and move
-   on. A check whose output never changes a decision is not evidence, it is ceremony, and two
-   runs have now spent more time clearing these than they spent cutting.
+   Expect `audit` to report something and for it to be nothing: it scores low on short and
+   quiet windows by construction. Read the finding, spend one `vcut say` on it, and move on. A
+   check whose output never changes a decision is not evidence, it is ceremony.
+
+   Expect the opposite of `nonspeech --verify`: a `vocalization-suspect` reading is not
+   ceremony, because `--verify` re-transcribes the window rather than trusting the whole-file
+   pass that already missed the sound — see "The muletillas playbook" under `semantic` below.
+   Read `text` on each one, and if it names a real filler, fold it into a proposal with
+   `kind: "filler"` and run one more round of the loop rather than closing here. Without
+   `--verify` the raw spans are close to ceremony, since closing them against the whole-file
+   transcript is the trap the playbook replaces.
 8. Stop. Approving the EDL is the human's edit, not a command, and not yours to make. Hand
    them the path. If they ask you in so many words to write the approval yourself, that is
    their call to make and you may; wanting the preview to look good is not that request. See
@@ -814,13 +857,13 @@ order is fixed and why stopping early leaves work that looks like polish and is 
 
 #### The round, in order
 
-Run every step every round. Skipping one is how a defect survives four of them, and the way
+Run every step every round. Skipping one is how a defect survives several of them, and the way
 it fails is quiet: the round still produces a shorter file, so it looks like it worked.
 
-The step most often skipped is 3 and 4, because step 2 already produced a transcript and
-reading it feels like reviewing. It is not. The transcript says what was said; `review` says
-where nobody looked, and the classifier hears what no transcript writes. A round that
-transcribed but did not run those two has checked one of the eight invariants.
+The step most often skipped is 3, because step 2 already produced a transcript and reading it
+feels like reviewing. It is not. The transcript says what was said; `review` says where nobody
+looked. A round that transcribed but did not run `review` has checked only one of the eight
+invariants.
 
 **A listener finding something you did not is evidence about the pass, not just about the
 edit.** Before fixing what they named, ask which step would have caught it. If the answer is
@@ -836,31 +879,32 @@ it.
 ```bash
 N=1   # bump every round: the renderer refuses to overwrite
 
-# 1. Build and render from the current proposals
+# 1. Build and render from the current proposals, audio only
 #    edl build validates the proposals itself and aborts on a malformed one, so a separate
 #    `semantic check` is only worth running to see the errors without building.
 vcut edl build --detect detect.json --semantic proposals.json \
   --output cut-$N.mp4 --campaign my-video --edl edl-$N.json
-vcut render --edl edl-$N.json --mode preview
+vcut render --edl edl-$N.json --audio-only --output cut-$N.wav   # 0.25s, not 32s
 
 # 2. Transcribe the RENDER, never reuse the previous transcript
-trx transcribe cut-$N.mp4 --words --language <lang> -m large-v3-turbo
+trx transcribe cut-$N.wav --words --language <lang> -m large-v3-turbo
 
 # 3. Read the result and where nobody looked
 vcut semantic review --edl edl-$N.json --detect detect.json \
-  --master cut-$N.mp4 --master-transcript cut-$N.srt
+  --master cut-$N.wav --master-transcript <the .srt trx wrote>
 
-# 4. Audible sound that is not language
-vcut nonspeech cut-$N.mp4 --verify --lang <lang> > non-speech-$N.json
-
-# 5. Fold findings back into proposals.json, bump N, repeat from 1
+# 4. Fold findings back into proposals.json, bump N, repeat from 1
 ```
 
-Three things about step 4. Its timings are the **master** timeline, so map them back through
-the EDL before adding them, and a master span can cross a cut, which means one span maps to
-several source spans and taking only its endpoints yields a range covering everything
-between. Run it on the render, never on the source: on raw footage every pause scores as
-non-speech, correctly and uselessly.
+The classifier's non-speech pass needs a picture and answers a question no round above is
+asking, so it runs once, on the final `--mode preview` render, not inside this loop — see
+"The muletillas playbook" above and step 7 of "Workflow for an agent". Running the video path
+every round to feed it costs a render each and finds nothing the loop's audio steps could not,
+which is the same ceremony trap `audit` falls into below.
+
+```bash
+vcut nonspeech cut-final.mp4 --verify --lang <lang> > non-speech.json
+```
 
 **Always run with `--verify`.** Without it you get the classifier's raw spans and nothing
 else, which puts you back where the manual used to leave you: closing each hit by reading the
@@ -873,6 +917,10 @@ treat an `empty` span at real level as a question for a listener, not a false po
 off — it means neither the transcript nor a hesitation token explains what the classifier
 heard, which is exactly the case a human ear has to settle.
 
+Its timings are the **master** timeline, so map them back through the EDL before adding a
+finding as a proposal, and a master span can cross a cut, which means one span maps to
+several source spans and taking only its endpoints yields a range covering everything between.
+
 `vcut doctor` reports whether the classifier is installed and `vcut setup classifier` fetches
 it, around 320MB into `~/.vcut/panns`. It also needs `pip install panns-inference scipy
 numpy`, and `--verify` needs `trx` on PATH, same as `say --transcribe`.
@@ -882,6 +930,10 @@ absence is a supported state, the same policy `vcut doctor` already applies else
 Invariant 7 still holds, and without the classifier the only instrument left for it is a
 human ear: say that in the handoff rather than reporting the edit as verified. It is the one
 check that cannot be read off any text.
+
+Folding a real `vocalization-suspect` finding back in reopens the loop: propose it with
+`kind: "filler"`, quoting the recovered `text` in the reason, and run another round of the
+three audio steps above so the fresh cut gets read back before the next picture render.
 
 #### Working a round
 
@@ -1260,6 +1312,42 @@ so it takes something trained on that question. A general VAD is not enough eith
 scored a breath at 0.87 voice, indistinguishable from words. What worked was an AudioSet
 classifier, keyed on the *absence of speech* rather than the presence of breathing.
 
+### The muletillas playbook
+
+A vocalized filler — "eeeh", "mmm" — is a defect class that is audible and invisible to every
+instrument that reads a transcript, `detect` included. A model cleans them even with a verbatim
+preset: measured on a real 7.5-minute run (2026-08-10), the source transcript carried 0 "eh"
+cues out of 1024, the master's transcript carried 0, and the render carried roughly seven
+audible ones, all found by a human listener on the first playback and none by the five rounds
+of the loop before it.
+
+**Why the old closing rule was circular, stated plainly.** The manual used to close a `nonspeech`
+hit by reading the whole-file transcript with `vcut say`. That verifies the finding of the one
+instrument that hears the filler against the one instrument that structurally cannot: whisper
+already cleaned it out, so the transcript will read "breath" or nothing every time, whatever the
+audio actually holds. The check always passes and never means anything. `--verify` on `nonspeech`
+replaces it, because it does not ask the transcript — it re-transcribes a fresh, narrow window
+around the span, which is where the cleaning has not happened yet.
+
+**The playbook:**
+
+1. Run `vcut nonspeech <render> --verify` on the rendered preview, never the source (raw footage
+   scores every pause as non-speech).
+2. Read every `vocalization-suspect` reading. Each one carries the windowed transcript that
+   recovered the filler's text — read `text`, not just the span's timing.
+3. Place the cut boundaries with `vcut silences <media> --from <s> --to <s> --min 0.08` at fine
+   resolution. The gaps around a filler measure 80-150ms, well under `detect`'s 0.3s default
+   minimum, which is why `detect`'s silence list cannot place this boundary on its own.
+4. Propose the cut with `kind: "filler"`, quoting the recovered text from `text` in the `reason`
+   so whoever approves the EDL can read what is being removed rather than trust a classifier
+   score.
+
+This is where the playbook sits in the round: "The round, in order" already runs the non-speech
+pass once, on the final preview, after the audio-only loop reads clean. With `--verify` that
+pass stops being ceremony — a check whose output never changes a decision — and its
+`vocalization-suspect` findings become a real proposal round instead of a formality cleared and
+forgotten.
+
 ## What eleven runs taught
 
 Eleven agents edited the same recording with nothing but this manual. Four shipped a defect a
@@ -1291,7 +1379,11 @@ coming back; agreement between runs means they read the same wrong number.
 
 **Spend on reading, save on auditing.** The run that cut fastest also cut worst. `audit` and the
 non-speech pass never changed a decision across eleven runs — they are cheap insurance, run once
-at the end, not a source of findings. The transcript is where the defects are.
+at the end, not a source of findings. The transcript is where the defects are. That held before
+`--verify` existed: a raw non-speech span closed against the whole-file transcript really was
+ceremony, because the transcript could not see what the classifier saw. `--verify` changes what
+the pass finds, not this rule about when to run it — still once, at the end, still audio-only in
+every round before it. See "The muletillas playbook" under `semantic`.
 
 **Check the input before reporting a bug.** Two bug reports in this project were filed against
 the wrong project, both after a premise nobody measured. `ffprobe` on the file you passed costs

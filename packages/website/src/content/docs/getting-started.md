@@ -24,10 +24,12 @@ vcut shells out to `ffmpeg` and `ffprobe`. Both must be on your PATH.
 
 ```bash
 brew install ffmpeg     # macOS
-vcut init       # installs everything a first run needs             # confirms both are visible
+vcut init                # installs everything a first run needs, ffmpeg included on a fresh machine
 ```
 
-`vcut doctor` exits non-zero when something is missing, so it works as a precondition check in a script.
+`vcut init` reports anything it could not install and exits non-zero, so it works as a
+precondition check in a script. `vcut doctor` reruns the same check afterwards, any time
+something looks wrong.
 
 ### The three steps
 
