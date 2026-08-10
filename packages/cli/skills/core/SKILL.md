@@ -569,12 +569,17 @@ scanning anywhere else. A marker that survives several rounds is almost always s
 
 The deletion test asks whether a span repeats something already said, not whether it stands up
 alone. Every line stands up alone — that is why a round can read all of `unreviewed`, judge
-each entry sound, and still ship a repetition. A run that did exactly this left
-"...a forma muy distinta a la que conocemos hoy en día." next to "Y a la que conocemos, ya
-llegamos a mil miembros", both in `lines`, the second also named in `unreviewed`, and returned
-an empty array. Print each `unreviewed` span with the line before and after it, then read
-`lines` concatenated as continuous prose. A repeated idea lives *between* two lines and is
-invisible to any pass that evaluates them one at a time.
+each entry sound, and still ship a repetition. Print each `unreviewed` span with the line
+before and after it, then read `lines` concatenated as continuous prose. A repeated idea lives
+*between* two lines and is invisible to any pass that evaluates them one at a time.
+
+The shape to look for: a sentence ends on a phrase, and the next line opens by restating that
+same phrase to get moving again. Speakers do this to bridge a pause, and both halves parse as
+ordinary grammar, so nothing reads as broken. Two rounds on the same recording cleared one of
+these. The first never compared the two lines; the second compared them, decided the second
+mention "connects to what came before", and kept it. Connecting to what came before is what a
+restatement does — the question is whether the sentence still lands with the phrase deleted. If
+it does, the phrase is a bridge, and the bridge goes.
 
 Both readings, in that order, and neither replaces the other. A round that only reads the prose
 misses a repetition whose two tellings sit either side of a cut, because the removed span hides

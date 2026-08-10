@@ -2,6 +2,12 @@
 
 Notable changes to `@crafter/vcut`. Entries say what changed and, where it is not obvious, what measurement led to it.
 
+## 0.4.3
+
+### Changed
+
+- **The manual names the shape of a surviving repetition instead of quoting one.** The previous entry carried the literal sentence from the recording it was found on, and that recording is what the loop is usually run against, so the manual handed the answer and the noise together: one run reported doubting a real defect because it recognised the wording from the manual and could not tell whether the example had been drawn from its own corpus. It now describes the construction — a sentence ends on a phrase, the next line reopens with that phrase to bridge a pause, both halves parse as ordinary grammar — and gives the test that separates it from a genuine connective: delete the phrase and see whether the sentence still lands. Two rounds on one recording cleared the same repetition, the first by never comparing the lines and the second by comparing them and deciding the restatement "connects to what came before", which is what a restatement does.
+
 ## 0.4.2
 
 ### Fixed
