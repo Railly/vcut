@@ -2,6 +2,17 @@
 
 Notable changes to `@crafter/vcut`. Entries say what changed and, where it is not obvious, what measurement led to it.
 
+## 0.8.2
+
+Three gaps a run reported after passing the loop clean for the fourth version running. None cost
+it the result; each is a place where it decided without a rule and happened to be right.
+
+### Changed
+
+- **When the window loop is worth running.** A run cut one retake correctly from the source timestamps alone because the words carried well-spaced ranges, and said afterwards it had no way to tell a clean region from one that only looked clean. There is a signal: on one recording the fused region peaked at 6.7x the file's median ms-per-character inside its worst word, the unfused retake at 2.5x, and ordinary content at 3.8 to 4.0x. High or unsure means run the loop.
+- **The removal target is not something to edit toward.** Nothing classifies the recording, so the range compared against comes from the agent's own reading of the material, and a number disagreeing with a judgement it made is not evidence. Landing under the range is still worth acting on — a timid semantic pass looks exactly like that — but landing over it is not a reason to restore anything. Four runs on one recording removed between 19.1 and 31.0 seconds of the same 90, all correct on every defect, differing only where cutting was taste.
+- **The empty round that ends the loop does not need a rebuild.** A round that proposed cuts changed the file and the next has new text to read. A round that proposed nothing did not, so re-rendering and re-transcribing an unchanged file to confirm it is unchanged buys nothing.
+
 ## 0.8.1
 
 Four gaps a run reported after passing the loop clean, none of which cost it the result and all

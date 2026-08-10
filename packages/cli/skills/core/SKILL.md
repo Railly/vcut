@@ -516,9 +516,15 @@ Hold this bar:
   found and redundancy was not.
 - **Cut to the end of the clause.** Half a sentence surviving its own cut is worse than
   leaving the passage whole.
-- **Check the target range.** `edl build` prints what the removal percentage is in range for.
-  Raw speech landing in "scripted talking head" usually means the semantic pass was timid,
-  not that the recording was already tight.
+- **Check the target range, and do not edit toward it.** `edl build` prints what the removal
+  percentage is in range for. Raw speech landing in "scripted talking head" usually means the
+  semantic pass was timid, not that the recording was already tight — that direction is worth
+  acting on. The other direction is not: landing above the range you picked is not a reason to
+  put anything back. Nothing classifies the recording for you, so the range you compare against
+  came from your own reading of what the material is, and a number that disagrees with a
+  judgement you made is not evidence. Four runs on one recording removed between 19.1 and 31.0
+  seconds of the same 90, all four correct on every defect and differing only on the passages
+  where cutting was a matter of taste. Say which content type you compared against and move on.
 
 The counterweight is real and it is the human's, not yours: it is their voice, and a cut that
 strips the thinking out of a reflection makes it sound like a script. Propose the cut, say
@@ -699,6 +705,16 @@ transcript pointed.
 Convergence between runs is not evidence a boundary is right — three agents agreeing usually
 means they read the same wrong number.
 
+**When to bother with any of this.** Not every retake is fused, and the window loop is not free.
+A run cut one retake correctly from the source timestamps alone because its words carried
+separate, well-spaced ranges, and said afterwards it had no way to tell a clean region from one
+that merely looked clean — it got the material it got. There is a signal, and it is the same
+ms-per-character measure used above: on one recording the fused region peaked at 6.7x the file
+median inside its worst word, the unfused retake at 2.5x, and ordinary content at 3.8 to 4.0x.
+A region whose worst word sits near the ordinary range is telling its own timings straight; one
+that spikes well above it is where the loop earns its cost. Run the loop when the numbers are
+high or when you cannot tell, and say which it was.
+
 Re-transcribing a window does not settle it either, and this is the part that catches everyone:
 every attempt at a retake says the same words, so a window opened anywhere inside the run comes
 back grammatically complete and reads like the telling you meant to keep. Opened at 59.0, 60.0,
@@ -766,6 +782,12 @@ material round one had already declared clean.
 A round is: build, render `--audio-only`, transcribe that render, `semantic review`, read,
 propose. Anything short of the full sequence does not count as one, because the reading is the
 part that finds things.
+
+The exception is the empty round that ends the loop, and only when the round before it proposed
+nothing either. A round that proposed cuts changed the file, so the next one has new text to
+read and has to run in full. A round that proposed nothing did not, so re-rendering and
+re-transcribing an unchanged file to confirm it is still unchanged buys nothing: the empty
+`review` you already read is the confirmation. Rebuild and re-read only when something moved.
 
 Spend saved effort here rather than on verification. Cutting a round to save time is the one
 economy that costs output: the same four runs show auditing more never found a defect, and
