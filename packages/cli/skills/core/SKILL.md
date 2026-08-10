@@ -48,10 +48,15 @@ question made sense — a run asked `locate` about nine positions in millisecond
 `removed: true` for all nine, and read that as nine spans it had cut. Those flags now refuse a
 position past the end of the file and say which unit they expected.
 
-**Ask about several positions at once.** `locate --sources 20,53.86,61.2` answers a list, and
-`say --at X --through Y` reads a range rather than a window around a point. Both exist because
-a run built them out of shell loops with a JSON parser inside, and one wrote thirty lines of
-its own SRT parser to read a span this command already had loaded.
+**Ask about several positions at once.** `locate --sources 20,53.86,61.2` answers a list,
+`say --at X --through Y` reads a range rather than a window around a point, and
+`say --positions 19.5,30.0,41.9` answers several windows in one call, one object per position
+in the order given. All three exist because a run built them out of shell loops with a JSON
+parser inside: one wrote thirty lines of its own SRT parser to read a span this command
+already had loaded, another swept 18 classifier spans as 18 individual `say` invocations.
+`--positions` transcribes strictly sequentially with `--transcribe`, never concurrently: each
+call loads a Whisper model into memory, and racing several is the load that chokes a machine
+already carrying a video editor.
 
 **`--human` when you are reading rather than parsing.** Every command takes it, and it answers
 in a few lines what the JSON answers in a few hundred. A run spent nine separate `python3`
@@ -59,6 +64,22 @@ invocations pulling two or three fields out of objects it had just received, and
 those fields is in the human summary already: removal percentage, silence count, whether word
 clamping engaged and over how many words, what the review candidates are. Parse the JSON when a
 later command needs a value from it; read the summary when you need to know what happened.
+
+**Every JSON output carries `vcutVersion`.** The manual is read once and cached in an agent's
+context while the CLI can change underneath it: a session upgraded mid-run and kept hand-rolling
+an 18-call window loop for a question `converge`, shipped an hour earlier, already answered in
+one call — nothing in the output said the tool had moved. `vcutVersion` is the version that
+produced this exact output, stamped once in `emitJson` rather than per command, so no command
+can forget it. A version you do not recognize is a reason to run `vcut --help` again rather than
+trust what you read earlier in the session.
+
+**Selected outputs carry `next`.** A short array of `{question, verb}`, the same idea as
+`converge`'s `means` field: `question` is what you likely want to know next, `verb` is the
+literal command to run, with real values from this output filled in where that is cheap. It is
+a hint, not an instruction — read it, do not execute it blind, and it is absent wherever there
+is nothing to point at (an empty `suspects` list, a `nonspeech` pass with no spans). Present on
+`suspects`, `detect`, `edl build`, `semantic review`, `nonspeech` without `--verify`, and
+`render --audio-only`.
 
 Run `vcut schema detect|edl|render` for the field-by-field contract instead of parsing `--help`.
 
@@ -506,6 +527,7 @@ one the EDL named against 0.485 for the supposed leak. Use it to pick where to l
 ```bash
 vcut say cut.mp4 --transcript cut.srt --at 50.2
 vcut say cut.mp4 --transcript cut.srt --at 50.2 --edl edl.json --window 3
+vcut say cut.mp4 --transcribe --positions 19.5,30.0,41.9 --window 4
 ```
 
 Reads back what is spoken at a position, with the level there and, with `--edl`, which
@@ -527,6 +549,16 @@ this reads it.
 A window with **no words but real level** is the case worth stopping on. Something is audible
 that the transcript never saw, which is what `skills/core/scripts/non-speech.py` exists to
 find.
+
+**`--positions` sweeps several windows in one call.** Comma-separated seconds, one object per
+position, same shape a single `--at` returns, in the order given. Works with `--transcript` and
+`--transcribe` alike. Mutually exclusive with `--at`/`--through`: combine them and it is a
+usage error rather than one silently winning. It exists because sweeping several spans was a
+shell loop of individual `--at` calls — one session swept 18 classifier spans exactly that way
+— and `locate --sources` already answers a list for the same reason. With `--transcribe`,
+positions transcribe strictly sequentially, never concurrently: each call loads a Whisper model
+into memory, and racing several is the load that chokes a machine already carrying a video
+editor.
 
 ## converge
 

@@ -3,9 +3,10 @@ import {
   absorbSlivers,
   boundariesAfterSpeech,
   boundariesInSilence,
+  buildEdlNext,
+  type Cut,
   clampedSpanFor,
   clampToWords,
-  type Cut,
   describeSemanticCuts,
   invertToSegments,
   matchTarget,
@@ -423,7 +424,10 @@ describe('boundariesInSilence', () => {
 
   test('both edges inside measured silence', () => {
     expect(
-      boundariesInSilence({ startMs: 1000, endMs: 2000 }, [silence(900, 1100), silence(1900, 2100)]),
+      boundariesInSilence({ startMs: 1000, endMs: 2000 }, [
+        silence(900, 1100),
+        silence(1900, 2100),
+      ]),
     ).toEqual([true, true])
   })
 
@@ -531,9 +535,7 @@ describe('describeSemanticCuts', () => {
   })
 
   test('no warning on a short removedText regardless of the reason', () => {
-    const proposals = [
-      { startMs: 1000, endMs: 1300, kind: 'filler' as const, reason: 'stray eh' },
-    ]
+    const proposals = [{ startMs: 1000, endMs: 1300, kind: 'filler' as const, reason: 'stray eh' }]
     const merged: Cut[] = [{ startMs: 1000, endMs: 1300, reason: 'semantic' }]
     const words = [word('eh', 1000, 1200)]
     const { warnings } = describeSemanticCuts(proposals, merged, words, [])
@@ -545,7 +547,12 @@ describe('describeSemanticCuts', () => {
       { startMs: 1000, endMs: 2000, kind: 'filler' as const, reason: 'filler removed' },
     ]
     const merged: Cut[] = [{ startMs: 1000, endMs: 2000, reason: 'semantic' }]
-    const { cuts } = describeSemanticCuts(proposals, merged, [], [silence(950, 1050), silence(1950, 2050)])
+    const { cuts } = describeSemanticCuts(
+      proposals,
+      merged,
+      [],
+      [silence(950, 1050), silence(1950, 2050)],
+    )
     expect(cuts[0]?.boundariesInSilence).toEqual([true, true])
   })
 
@@ -557,5 +564,21 @@ describe('describeSemanticCuts', () => {
     const { cuts, warnings } = describeSemanticCuts(proposals, merged, [], [])
     expect(cuts[0]?.removedText).toBe('')
     expect(warnings).toHaveLength(0)
+  })
+})
+
+describe('buildEdlNext', () => {
+  test('names a non-empty question and a non-empty verb for each entry', () => {
+    const hints = buildEdlNext('/tmp/edl.json')
+    expect(hints.length).toBeGreaterThan(0)
+    for (const hint of hints) {
+      expect(hint.question.length).toBeGreaterThan(0)
+      expect(hint.verb.length).toBeGreaterThan(0)
+    }
+  })
+
+  test('the hear-the-cut verb carries the given edl path', () => {
+    const hints = buildEdlNext('/tmp/edl.json')
+    expect(hints.some((hint) => hint.verb.includes('/tmp/edl.json'))).toBe(true)
   })
 })

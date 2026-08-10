@@ -13,6 +13,7 @@ import {
   REVIEW_INSTRUCTIONS,
   renderedGaps,
   repeatedPhrases,
+  semanticReviewNext,
   silentSegments,
   survivingLines,
   survivingRepeats,
@@ -630,5 +631,29 @@ describe('review instructions on kept repeats', () => {
     const text = REVIEW_INSTRUCTIONS.join('\n')
     expect(text).toContain('there is no reason-only entry')
     expect(text).toContain('valid-with-kept-repeats')
+  })
+})
+
+describe('semanticReviewNext', () => {
+  test('names a non-empty question and a non-empty verb for each entry', () => {
+    const hints = semanticReviewNext('/tmp/detect.json', '/tmp/master.mp4')
+    expect(hints.length).toBeGreaterThan(0)
+    for (const hint of hints) {
+      expect(hint.question.length).toBeGreaterThan(0)
+      expect(hint.verb.length).toBeGreaterThan(0)
+    }
+  })
+
+  test('points at semantic check and nonspeech --verify', () => {
+    const hints = semanticReviewNext('/tmp/detect.json', '/tmp/master.mp4')
+    expect(hints.some((hint) => hint.verb.includes('vcut semantic check'))).toBe(true)
+    expect(hints.some((hint) => hint.verb.includes('vcut nonspeech'))).toBe(true)
+    expect(hints.some((hint) => hint.verb.includes('--verify'))).toBe(true)
+  })
+
+  test('falls back to a placeholder render path without --master', () => {
+    const hints = semanticReviewNext('/tmp/detect.json', undefined)
+    const nonspeechHint = hints.find((hint) => hint.verb.includes('vcut nonspeech'))
+    expect(nonspeechHint?.verb.length).toBeGreaterThan(0)
   })
 })

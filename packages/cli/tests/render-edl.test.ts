@@ -5,6 +5,7 @@ import {
   type Edl,
   edlErrors,
   outputErrors,
+  renderAudioOnlyNext,
 } from '../src/render-edl.ts'
 
 const edl = (
@@ -345,5 +346,21 @@ describe('external audio', () => {
     const mute = withExternalAudio()
     mute.sources[0] = { ...mute.sources[0], hasAudio: false }
     expect(edlErrors(mute, 'preview')).toEqual([])
+  })
+})
+
+describe('renderAudioOnlyNext', () => {
+  test('names a non-empty question and a non-empty verb for each entry', () => {
+    const hints = renderAudioOnlyNext('/tmp/render.wav')
+    expect(hints.length).toBeGreaterThan(0)
+    for (const hint of hints) {
+      expect(hint.question.length).toBeGreaterThan(0)
+      expect(hint.verb.length).toBeGreaterThan(0)
+    }
+  })
+
+  test('the transcribe verb carries the rendered path', () => {
+    const hints = renderAudioOnlyNext('/tmp/render.wav')
+    expect(hints.some((hint) => hint.verb.includes('/tmp/render.wav'))).toBe(true)
   })
 })

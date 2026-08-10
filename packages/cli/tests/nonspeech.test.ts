@@ -1,5 +1,10 @@
 import { describe, expect, test } from 'bun:test'
-import { classifierMissing, classifyReading, hasHesitationToken } from '../src/nonspeech.ts'
+import {
+  classifierMissing,
+  classifyReading,
+  hasHesitationToken,
+  nonspeechNext,
+} from '../src/nonspeech.ts'
 
 describe('hasHesitationToken', () => {
   test('matches the conservative set of hesitation sounds', () => {
@@ -91,5 +96,21 @@ describe('classifierMissing', () => {
         process.env.VCUT_CLASSIFIER_HOME = previous
       }
     }
+  })
+})
+
+describe('nonspeechNext', () => {
+  test('is empty when nothing was found', () => {
+    expect(nonspeechNext('/render.mp4', 0)).toEqual([])
+  })
+
+  test('names a non-empty question and a non-empty verb when spans exist', () => {
+    const hints = nonspeechNext('/render.mp4', 3)
+    expect(hints.length).toBeGreaterThan(0)
+    for (const hint of hints) {
+      expect(hint.question.length).toBeGreaterThan(0)
+      expect(hint.verb.length).toBeGreaterThan(0)
+    }
+    expect(hints.some((hint) => hint.verb.includes('--verify'))).toBe(true)
   })
 })
