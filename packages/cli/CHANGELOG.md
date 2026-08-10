@@ -2,32 +2,26 @@
 
 Notable changes to `@crafter/vcut`. Entries say what changed and, where it is not obvious, what measurement led to it.
 
-## 0.7.2
+## 0.7.3
 
-0.7.0 reported a repeat still present in the render, and 0.7.1 told rounds to run the check.
-The next run did both, read `survivingRepeats`, wrote a reason calling the phrase a deliberate
-callback, and reported the result clean while the check exited 2. The contract said naming was
-the bar; it is the bar for one of the two failures, and the wrong one.
+Published because 0.7.2 went out twice: the first commit under that number hardened the check to
+force a repeated phrase out of the render, the second reverted it, and the release skipped the
+second because `package.json` already read 0.7.2. npm carried the hardened version. This is the
+corrected one.
 
-### Changed
-
-- **`unaddressedRepeats` and `survivingRepeats` are cleared differently, and the instructions now say so.** A reason clears the first. Only a cut clears the second, because the phrase is still in the file and no wording changes that. A round that judges a surviving repeat deliberate has a question for whoever approves the EDL rather than a finished result, and saying so is the honest end — reporting clean while the check exits 2 is what six runs did, three of them after naming the phrase correctly.
-
-## 0.7.2
-
-A repeated phrase is not a defect. 0.7.0 made presence-in-the-render fail the check, which read
-every callback as a retake and left naming unable to close the loop: the only move that changed
-the exit code was cutting further. Six runs of one recording chased a repetition the author
-wanted kept, and the run that got it right had to deliver over a failing check to do so.
+A repeated phrase is not a defect. Gating on presence-in-the-render read every callback as a
+retake and left naming unable to close the loop: the only move that changed the exit code was
+cutting further. Six runs of one recording chased a repetition the author wanted kept, and the
+run that judged it correctly had to deliver over a failing check to do so.
 
 ### Fixed
 
-- **`survivingRepeats` reports, it no longer gates.** `semantic check` exits 2 only while a repeated phrase is unnamed by every proposal reason. A phrase still in the render stays in the output as a list to read before finishing, since it is the right answer for a callback and the wrong one for a retake and nothing counting words separates those.
+- **`survivingRepeats` reports, it does not gate.** `semantic check` exits 2 only while a repeated phrase is unnamed by every proposal reason. A phrase still in the render stays in the output as a list to read before finishing, since it is the right answer for a callback and the wrong one for a retake and nothing counting words separates those.
 
 ### Changed
 
 - **The manual names how to tell a callback from a retake**, which it had never said despite ruling on retakes throughout. Two tests, both structural rather than lexical: a retake carries a spoken discard marker between the attempts and its absence is evidence, and in a retake both attempts serve the same clause while in a callback each occurrence is the antecedent for different material. One recording carries both twelve seconds apart, which is why a rule keyed on wording gets one of them wrong every time.
-- **The instruction that listed "natural anaphora" and "a deliberate echo" as the readings that kept a defect is gone.** It was written from four runs that had kept a retake, and it pushed the next run toward cutting a callback that belonged in the piece.
+- **The instruction listing "natural anaphora" and "a deliberate echo" as the readings that kept a defect is gone.** It was written from four runs that had kept a retake, and it pushed the next run toward cutting a callback that belonged in the piece.
 
 ## 0.7.1
 

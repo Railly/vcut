@@ -53,6 +53,13 @@ jobs:
           else
             echo "changed=false" >> "$GITHUB_OUTPUT"
             echo "Version unchanged ($LOCAL), skipping publish"
+            # A commit that ships content under a version npm already carries is invisible
+            # otherwise: the run goes green, the package keeps the old files, and the next
+            # install serves them. It happened once with two commits numbered 0.7.2, the
+            # second reverting the first, and npm kept the reverted behaviour for hours.
+            if ! git diff --quiet HEAD~1 HEAD -- src skills package.json 2>/dev/null; then
+              echo "::warning::This commit changes src or skills but the version is still $LOCAL, which npm already has. Nothing was published. Bump the version to ship it."
+            fi
           fi
 
       - name: Install dependencies
