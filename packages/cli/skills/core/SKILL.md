@@ -668,6 +668,19 @@ obvious once you see the attempt that follows it, so the earliest attempts read 
 while you are looking at them and as preamble once the last one is in view. Extending an
 existing span usually removes more than any new cut placed beside it.
 
+**Inside a fused region the transcript keeps the right words on the wrong clock, so read the
+boundary off the audio.** Three independent runs cut the same retake at 61000, 61020 and
+61192ms, each about 1772ms short of the boundary that removed it, and none of them misread
+anything: the whole-file transcript placed "ya llegamos a mil miembros" starting at 58540ms,
+across two measured silences of 980ms and 691ms, while the audio there says "conocemos... ah,
+otra vez" and the surviving line does not begin until 62.7s. Every one of them cut where the
+transcript pointed.
+
+Convergence between runs is not evidence a boundary is right — three agents agreeing usually
+means they read the same wrong number. Before setting the end of a retake cut, re-transcribe a
+window that starts after the last attempt and confirm the first words it returns are the telling
+you mean to keep. If the words that come back are still the retake, the boundary is early.
+
 **End a retake cut at the first word of the telling you are keeping, not at the last word the
 transcript shows.** Inside a fused region the cue timings are the averaged ones, so a boundary
 drawn from them lands mid-repetition and leaves the final attempt whole — the cut looks right in

@@ -2,6 +2,17 @@
 
 Notable changes to `@crafter/vcut`. Entries say what changed and, where it is not obvious, what measurement led to it.
 
+## 0.6.1
+
+### Changed
+
+- **The manual says why three runs cut the same retake at the same wrong place.** They ended at 61000, 61020 and 61192ms, each about 1772ms short of the boundary that removed it, and none of them misread anything: the whole-file transcript placed "ya llegamos a mil miembros" from 58540ms across two measured silences of 980ms and 691ms, while the audio there says "conocemos... ah, otra vez" and the surviving line starts at 62.7s. Inside a fused region the words are right and the clock is not, so a boundary read off the transcript lands seconds from what it names. Agreement between runs is not evidence either — three agents converging usually means they read the same wrong number. Confirm the end of a retake cut by re-transcribing a window that starts after it and checking the first words back are the telling being kept.
+
+A warning for this was written and reverted rather than shipped: on the recording it was built
+against it fired eight times, none of them on the zone that actually mattered, and tuning it
+further would have been fitting a threshold to one file. The rule is worth stating without a
+detector behind it.
+
 ## 0.6.0
 
 0.5.0 listed repeated wording so that keeping it had to be a decision about a named phrase. The
