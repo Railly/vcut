@@ -17,6 +17,7 @@ vcut locate --edl <path> [flags]   Translate between master time and source time
 vcut audit --edl <path> --render <path>  Check a render against the EDL it came from
 vcut say <media> [flags]           Read back what is spoken at a position
 vcut converge <media> [flags]      Find where a repeated phrase stops coming back
+vcut nonspeech <render> [--verify] Find audible sound that is not language
 vcut schema [name]                 Print the JSON contract for a command
 vcut skills list|get [name]        Read the bundled agent manual
 vcut doctor                        Check external dependencies
@@ -265,6 +266,30 @@ It exists because that judgement went wrong more often than any other: three run
 **`boundaryMs` is not where to cut.** A retake and the telling that survives it overlap, so the point where the wording disappears sits past the start of the line worth keeping. Cutting to it beheads that line: on one recording, ending at the reported 62000ms gave "Conocemos, ya llegamos a mil miembros" where ending at 61192ms kept "Y a la que conocemos, ya llegamos a mil miembros". Both were rendered and listened to; neither transcript reads as broken. `lastWithPhraseMs` carries that telling in full and sat 308ms from the correct boundary against 808ms for the far edge.
 
 Exit 1 with a null `boundaryMs` means the phrase was still recurring at `--to`, which is a reason to widen the span rather than evidence there is nothing to cut.
+
+### vcut nonspeech
+
+```bash
+vcut nonspeech master.mp4                       # spans only, the classifier's own output
+vcut nonspeech master.mp4 --verify --lang es     # each span read back through a window
+```
+
+Runs the bundled classifier (`skills/core/scripts/non-speech.py`) against a rendered preview and reports audible sound that is not language: a breath, a mic bump, a stretched hesitation the transcript cleans away even with a verbatim preset. Run it on the render, not the source: on raw footage every pause scores as non-speech, correctly and uselessly.
+
+| Flag | What it does |
+| --- | --- |
+| `--verify` | Re-transcribe a window around each span with `trx` and attach a reading |
+| `--lang <code>` | Language passed to the transcriber (`--verify` only) |
+
+**`--verify` is not optional in practice.** Without it you get positions and nothing else, and closing each one against the whole-file transcript is circular: that transcript is exactly the instrument that could not see this class of sound. `--verify` cuts a window of the span plus 1.2s of context on each side and re-transcribes it, attaching `text`, `peakDb`, `meanDb`, and a `reading`:
+
+- `vocalization-suspect` — the window names a hesitation sound (eh, ehm, mmm, aah, tolerant of a stretched vowel), or the span carries real level with no words inside it.
+- `words-around` — the window transcribes to ordinary words either side of the span: a breath in a pause.
+- `empty` — no words and no real level.
+
+Measured on a real 7.5-minute run: 18 spans closed by reading the whole-file transcript were all read as breaths, and seven turned out to be audible "eeeh" fillers a listener caught on the first playback. `--verify` against the same render named them by their text instead.
+
+The classifier is optional: `python3`, `panns-inference`/`scipy`/`numpy`, and a ~320MB model under `~/.vcut/panns` fetched by `vcut setup classifier`. Its absence is a supported state — `nonspeech` reports it and exits 0, the same policy `vcut doctor` already applies — and invariant 7 falls back to a human ear. `--verify` additionally needs `trx` on PATH. vcut still calls no model of its own: `python3` and `trx` are binaries on the caller's PATH, exactly like `ffmpeg`.
 
 ### vcut schema
 

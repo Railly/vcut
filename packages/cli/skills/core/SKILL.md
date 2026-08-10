@@ -30,6 +30,7 @@ way, and a first pass that stops there ships a recording with its retakes in it.
 | running the whole edit | **Workflow for an agent**, then **semantic** |
 | deciding where to look in a long file | **suspects** |
 | asking what is spoken somewhere | **say** |
+| checking a breath or a filler the transcript cannot see | **Non-verbal sound needs a classifier, not a statistic** |
 | deciding whether a cut is worth making | **semantic → How hard to cut** |
 | trying to stop the loop | **semantic → Before calling it done** |
 | looking at a render that came out wrong | **When something comes out wrong** |
@@ -499,6 +500,46 @@ llegamos a mil miembros". Ending at 62000ms buys 0.7 seconds and leaves "Conocem
 a mil miembros" — the line beheaded, and audibly wrong. Neither transcript reads as broken; the
 difference only shows up in the ear, which is the reason the approval step is a human's.
 
+## nonspeech
+
+```bash
+vcut nonspeech master.mp4                      # spans only, the classifier's own output
+vcut nonspeech master.mp4 --verify --lang es    # each span read back through a window
+```
+
+Runs `skills/core/scripts/non-speech.py` against a rendered preview and reports audible sound
+that is not language: a breath, a mic bump, a stretched hesitation the transcript cleaned
+away even with a verbatim preset. Run it on the render, never on the source: on raw footage
+every pause scores as non-speech, correctly and uselessly.
+
+**Always run it with `--verify`.** Without it you get positions and nothing else, and the
+instinct is to check each one against the whole-file transcript with `vcut say`, which is
+circular for this class of sound: the transcript is exactly the instrument that could not see
+it. `--verify` cuts a window of the span plus 1.2s of context on each side and re-transcribes
+it with `trx`, attaching `text`, `peakDb`, `meanDb`, and a `reading`:
+
+- `vocalization-suspect` — the window's transcript names a hesitation sound (eh, ehm, mmm, aah,
+  tolerant of a stretched vowel), or the span carries real level with no words inside it.
+- `words-around` — the window transcribes to ordinary words sitting either side of the span:
+  a breath in a pause.
+- `empty` — no words and no real level.
+
+`words-around` needs no ear. `empty` at real level is still a question for a listener: neither
+a hesitation token nor the transcript explains what the classifier heard there, and that is
+exactly the case no amount of re-reading settles.
+
+Measured on a real 7.5-minute run: 18 spans closed by reading the whole-file transcript were
+all read as breaths, four spot-checked and cleared, and seven turned out to be audible "eeeh"
+fillers the listener caught on the first playback. `--verify` against the same render read the
+same spans and named the fillers by their text.
+
+The classifier is optional — `python3`, `panns-inference`/`scipy`/`numpy`, and a ~320MB model
+under `~/.vcut/panns` fetched by `vcut setup classifier`. Its absence is a supported state:
+`nonspeech` says so and exits 0, the same policy `vcut doctor` already applies, and invariant 7
+falls back to a human ear. `--verify` additionally needs `trx` on PATH, the same as
+`say --transcribe`. vcut calls no model of its own either way: `python3` and `trx` are binaries
+on the caller's PATH, exactly like `ffmpeg`.
+
 ## When something comes out wrong
 
 ```bash
@@ -708,7 +749,7 @@ vcut semantic review --edl edl-$N.json --detect detect.json \
   --master cut-$N.mp4 --master-transcript cut-$N.srt
 
 # 4. Audible sound that is not language
-python3 skills/core/scripts/non-speech.py cut-$N.mp4 > non-speech-$N.json
+vcut nonspeech cut-$N.mp4 --verify --lang <lang> > non-speech-$N.json
 
 # 5. Fold findings back into proposals.json, bump N, repeat from 1
 ```
@@ -719,13 +760,26 @@ several source spans and taking only its endpoints yields a range covering every
 between. Run it on the render, never on the source: on raw footage every pause scores as
 non-speech, correctly and uselessly.
 
-`vcut doctor` reports whether the classifier is installed and `vcut setup classifier` fetches
-it, around 320MB into `~/.vcut/panns`. The script also needs `pip install panns-inference
-scipy numpy`.
+**Always run with `--verify`.** Without it you get the classifier's raw spans and nothing
+else, which puts you back where the manual used to leave you: closing each hit by reading the
+whole-file transcript, which is circular for this class of sound (see "Non-verbal sound needs
+a classifier" below for why). `--verify` re-transcribes a short window around each span with
+`trx` and attaches a `reading`: `vocalization-suspect` for a hesitation sound or unexplained
+level, `words-around` for a breath sitting between ordinary words, `empty` for nothing at real
+level. Read `text` on every `vocalization-suspect` span before folding it into a proposal, and
+treat an `empty` span at real level as a question for a listener, not a false positive to wave
+off — it means neither the transcript nor a hesitation token explains what the classifier
+heard, which is exactly the case a human ear has to settle.
 
-If it is not installed the script says so and exits. Invariant 7 still holds, and without the
-classifier the only instrument left for it is a human ear: say that in the handoff rather
-than reporting the edit as verified. It is the one check that cannot be read off any text.
+`vcut doctor` reports whether the classifier is installed and `vcut setup classifier` fetches
+it, around 320MB into `~/.vcut/panns`. It also needs `pip install panns-inference scipy
+numpy`, and `--verify` needs `trx` on PATH, same as `say --transcribe`.
+
+If the classifier is not installed, `vcut nonspeech` says so and exits 0 rather than failing:
+absence is a supported state, the same policy `vcut doctor` already applies elsewhere.
+Invariant 7 still holds, and without the classifier the only instrument left for it is a
+human ear: say that in the handoff rather than reporting the edit as verified. It is the one
+check that cannot be read off any text.
 
 #### Working a round
 
@@ -952,13 +1006,23 @@ Verify against the transcript of the render, not against the plan:
 - `unreviewed` is empty, or every stretch in it has been read **with the line before and after
   it in view**, which is the only way a repetition between two lines becomes visible.
 - `lines` has been read once as continuous prose, end to end, not as a numbered list.
-- The non-speech pass reports nothing, or each span it named has been read from the master's
-  transcript with `vcut say`. A span carrying ordinary transcribed words at a normal level is a
-  false positive and needs no ear: one run stalled on 13.44-14.08s of a master where `say`
-  returned "proyectos open source, lanzarlos en Linkedin" at -17.6 dB mean. Do not re-transcribe
-  the span on its own to settle it — a window that short returns noise whatever it contains, and
-  that same 640ms came back as "No, eh..." while the master says words there. Only a span whose
-  transcript is genuinely empty is a question for a listener.
+- The non-speech pass reports nothing, or every span was run through `vcut nonspeech --verify`
+  and each `vocalization-suspect` reading has been read and, where it is real, folded into a
+  proposal. **The closing rule is `nonspeech --verify`, not reading the whole-file transcript
+  with `vcut say`.** That used to be the rule and it is circular for this class of sound: the
+  whole-file transcript is exactly the instrument that cannot see a vocalization, so checking a
+  classifier hit against it answers "does the pass that already missed this still miss it,"
+  which is always yes. Measured on a real 7.5-minute run: 18 classifier spans were closed that
+  way, every one read as "breath" against the transcript, and seven of them were audible "eeeh"
+  fillers the listener caught on the first playback. `--verify` re-transcribes a short window
+  around each span instead, which is what recovers what the whole-file pass dropped.
+  `words-around` needs no ear: it means the window's own transcript sits on both sides of the
+  span with nothing unusual in the span itself, the non-speech equivalent of a breath between
+  words. `empty` at real level is still a question for a listener — the window carried no words
+  and no hesitation token, but something with real level is there and only an ear settles what.
+  Do not re-transcribe a span shorter than the window `--verify` already used to try to settle
+  either case further: a slice that short returns noise whatever it contains, which is the
+  entire reason `--verify` reads a window rather than the bare span.
 - The last line lands.
 
 `deadAir: []` is not evidence of any of this. It measures pauses the cuts left in the audio and
@@ -1051,21 +1115,29 @@ instruments. The silence pass hears energy and calls it speech. The transcript h
 for it, and the model stretches a neighbouring cue over it, so it ends up inside a word's
 span rather than beside it.
 
-`skills/core/scripts/non-speech.py` finds them and prints `kind: "non-speech"` proposals. It runs on the
-**rendered preview**, not the source: on raw footage every pause scores as non-speech,
-correctly and uselessly, while on a finished cut only real intrusions are left.
+`vcut nonspeech` runs `skills/core/scripts/non-speech.py` against the render and reports the
+spans it finds. It runs on the **rendered preview**, not the source: on raw footage every pause
+scores as non-speech, correctly and uselessly, while on a finished cut only real intrusions
+are left.
 
 ```bash
 vcut setup classifier                          # once, ~320MB into ~/.vcut/panns
-vcut skills list                               # prints where the script lives
-python3 <path>/non-speech.py master.mp4 > non-speech.json
-# map the master timings back through the EDL, then feed them in
+vcut nonspeech master.mp4 --verify --lang es > non-speech.json
+# read each vocalization-suspect span's text, then map timings back through the EDL and feed
+# the real ones in as proposals
 ```
 
-It ships beside the guides rather than as a subcommand because it needs Python and a 300MB
-torch checkpoint, and vcut otherwise runs anywhere ffmpeg does. Making it a verb would put
-those dependencies behind a command that looks like every other one. Anything emitting the proposal schema works; that
-script is the reference.
+**Always add `--verify`.** Without it you only get the classifier's raw spans, which puts the
+closing question back on the whole-file transcript — see "Before calling it done" above for
+why that is circular for this class of sound. `--verify` re-transcribes a short window around
+each span with `trx` and reports a `reading`: `vocalization-suspect`, `words-around`, or
+`empty`. `vcut schema nonspeech` has the full contract.
+
+The classifier script itself stays outside the CLI as a subprocess `vcut nonspeech` shells
+out to, because it needs Python and a 300MB torch checkpoint, and vcut otherwise runs
+anywhere ffmpeg does. Anything emitting the same span schema works in its place; that script
+is the reference. `--verify`, the reading, and the windowed re-transcription live in the CLI
+itself and need no Python beyond what the classifier already needed.
 
 **Four energy statistics were tried first and all four failed**, which is worth knowing
 before reaching for a fifth:

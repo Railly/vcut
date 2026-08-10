@@ -93,6 +93,7 @@ Piped or captured, the same command emits JSON. No flag needed.
 | `vcut audit --edl --render` | Checks a render's audio against the EDL it came from |
 | `vcut say <media>` | Reads back what is spoken at a position, from a transcript or by asking the audio |
 | `vcut converge <media>` | Finds where a repeated phrase stops coming back |
+| `vcut nonspeech <render> [--verify]` | Finds audible sound that is not language; `--verify` reads a window around each span instead of the whole-file transcript |
 | `vcut schema [name]` | The JSON contract per command, versioned |
 | `vcut skills get vcut` | The bundled agent manual, as markdown |
 | `vcut init` | Installs everything a first run needs, and reports what it could not |
