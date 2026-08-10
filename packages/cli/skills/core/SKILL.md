@@ -140,6 +140,33 @@ systematic rather than exceptional. There is no threshold to filter it: measured
 recording it ran from 1318ms down to a median of 246ms with no gap anywhere. That is why the
 warning names the worst case with its position instead of pretending a cut-off exists.
 
+**A word can also run long for the opposite reason, and that one is not benign.** Drift stretches
+a cue over *silence*. A transcript that fused several attempts at the same line stretches a cue
+over *speech*: the model heard the phrase three times, wrote it once, and the surviving word
+carries the time all three occupied. Both surface as an unusually long cue, which is why the
+warning above cannot tell you which you have, and why reading it as drift and moving on is the
+trap. One run did exactly that and lost a round to it.
+
+Tell them apart by what the audio does inside the cue's own span. Drift is speech at the start
+and silence for the rest; fusion holds voice across the whole span. Measure with `vcut say`
+around the word rather than trusting either reading:
+
+```bash
+vcut say <media> --transcript words.srt --at <the position the warning names> --window 4
+```
+
+Normalise duration per character before comparing anything, or long words look pathological on
+their length alone: on one recording `emprendedores,` ran 980ms and came to 70ms per character,
+ordinary, while `conocemos,` ran 2590ms at 259ms per character against a file median of 79.
+
+**When the audio holds voice through a long cue, re-transcribe that window on its own before
+cutting anything near it.** A whole-file pass is what averaged the repetitions away, so asking
+it again changes nothing; a 4 to 8 second window returns them. Two windows of different lengths
+that disagree on the word count for the same overlap is the signature. On one recording the
+90-second transcript wrote "Y a la que conocemos, ya llegamos" once, and short windows over the
+same span returned it three times with an "ah, otra vez" between them — a retake the loop cannot
+cut because nothing downstream knows it was said.
+
 **Ask the model to keep the hesitations.** A transcriber cleans by default: it writes what it
 believes was meant, so a stretched vowel or a tag question is dropped as noise. Those are
 exactly the spans worth cutting, and one that never reaches the transcript cannot be proposed.
@@ -391,8 +418,11 @@ Never mark segments approved on the human's behalf. Never render a master withou
 4. Read the warnings. If the transcript is not word-level, say so: clamping is off and cuts can land inside a word.
 5. `vcut semantic export`, read the lines, write proposals.
 6. **Loop**: build, render, transcribe the render, review, fold findings back in. Repeat
-   until a round proposes nothing and every invariant holds. This is where most of the work
-   is, and one pass is never the answer. The full procedure is under `semantic` below.
+   until a round proposes nothing and every invariant holds, and **never stop at one round** —
+   the empty round has to come after a round that found something, because it reads a text the
+   previous one produced. Runs that stopped at one shipped a repetition and cut less than the
+   ones that kept going. This is where most of the work is. The full procedure is under
+   `semantic` below.
 
    ```bash
    vcut edl build --detect detect.json --semantic proposals.json --output master.mp4 --campaign x
@@ -634,6 +664,22 @@ still a round that found something, and what it found was invisible until the pr
 ran. Diminishing returns is what convergence looks like from the inside, one round before the
 end, every time.
 
+**The empty round cannot be the first one.** Round two runs even when round one looks perfect,
+because it reads a different text: the transcript of what round one produced, which nobody has
+read before. Four runs on the same recording separate cleanly on this and nothing else. The
+three that stopped at one round shipped a repetition, and the shortest of them cut *less* while
+declaring itself done sooner: 33.78% removed against 44.04% for the run that was made to keep
+going. That run found the largest cut in the file — a three-attempt retake — in round two, on
+material round one had already declared clean.
+
+A round is: build, render `--audio-only`, transcribe that render, `semantic review`, read,
+propose. Anything short of the full sequence does not count as one, because the reading is the
+part that finds things.
+
+Spend saved effort here rather than on verification. Cutting a round to save time is the one
+economy that costs output: the same four runs show auditing more never found a defect, and
+reading more found every one of them.
+
 Verify against the transcript of the render, not against the plan:
 
 - Every invariant below holds.
@@ -651,6 +697,20 @@ while a sentence appeared twice in the same transcript.
 and mangle words, especially at a join. Before reporting one, check whether the EDL still
 covers that span and what the audio measures there. If it does and the level is normal, the
 transcript is wrong and the audio is fine.
+
+**When `audit` says a segment is fine and the render's transcript says it is not, both are
+right and neither answers the question.** They ask different things: `audit` asks whether a
+segment carries the material the EDL points at, and a cut whose span was drawn too narrow
+carries exactly what it was told to, correctly, while leaving the rest of the defect behind it.
+A run hit this with 0.94 correlation on a segment whose transcript still read the phrase it had
+just cut, and spent fifteen commands reconciling the two before realising they were not in
+conflict.
+
+Resolve it on the **source**, not the master: the master already inherited whatever the cut
+left, so re-reading it only repeats the answer. Re-transcribe a short window of the source
+around the boundary and compare against what the whole-file transcript claims is there. Where
+they disagree, the whole-file pass is the one that is wrong, and the cut needs widening rather
+than moving.
 
 ### Invariants
 

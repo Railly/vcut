@@ -2,6 +2,18 @@
 
 Notable changes to `@crafter/vcut`. Entries say what changed and, where it is not obvious, what measurement led to it.
 
+## 0.4.5
+
+Four runs of the same recording through the loop, three of which shipped a defect a listener
+caught on the first play. What separated the one that worked was not tooling but three things
+the manual left to the reader.
+
+### Changed
+
+- **A long cue has two causes and the manual only named one.** Drift stretches a cue over silence and is benign, which the manual documented. A transcript that fused several attempts at the same line stretches a cue over *speech*: the model heard a phrase three times, wrote it once, and the surviving word carries the time all three occupied. Both surface as an unusually long cue, so the existing warning cannot distinguish them, and a run read it as drift and lost a round. The manual now says to tell them apart by what the audio does inside the cue's own span, to normalise duration per character first (`emprendedores,` at 980ms is 70ms per character and ordinary; `conocemos,` at 2590ms is 259 against a file median of 79), and to re-transcribe a 4 to 8 second window before cutting nearby. On one recording the whole-file pass wrote "Y a la que conocemos, ya llegamos" once where short windows returned it three times with an "ah, otra vez" between them.
+- **The empty round cannot be the first one.** The manual said one pass is never enough without saying how many are. Four runs separate on this and nothing else: the three that stopped at one round shipped a repetition, and the shortest of them cut 33.78% while declaring itself done, against 44.04% for the run required to continue, which found the largest cut in the file in round two on material round one had called clean.
+- **What to do when `audit` and the render's transcript disagree.** They ask different questions, so both can be right: `audit` asks whether a segment carries what the EDL points at, and a cut drawn too narrow carries exactly that while leaving the rest of the defect behind it. One run spent fifteen commands reconciling a 0.94 correlation against a transcript that still read the phrase it had just cut. The manual now says to resolve it on the source rather than the master, which already inherited whatever the cut left.
+
 ## 0.4.4
 
 ### Changed
