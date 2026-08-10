@@ -36,7 +36,8 @@ Flags:
   --transcribe          Ask the audio instead of the transcript: cuts the window and runs
                         trx over it. The answer a fused region cannot give from text
   --lang <code>         Language passed to the transcriber (--transcribe only)
-  --at <sec>            Position to read around (required)
+  --at <sec>            Position to read around, or the start of a range with --through
+  --through <sec>       Read everything from --at to here, instead of a window around --at
   --window <sec>        How much context to include (default 2)
   --media <path>        Media to measure the level on, if not the positional argument
   --edl <path>          Report which segment the position falls in
@@ -200,11 +201,20 @@ export const sayCommand = async (argv: string[]): Promise<void> => {
     throw new UsageError(`no transcript at ${resolvedTranscript}`)
   }
 
+  // A range, because reading a passage is as common as reading a point and doing it through
+  // --at means guessing a window that covers it. A run wrote its own SRT parser to get this,
+  // thirty lines reimplementing what this command already had loaded, and then called it nine
+  // times over nine spans.
+  const throughSeconds = numericFlag(argv, '--through')
   const windowSeconds = numericFlag(argv, '--window') ?? 2
   const atMs = at * 1000
-  const windowMs = windowSeconds * 1000
-  const startMs = Math.max(0, atMs - windowMs / 2)
-  const endMs = atMs + windowMs / 2
+  const windowMs =
+    throughSeconds === undefined ? windowSeconds * 1000 : throughSeconds * 1000 - atMs
+  const startMs = throughSeconds === undefined ? Math.max(0, atMs - windowMs / 2) : atMs
+  const endMs = throughSeconds === undefined ? atMs + windowMs / 2 : throughSeconds * 1000
+  if (throughSeconds !== undefined && endMs <= startMs) {
+    throw new UsageError('--through has to come after --at')
+  }
 
   const transcript =
     resolvedTranscript === undefined ? null : parseSrt(readFileSync(resolvedTranscript, 'utf8'))

@@ -113,3 +113,23 @@ describe('checkAgainstRender', () => {
     expect(checkAgainstRender([] as Placement[], 0).expectedMs).toBe(0)
   })
 })
+
+// Every other command in this tool speaks milliseconds, so passing them to a flag that takes
+// seconds is the natural mistake — and the answer was indistinguishable from a real one. A run
+// asked about nine positions in milliseconds, got `removed: true` for all nine, and read that
+// as nine spans it had successfully cut.
+describe('a position past the end of the source', () => {
+  const map = [
+    { id: 'segment-001', sourceInMs: 0, sourceOutMs: 5_000, masterInMs: 0, masterOutMs: 5_000 },
+  ]
+
+  test('is not the same answer as a position that was cut', () => {
+    const inside = sourceToMaster(map, 2_000)
+    const cut = sourceToMaster(map, 4_999)
+    expect(inside).not.toBeNull()
+    expect(cut).not.toBeNull()
+    // 61192 seconds against a five second source: the guard belongs above this call, since the
+    // map itself cannot tell "removed" from "never existed".
+    expect(sourceToMaster(map, 61_192_000)).toBeNull()
+  })
+})

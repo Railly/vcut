@@ -2,6 +2,26 @@
 
 Notable changes to `@crafter/vcut`. Entries say what changed and, where it is not obvious, what measurement led to it.
 
+## 0.11.0
+
+A run edited a real 7.5-minute recording and reached for python about thirty-seven times. Reading
+what it built with it: its own SRT parser, its own span reader called nine times, two shell loops
+around `locate`, and fourteen hand-rolled ffmpeg-plus-transcriber calls. Each one is a question
+this CLI should have answered.
+
+### Fixed
+
+- **`locate` accepted a position past the end of the file and answered `removed: true`.** Every other command here speaks milliseconds, so passing them to a flag that takes seconds is the natural mistake, and the answer was indistinguishable from a real one: the run asked about nine positions in milliseconds, got nine confident `removed: true`, and read that as nine spans it had successfully cut. `--source` and `--master` now refuse a position past the end and name the unit they expected.
+
+### Added
+
+- **`locate --sources 20,53.86,61.2`** answers a list of positions in one call. The run wrote that loop twice in shell, with a JSON parser inside each.
+- **`say --at X --through Y`** reads a range rather than a window around a point. The run wrote thirty lines of SRT parsing to get this, reimplementing what the command already had loaded, then called it over nine spans.
+
+### Changed
+
+- **The manual says positions are seconds and the JSON is milliseconds**, next to the two commands that now take lists and ranges.
+
 ## 0.10.1
 
 ### Changed

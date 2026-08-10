@@ -40,6 +40,17 @@ way, and a first pass that stops there ships a recording with its retakes in it.
 
 Every command writes data to stdout and diagnostics to stderr. JSON is emitted automatically when stdout is not a TTY, so an agent never needs `--json`, though passing it is harmless. Exit code 2 means the invocation was wrong, 1 means the run failed.
 
+**Positions are seconds, everywhere.** `--at`, `--from`, `--source`, `--master` all take
+seconds; the JSON that comes back speaks milliseconds. Mixing them up used to answer as if the
+question made sense — a run asked `locate` about nine positions in milliseconds, got
+`removed: true` for all nine, and read that as nine spans it had cut. Those flags now refuse a
+position past the end of the file and say which unit they expected.
+
+**Ask about several positions at once.** `locate --sources 20,53.86,61.2` answers a list, and
+`say --at X --through Y` reads a range rather than a window around a point. Both exist because
+a run built them out of shell loops with a JSON parser inside, and one wrote thirty lines of
+its own SRT parser to read a span this command already had loaded.
+
 **`--human` when you are reading rather than parsing.** Every command takes it, and it answers
 in a few lines what the JSON answers in a few hundred. A run spent nine separate `python3`
 invocations pulling two or three fields out of objects it had just received, and every one of

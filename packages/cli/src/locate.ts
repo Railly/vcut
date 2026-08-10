@@ -30,6 +30,7 @@ Flags:
   --edl <path>       Edit decision list to read (required)
   --master <sec>     Position in the rendered master to translate
   --source <sec>     Position in the source to translate
+  --sources <list>   Several source positions at once, comma separated
   --all              Emit the whole segment map instead of one position
   --render <path>    Check the map against a rendered file
   --explain          Report the neighbourhood, not only the number
@@ -231,7 +232,11 @@ export const locateCommand = async (argv: string[]): Promise<void> => {
 
   const masterSeconds = numericFlag(argv, '--master')
   const sourceSeconds = numericFlag(argv, '--source')
-  if (masterSeconds === undefined && sourceSeconds === undefined) {
+  if (
+    masterSeconds === undefined &&
+    sourceSeconds === undefined &&
+    flagValue(argv, '--sources') === undefined
+  ) {
     throw new UsageError(HELP)
   }
   if (masterSeconds !== undefined && sourceSeconds !== undefined) {
@@ -297,7 +302,59 @@ export const locateCommand = async (argv: string[]): Promise<void> => {
     return
   }
 
+  // Several positions at once, because a round asks about every boundary it proposed and one
+  // call each turns into a shell loop with a JSON parser inside it. A run wrote that loop twice.
+  const list = flagValue(argv, '--sources')
+  if (list !== undefined) {
+    const positions = list
+      .split(',')
+      .map((entry: string) => Number(entry.trim()))
+      .filter((entry: number) => Number.isFinite(entry))
+    const sourceEnds = map.length === 0 ? 0 : Math.max(...map.map((entry) => entry.sourceOutMs))
+    const answers = positions.map((seconds) => {
+      const ms = seconds * 1000
+      if (ms > sourceEnds) {
+        return { sourceMs: ms, error: 'past the end of the source; this flag takes seconds' }
+      }
+      const found = sourceToMaster(map, ms)
+      return found === null
+        ? { sourceMs: ms, masterMs: null, removed: true }
+        : { sourceMs: ms, masterMs: found.masterMs, removed: false, segment: found.placement.id }
+    })
+    if (mode === 'json') {
+      emitJson({ positions: answers })
+      return
+    }
+    console.log(
+      [
+        heading('locate'),
+        ...answers.map((answer) =>
+          line(
+            `${(answer.sourceMs / 1000).toFixed(2)}s`,
+            'error' in answer
+              ? (answer.error as string)
+              : answer.masterMs === null
+                ? 'removed'
+                : `master ${(answer.masterMs / 1000).toFixed(2)}s`,
+          ),
+        ),
+      ].join('\n'),
+    )
+    return
+  }
+
   const sourceMs = (sourceSeconds as number) * 1000
+  // Every other command in this tool speaks milliseconds, so passing them here is the natural
+  // mistake and the answer was indistinguishable from a real one: a run asked about nine
+  // positions in milliseconds, got `removed: true` for all nine, and read that as nine spans
+  // it had successfully cut. The source ends where it ends, and a position past it is a
+  // question about nothing rather than a span that was removed.
+  const sourceEndsMs = map.length === 0 ? 0 : Math.max(...map.map((entry) => entry.sourceOutMs))
+  if (sourceMs > sourceEndsMs) {
+    throw new UsageError(
+      `--source ${sourceSeconds} is past the end of the source (${(sourceEndsMs / 1000).toFixed(2)}s). This flag takes seconds; ${sourceSeconds} looks like milliseconds`,
+    )
+  }
   const hit = sourceToMaster(map, sourceMs)
   if (hit === null) {
     const survivor = map.find((entry) => entry.sourceInMs >= sourceMs) ?? null
