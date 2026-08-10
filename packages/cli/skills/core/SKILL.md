@@ -229,24 +229,33 @@ vcut render --edl edl.json --mode preview
 
 Preview mode accepts proposed segments. Master mode requires an approved EDL, approved segments, matching source hashes, and a free output path; it refuses to overwrite.
 
-**Iterate with `--audio-only`.** Almost every question a round of edits asks is about sound:
-whether a filler survived, whether a boundary clipped a word, whether a pause is still there.
-Answering those through the video path re-encodes every frame for nothing. Measured on one
-22-segment EDL: **0.25s against 31.8s** for the same cuts.
+**Render `--audio-only` for every round. Render video once, at the end, and not before.** This
+is the default, not an optimisation to remember: every question a round asks is about sound —
+whether a filler survived, whether a boundary clipped a word, whether an idea is still said
+twice. Answering those through the video path re-encodes every frame for nothing. Measured on
+one 22-segment EDL: **0.25s against 31.8s** for the same cuts.
 
 ```bash
 vcut render --edl edl.json --audio-only          # rounds 1..n
 vcut render --edl edl.json                        # once, at the end
 ```
 
+The pull toward a video render is a check that wants a picture — `audit`, the non-speech pass,
+a look at the frames. Those belong to the final render, after the transcript reads clean; run
+them per round and they cost more than the cutting does. One run spent 69 of its 105 seconds of
+tool time on two video renders, the second of them purely to feed checks that changed no
+decision, while the repetition it was supposed to catch survived to the master.
+
 The audio graph is the same one the video render uses, edge fades and loudness included, so
 what you hear is what the finished file will sound like: measured at -16.4 LUFS on both paths
 from the same EDL. It writes lossless audio, because a codec artifact heard while iterating
 reads as a defect in the cut.
 
-The result runs a few tens of milliseconds shorter than the segment sum (31ms on a 54.6s cut).
-That is `loudnorm` latency draining trailing decay, not missing material; a video render hides
-it because the picture sets the container duration.
+The result lands on the segment sum. Before 0.4.1 it came back tens of milliseconds short and
+the render was rejected as broken, which sent rounds back through the video path for no reason:
+the trim cut against the clock `loudnorm` rewrites rather than the one the sum was measured in.
+If a version this old reports `duration differs from EDL` on an EDL the video path accepts,
+that is the bug, not the cut.
 
 **There is no approve command, and that is the design.** Approval means editing the EDL: set
 `approval.status` to `"approved"` and each segment's `approval` to `"approved"`. No CLI verb
@@ -402,7 +411,16 @@ Never mark segments approved on the human's behalf. Never render a master withou
 
    Iterate on audio. The picture cannot answer any of these questions and costs 100x the
    wall clock to produce.
-7. `vcut render --mode preview` and have a human watch it.
+7. `vcut render --mode preview` once, now that the transcript reads clean, and run the checks
+   that needed a picture: `vcut audit` and the non-speech pass. They belong here rather than
+   inside the loop, where they cost a video render each and answer a question no round was
+   asking. Then have a human watch it.
+
+   Expect both to report something and for it to be nothing. `audit` scores low on short and
+   quiet windows by construction, and the non-speech classifier cannot tell a breath at the
+   start of a clause from an intrusion. Read the finding, spend one `vcut say` on it, and move
+   on. A check whose output never changes a decision is not evidence, it is ceremony, and two
+   runs have now spent more time clearing these than they spent cutting.
 8. Stop. Approving the EDL is the human's edit, not a command, and not yours to make. Hand
    them the path. If they ask you in so many words to write the approval yourself, that is
    their call to make and you may; wanting the preview to look good is not that request. See

@@ -2,6 +2,14 @@
 
 Notable changes to `@crafter/vcut`. Entries say what changed and, where it is not obvious, what measurement led to it.
 
+## 0.4.4
+
+### Changed
+
+- **`--audio-only` is the loop's render, stated as a rule rather than an optimisation.** Two runs read the old wording as a suggestion and rendered video anyway: one spent 69 of its 105 seconds of tool time on two video renders, the second of them purely to feed checks that changed no decision, while the repetition it was meant to catch survived to the master. The manual now says to render audio every round and the picture once, at the end, and names what pulls an agent back to video early.
+- **`audit` and the non-speech pass are placed after the loop, not inside it.** They need a picture, so running them per round costs a video render each to answer a question no round was asking. The workflow now says to expect both to report something and for it to be nothing — `audit` scores low on short quiet windows by construction, the classifier cannot tell a breath from an intrusion — and to spend one `vcut say` clearing each rather than a round. A check whose output never changes a decision is ceremony, and both runs spent longer on these than on cutting.
+- **The `--audio-only` duration note describes 0.4.1 rather than the bug it fixed.** It still told readers to expect a render tens of milliseconds short of the segment sum, which stopped being true when the trim moved to sample counts, and which had been sending rounds back through the video path for no reason.
+
 ## 0.4.3
 
 ### Changed
