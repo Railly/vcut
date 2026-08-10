@@ -473,6 +473,17 @@ export const humanReport = (report: DetectReport): string => {
   return lines.join('\n')
 }
 
+// Fixed rather than derived from a value in this report: both point at the file this JSON is
+// conventionally saved as (detect.json, the name humanReport's own nextStep already teaches),
+// not at anything specific to one run.
+export const DETECT_NEXT = [
+  { question: 'where to look first', verb: 'vcut suspects --detect detect.json' },
+  {
+    question: 'build the draft EDL',
+    verb: 'vcut edl build --detect detect.json --output <master path> --campaign <id>',
+  },
+]
+
 export const detectCommand = async (argv: string[]): Promise<void> => {
   if (argv.includes('--help') || argv.length === 0) {
     console.log(HELP)
@@ -575,7 +586,7 @@ export const detectCommand = async (argv: string[]): Promise<void> => {
     warnings,
   }
   if (mode === 'json') {
-    emitJson(report)
+    emitJson({ ...report, next: DETECT_NEXT })
     return
   }
   console.log(humanReport(report))

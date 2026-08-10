@@ -1,11 +1,10 @@
 import { createHash } from 'node:crypto'
 import { createReadStream, existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-
+import { containsPhrase } from './converge.ts'
 import type { DetectReport, Interval, SilenceCandidate, Transcript, Word } from './detect.ts'
 import { parseSrt } from './detect.ts'
 import { run } from './exec.ts'
-import { containsPhrase } from './converge.ts'
 import {
   bar,
   duration,
@@ -78,6 +77,16 @@ export const matchTarget = (removalPercent: number): string => {
     ? 'below every target range; the source may already be edited'
     : `in range for ${hits.map((range) => range.label).join(', ')}`
 }
+
+/** The field entry names semanticCuts directly rather than pointing at another command,
+ * since the answer is already in this same payload. */
+export const buildEdlNext = (edlPath: string) => [
+  { question: 'hear the cut', verb: `vcut render --edl ${edlPath} --audio-only` },
+  {
+    question: 'what each semantic span removes',
+    verb: 'already in this payload: read the semanticCuts field',
+  },
+]
 
 export const humanSummary = (summary: BuildSummary): string => {
   const fraction = summary.removalPercent / 100
@@ -355,7 +364,10 @@ export const removedText = (span: Interval, words: Word[]): string =>
     .trim()
 
 /** Whether each edge of a span lands inside a silence detect measured, rather than in speech. */
-export const boundariesInSilence = (span: Interval, silences: SilenceCandidate[]): [boolean, boolean] => {
+export const boundariesInSilence = (
+  span: Interval,
+  silences: SilenceCandidate[],
+): [boolean, boolean] => {
   const inside = (ms: number) =>
     silences.some((silence) => ms >= silence.startMs && ms <= silence.endMs)
   return [inside(span.startMs), inside(span.endMs)]
@@ -838,7 +850,7 @@ export const buildEdlCommand = async (argv: string[]): Promise<void> => {
     ],
   }
   if (mode === 'json') {
-    emitJson(summary)
+    emitJson({ ...summary, next: buildEdlNext(summary.edlPath) })
     return
   }
   console.log(humanSummary(summary))

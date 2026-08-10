@@ -21,17 +21,9 @@
 import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 
-import { type SilenceCandidate, parseSilenceLog, probeDurationMs } from './detect.ts'
+import { parseSilenceLog, probeDurationMs, type SilenceCandidate } from './detect.ts'
 import { run } from './exec.ts'
-import {
-  duration,
-  emitJson,
-  heading,
-  line,
-  type Mode,
-  resolveMode,
-  UsageError,
-} from './output.ts'
+import { duration, emitJson, heading, line, type Mode, resolveMode, UsageError } from './output.ts'
 
 const HELP = `vcut silences - speech and silence blocks over a range, at a resolution you choose
 

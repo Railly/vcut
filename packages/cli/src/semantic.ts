@@ -634,6 +634,17 @@ export const renderedGaps = async (
   }))
 }
 
+export const semanticReviewNext = (detectPath: string, masterPath: string | undefined) => [
+  {
+    question: 'close the round',
+    verb: `vcut semantic check --proposals <your proposals path> --detect ${detectPath} --review <this output saved to a path>`,
+  },
+  {
+    question: 'non-speech pass still pending',
+    verb: `vcut nonspeech ${masterPath ?? '<render>'} --verify`,
+  },
+]
+
 export const semanticCommand = async (argv: string[]): Promise<void> => {
   if (argv.includes('--help') || argv.length === 0) {
     process.stdout.write(`${HELP}\n`)
@@ -729,6 +740,7 @@ export const semanticCommand = async (argv: string[]): Promise<void> => {
       repeated: repeatedPhrases(lines),
       deadAir,
       lines,
+      next: semanticReviewNext(value('--detect') as string, masterPath),
     })
     return
   }

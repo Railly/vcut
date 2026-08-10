@@ -1,7 +1,6 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { join, resolve } from 'node:path'
 import { auditCommand } from './audit-command.ts'
 import { buildEdlCommand } from './build-edl.ts'
 import { convergeCommand } from './converge.ts'
@@ -16,6 +15,7 @@ import {
   line,
   type Mode,
   nextStep,
+  packageVersion,
   resolveMode,
   UsageError,
 } from './output.ts'
@@ -27,28 +27,6 @@ import { skillsDir } from './skills-dir.ts'
 import { suspectsCommand } from './suspects.ts'
 
 export { skillsDir } from './skills-dir.ts'
-
-// Read rather than restated, because a hand-maintained copy drifts silently: 0.4.1 shipped to
-// npm with this constant still reading 0.4.0, so the published binary reported a version it
-// was not. The release only bumps package.json, which makes that the one place worth trusting.
-const packageVersion = (): string => {
-  let dir = dirname(fileURLToPath(import.meta.url))
-  for (let depth = 0; depth < 5; depth += 1) {
-    const candidate = join(dir, 'package.json')
-    if (existsSync(candidate)) {
-      const parsed = JSON.parse(readFileSync(candidate, 'utf8')) as { version?: string }
-      if (typeof parsed.version === 'string') {
-        return parsed.version
-      }
-    }
-    const parent = dirname(dir)
-    if (parent === dir) {
-      break
-    }
-    dir = parent
-  }
-  return 'unknown'
-}
 
 export const VERSION = packageVersion()
 export const SCHEMA_VERSION = 1
@@ -392,14 +370,14 @@ const CONTRACTS: Record<string, unknown> = {
     notes: [
       'This is the placing instrument, not the cutting one: detect.silences is still what edl build cuts against, at the threshold proven in production.',
       'Positions on --from/--to are seconds; the JSON speaks milliseconds, same rule as every other command.',
-      'Exists for a resolution detect cannot give: the gap between a filler and the next word can measure 80-150ms, well under detect\'s 0.3s default minimum.',
+      "Exists for a resolution detect cannot give: the gap between a filler and the next word can measure 80-150ms, well under detect's 0.3s default minimum.",
     ],
   },
   say: {
     version: SCHEMA_VERSION,
     command: 'vcut say',
     output: {
-      atMs: 'integer, the position asked about',
+      atMs: 'integer, the position asked about. Absent when --positions is used',
       windowMs: 'integer, how much context was read',
       text: 'the words in the window, joined',
       words: '[{ text, startMs, endMs }]',
@@ -407,11 +385,14 @@ const CONTRACTS: Record<string, unknown> = {
       meanDb: 'number|null',
       segment: '{ id, sourceMs }|null, only with --edl',
       warning: 'present when the transcript is not word-level',
+      positions:
+        '[{ atMs, windowMs, text, words, peakDb, meanDb, segment?, warning? }], only with --positions: one object per position, same shape as a single call, in the order given',
     },
     notes: [
       'Reads an existing transcript. vcut never calls a model, here as everywhere else.',
       'Do not answer this by transcribing a short slice instead: a window under about two seconds returns noise whatever the audio contains, so the result cannot tell a real word from a guess.',
       'A window with no words but real level is the interesting case: something audible the transcript never saw. That is what the non-speech classifier is for.',
+      '--positions answers several windows in one call instead of one --at call per position. Mutually exclusive with --at/--through. With --transcribe it transcribes strictly sequentially, never concurrently, since each call loads a Whisper model into memory.',
     ],
   },
   audit: {

@@ -225,6 +225,12 @@ const flagValue = (argv: string[], name: string): string | undefined => {
   return index === -1 ? undefined : argv[index + 1]
 }
 
+/** Empty with nothing found: there is nothing to verify. */
+export const nonspeechNext = (renderPath: string, spanCount: number) =>
+  spanCount === 0
+    ? []
+    : [{ question: 'verify the spans', verb: `vcut nonspeech ${renderPath} --verify` }]
+
 export const nonspeechCommand = async (argv: string[]): Promise<void> => {
   if (argv.includes('--help') || argv.length === 0) {
     console.log(HELP)
@@ -280,7 +286,12 @@ export const nonspeechCommand = async (argv: string[]): Promise<void> => {
   const verify = argv.includes('--verify')
   if (!verify) {
     if (mode === 'json') {
-      emitJson({ status: 'ok', spans: outcome.spans })
+      const next = nonspeechNext(positional, outcome.spans.length)
+      emitJson({
+        status: 'ok',
+        spans: outcome.spans,
+        ...(next.length === 0 ? {} : { next }),
+      })
     } else {
       const lines = [heading('nonspeech'), line('spans', String(outcome.spans.length))]
       for (const span of outcome.spans) {

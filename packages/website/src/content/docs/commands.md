@@ -29,6 +29,12 @@ vcut version                       Print the version
 
 Global flags: `--json` forces machine output, `--human` forces the summary, `--help` works on any command.
 
+Every JSON output carries `vcutVersion`, the version of the binary that produced it, so an
+agent working from a cached manual can tell the tool changed underneath it. Selected outputs
+(`suspects`, `detect`, `edl build`, `semantic review`, `nonspeech`, `render --audio-only`) also
+carry `next`, a short list of `{question, verb}` naming what to run next — a hint, not an
+instruction.
+
 ### vcut detect
 
 Runs the deterministic pass. Never edits media, never writes an EDL.
@@ -245,6 +251,7 @@ audit  22 of 22 segments compared
 ```bash
 vcut say cut.mp4 --transcript cut.srt --at 50.2 --edl edl.json    # read the transcript
 vcut say cut.mp4 --transcribe --lang es --at 57.5 --window 4      # ask the audio
+vcut say cut.mp4 --transcribe --positions 19.5,30.0,41.9          # sweep several positions
 ```
 
 Reads back what is spoken at a position, with the level there and, with `--edl`, which segment it falls in.
@@ -253,6 +260,7 @@ Reads back what is spoken at a position, with the level there and, with `--edl`,
 | --- | --- |
 | `--at <sec>` | Position to read around, or the start of a range with `--through` |
 | `--through <sec>` | Read everything from `--at` to here rather than a window around it |
+| `--positions <list>` | Several positions at once, comma-separated seconds. One object per position, same shape `--at` returns, in order. Mutually exclusive with `--at`/`--through` |
 | `--transcript <path>` | Word-level SRT to read from (required unless `--transcribe`) |
 | `--transcribe` | Cut the window and run the transcriber over it instead of reading |
 | `--lang <code>` | Language passed to the transcriber (`--transcribe` only) |
@@ -265,6 +273,8 @@ Reads back what is spoken at a position, with the level there and, with `--edl`,
 **`--transcribe` is for the case reading cannot answer.** A whole-file pass averages: where a speaker said a line three times it can write it once, and no amount of re-reading recovers the difference. Measured on one recording, reading at 57.5s gave "la que conocemos, ya llegamos a" where transcribing the same window gave "Y a la que conocemos, ya llegue. Y a la que conocemos" — the repetition four runs failed to find. Use a window of four seconds or more, and note it costs one transcriber call. vcut still calls no model of its own: it runs the transcriber already on your PATH, the same way it runs ffmpeg.
 
 A window with no words but real level is the case worth stopping on: something audible the transcript never saw, which is what the non-speech classifier is for.
+
+**`--positions` answers several windows in one call**, because sweeping several spans was a shell loop of individual `--at` calls: one session swept 18 classifier spans exactly that way. With `--transcribe`, positions transcribe strictly sequentially, never concurrently — each call loads a Whisper model into memory, and racing several is the load that chokes a machine already carrying a video editor.
 
 ### vcut converge
 

@@ -114,6 +114,11 @@ describe('offset math for a sub-range (what silencesCommand does with parseSilen
       startMs: silence.startMs + rangeStartMs,
       endMs: silence.endMs + rangeStartMs,
     }))
-    expect(absolute[0]).toEqual({ kind: 'silence', startMs: 61_500, endMs: 62_000, durationMs: 500 })
+    expect(absolute[0]).toEqual({
+      kind: 'silence',
+      startMs: 61_500,
+      endMs: 62_000,
+      durationMs: 500,
+    })
   })
 })
