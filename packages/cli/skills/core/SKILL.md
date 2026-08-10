@@ -576,6 +576,11 @@ an empty array. Print each `unreviewed` span with the line before and after it, 
 `lines` concatenated as continuous prose. A repeated idea lives *between* two lines and is
 invisible to any pass that evaluates them one at a time.
 
+Both readings, in that order, and neither replaces the other. A round that only reads the prose
+misses a repetition whose two tellings sit either side of a cut, because the removed span hides
+how close they are. A round that only reads `unreviewed` misses one that sits entirely between
+two lines nothing ever marked, because their neighbours were cut and they look reviewed.
+
 No script substitutes for that reading. Lexical similarity does not separate a repetition from
 two sentences sharing prepositions: on the run above the repeated pair scored 0.150 against
 0.114 for a healthy neighbouring pair, so any threshold catching one catches the other. This
