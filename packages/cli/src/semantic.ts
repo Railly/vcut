@@ -451,10 +451,22 @@ export const repeatedPhrases = (
 // The bar is naming, not agreeing. Deciding a repeat is intentional is a valid answer and
 // keeping it is often right, but the decision has to appear in a reason where a human reading
 // the EDL can find it, rather than in a judgement that left no trace.
+type Repeat = { phrase: string; count: number; lineIndexes: number[] }
+
+// The review JSON is this tool's own output, so a missing or malformed `repeated` means an
+// older run wrote it rather than a caller getting it wrong: read it as nothing to answer.
+const readRepeated = (path: string | undefined): Repeat[] => {
+  if (path === undefined) {
+    return []
+  }
+  const parsed = JSON.parse(readFileSync(resolve(path), 'utf8')) as { repeated?: unknown }
+  return Array.isArray(parsed.repeated) ? (parsed.repeated as Repeat[]) : []
+}
+
 export const unaddressedRepeats = (
-  repeated: Array<{ phrase: string; count: number; lineIndexes: number[] }>,
+  repeated: Repeat[],
   proposals: Array<{ reason?: unknown }>,
-): Array<{ phrase: string; count: number; lineIndexes: number[] }> => {
+): Repeat[] => {
   const written = proposals
     .map((proposal) => (typeof proposal.reason === 'string' ? proposal.reason.toLowerCase() : ''))
     .join('\n')
@@ -670,11 +682,7 @@ export const semanticCommand = async (argv: string[]): Promise<void> => {
     // transcribing a render that does not exist yet. Passed on later rounds, it turns the list
     // of repeated wording from something to read into something to answer.
     const reviewPath = value('--review')
-    const repeated =
-      reviewPath === undefined
-        ? []
-        : ((JSON.parse(readFileSync(resolve(reviewPath), 'utf8')) as { repeated?: unknown })
-            .repeated as Array<{ phrase: string; count: number; lineIndexes: number[] }>) ?? []
+    const repeated = readRepeated(reviewPath)
     const unaddressed = unaddressedRepeats(repeated, proposals)
     const rejected = issues.length > 0
     emitJson({
