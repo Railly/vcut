@@ -24,6 +24,7 @@ vcut shells out to `ffmpeg` and `ffprobe`. Both must be on your PATH.
 
 ```bash
 brew install ffmpeg     # macOS
+vcut setup      # what is installed, what is left to run
 vcut doctor             # confirms both are visible
 ```
 

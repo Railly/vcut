@@ -64,7 +64,7 @@ Usage:
   vcut schema [name]                 Print the JSON contract for a command
   vcut skills list|get [name]        Read the bundled agent manual
   vcut doctor                        Check external dependencies
-  vcut setup classifier              Fetch the optional non-speech classifier
+  vcut setup [classifier]            Check what a first run needs, or fetch the classifier
   vcut version                       Print the version
 
 Global flags:
@@ -169,7 +169,8 @@ const doctorCommand = async (argv: string[]): Promise<void> => {
 const SETUP_HELP = `vcut setup - fetch the optional non-speech classifier
 
 Usage:
-  vcut setup classifier [--force]
+  vcut setup                        What is installed and what is left to run
+  vcut setup classifier [--force]   Fetch the non-speech classifier
 
 Downloads the AudioSet model that skills/core/scripts/non-speech.py uses to find breaths, mic bumps and
 other audible sound that is not language. Around 320MB, kept under ~/.vcut/panns.
@@ -180,8 +181,70 @@ leaves invariant 7 to a human ear, which is a real answer, not a broken state.
 The script also needs Python with panns-inference:
   pip install panns-inference scipy numpy`
 
+// Everything a first run needs, in one answer. Getting started meant four commands from three
+// projects, and the one that is easy to skip is the transcription model: without it the semantic
+// pass has nothing to read, and the failure arrives later as a bad cut rather than an error.
+//
+// This installs what it can and names what it cannot. Package managers and model downloads
+// belong to the tools that own them, so it reports those as commands to run rather than running
+// them: a setup command that shells out to brew is a setup command that breaks on the first
+// machine that does not have brew.
+const setupAll = async (): Promise<void> => {
+  const deps = await Promise.all(
+    DEPENDENCIES.map(async (dependency) => {
+      try {
+        const { exitCode } = await run(dependency.name, ['-version'])
+        return { name: dependency.name, ok: exitCode === 0 }
+      } catch {
+        return { name: dependency.name, ok: false }
+      }
+    }),
+  )
+  const transcriber = await run('trx', ['--version']).catch(() => null)
+  const classifier = CLASSIFIER_FILES.every((file) => existsSync(join(CLASSIFIER_HOME, file.name)))
+  const missing = deps.filter((dep) => !dep.ok).map((dep) => dep.name)
+
+  const todo: string[] = []
+  if (missing.length > 0) {
+    todo.push(`brew install ${missing.join(' ')}`)
+  }
+  if (transcriber === null || transcriber.exitCode !== 0) {
+    todo.push('npm install -g @crafter/trx')
+  }
+  // Model size is the one default worth overriding out loud: the small model splits words
+  // mid-token, which reads as a transcript and cuts like noise. A run that starts without a
+  // large model does not fail, it produces a worse cut, which is the harder failure to notice.
+  const largeModel = existsSync(join(homedir(), '.trx', 'models', 'ggml-large-v3-turbo.bin'))
+  if (!largeModel) {
+    todo.push('trx init --model large-v3-turbo')
+  }
+  if (!classifier) {
+    todo.push('vcut setup classifier             (optional, 320MB, finds breaths and mic bumps)')
+  }
+
+  const lines = [
+    heading('setup'),
+    ...deps.map((dep) => line(dep.name, dep.ok ? 'found' : 'missing')),
+    line('trx', transcriber !== null && transcriber.exitCode === 0 ? 'found' : 'missing'),
+    line(
+      'transcription model',
+      existsSync(join(homedir(), '.trx', 'models', 'ggml-large-v3-turbo.bin'))
+        ? 'large-v3-turbo'
+        : 'missing; the small default splits words mid-token',
+    ),
+    line('classifier', classifier ? 'installed' : 'not installed, optional'),
+    '',
+    todo.length === 0 ? '  Nothing left to install.' : '  Run these, then vcut doctor:',
+    ...todo.map((step) => `    ${step}`),
+  ]
+  console.log(lines.join('\n'))
+}
+
 const setupCommand = async (argv: string[]): Promise<void> => {
   const target = positional(argv)
+  if (target === 'all' || target === undefined) {
+    return setupAll()
+  }
   if (target !== 'classifier') {
     throw new UsageError(SETUP_HELP)
   }

@@ -526,7 +526,10 @@ Never mark segments approved on the human's behalf. Never render a master withou
 
 ## Workflow for an agent
 
-1. `vcut doctor` if anything looks wrong with the environment.
+1. `vcut setup` on a machine that has not run this before: it reports what is installed and
+   names what is left, including the transcription model, which is the piece whose absence
+   produces a worse cut rather than an error. `vcut doctor` afterwards, or any time something
+   looks wrong.
 2. Transcribe the source word-level with a large model.
 3. `vcut detect <input>` with the preset that matches the recording condition.
 4. Read the warnings. If the transcript is not word-level, say so: clamping is off and cuts can land inside a word.

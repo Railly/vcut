@@ -2,6 +2,12 @@
 
 Notable changes to `@crafter/vcut`. Entries say what changed and, where it is not obvious, what measurement led to it.
 
+## 0.12.0
+
+### Added
+
+- **`vcut setup` reports what a first run still needs.** Getting started meant four commands across three projects, and the one that is easy to skip is the transcription model: without a large model the semantic pass reads a transcript split mid-token, so the failure arrives as a worse cut rather than as an error. It checks ffmpeg, ffprobe, trx, the model and the classifier, then prints only the steps that are left. It reports package-manager and model commands rather than running them, since a setup command that shells out to brew breaks on the first machine without brew.
+
 ## 0.11.1
 
 0.10.0 and 0.11.0 shipped three commands and two flags and only updated the core manual. This is
