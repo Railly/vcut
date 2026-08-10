@@ -197,6 +197,7 @@ export const convergeCommand = async (argv: string[]): Promise<void> => {
   }
 
   const clear = firstClear(probes)
+  const lastWithPhrase = [...probes].reverse().find((probe) => probe.contains) ?? null
   const mode = resolveMode(argv, Boolean(process.stdout.isTTY))
 
   if (mode === 'human') {
@@ -215,9 +216,14 @@ export const convergeCommand = async (argv: string[]): Promise<void> => {
         : line('boundary', `${clear.atMs}ms`),
     )
     if (clear !== null) {
+      if (lastWithPhrase !== null) {
+        lines.push(
+          line('last with it', `${lastWithPhrase.atMs}ms  ${lastWithPhrase.text.slice(0, 55)}`),
+        )
+      }
       lines.push(
         nextStep(
-          `walk back from ${clear.atMs}ms to where the telling you are keeping starts, and end the cut there`,
+          `read the line above: the cut ends where that telling starts, nearer ${lastWithPhrase?.atMs ?? clear.atMs}ms than ${clear.atMs}ms`,
         ),
       )
     }
@@ -232,11 +238,18 @@ export const convergeCommand = async (argv: string[]): Promise<void> => {
     stepMs,
     // Null means it never stopped recurring inside the span searched, which is a reason to
     // widen --to rather than evidence there is nothing to cut.
-    // Where the repetition ends, which is past where the surviving telling begins: the last
-    // attempt starts before the previous one has finished being recognisable. Cutting to this
-    // number removes the opening of the line being kept.
+    // Where the repetition ends. Past where the surviving telling begins, because the last
+    // attempt starts before the previous one has finished being recognisable: cutting here
+    // removes the opening of the line being kept.
     boundaryMs: clear === null ? null : clear.atMs,
-    means: 'the far edge of what is safe to remove, not the start of the telling you keep',
+    // The window that still carried the phrase and sat closest to the boundary. Its text is
+    // usually the surviving telling in full, and its start is the closer estimate of where to
+    // end the cut: on the case measured it sat 308ms from the correct boundary against 808ms
+    // for the far edge. Read its text before trusting either number.
+    lastWithPhraseMs: lastWithPhrase === null ? null : lastWithPhrase.atMs,
+    lastWithPhraseText: lastWithPhrase === null ? null : lastWithPhrase.text,
+    means:
+      'boundaryMs is the far edge of what is safe to remove; the cut usually ends nearer lastWithPhraseMs, where the telling you keep begins',
     probes,
   })
   if (clear === null) {

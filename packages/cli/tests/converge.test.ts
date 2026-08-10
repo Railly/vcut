@@ -54,3 +54,28 @@ describe('normalise', () => {
     expect(normalise('¡Reflexión, sí!')).toBe('reflexión sí')
   })
 })
+
+// A retake and the telling that survives it overlap, so the point where the wording stops
+// recurring sits past the start of the line worth keeping. Cutting to the far edge beheaded
+// the line on the case measured: "Conocemos, ya llegamos a mil miembros" instead of "Y a la
+// que conocemos, ya llegamos a mil miembros", audibly wrong and readable as fine.
+describe('the two boundaries', () => {
+  const probe = (atMs: number, contains: boolean, text = '') => ({ atMs, text, contains })
+
+  test('the last window carrying the phrase is nearer the cut than the first clear one', () => {
+    const probes = [
+      probe(61_000, true, 'Y al que conocemos, ya llegamos a mil miembros'),
+      probe(61_500, true, 'Y a la que conocemos, ya llegamos a mil miembros'),
+      probe(62_000, false, 'Hacemos, ya llegamos a mil miembros'),
+    ]
+    const clear = firstClear(probes)
+    const lastWith = [...probes].reverse().find((entry) => entry.contains)
+    expect(clear?.atMs).toBe(62_000)
+    expect(lastWith?.atMs).toBe(61_500)
+    // The correct cut on that recording ended at 61192ms: 308ms from the last window carrying
+    // the phrase, 808ms from the first clear one.
+    expect(Math.abs(61_192 - (lastWith?.atMs ?? 0))).toBeLessThan(
+      Math.abs(61_192 - (clear?.atMs ?? 0)),
+    )
+  })
+})

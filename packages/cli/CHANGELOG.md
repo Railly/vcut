@@ -2,6 +2,12 @@
 
 Notable changes to `@crafter/vcut`. Entries say what changed and, where it is not obvious, what measurement led to it.
 
+## 0.10.1
+
+### Changed
+
+- ** reports the window that still carried the phrase, not only the first that did not.** The far edge alone needed interpreting, and interpreting it wrong beheads the line: cutting at the reported 62000ms produced "Conocemos, ya llegamos a mil miembros" where the surviving telling is "Y a la que conocemos, ya llegamos a mil miembros". The new  carries that telling in full and sat 308ms from the correct boundary against 808ms for the far edge, verified by rendering both. The human output prints the line so it can be read rather than trusted, and the JSON says which number the cut ends nearer.
+
 ## 0.10.0
 
 Agents ran python3 about twenty times per edit. Reading what they were doing with it split into
