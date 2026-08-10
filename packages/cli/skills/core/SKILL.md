@@ -688,7 +688,21 @@ Three of those look like a clean start. A window whose start you chose from a hy
 confirm the hypothesis, which is how three runs each verified a boundary and each was wrong.
 
 The test that does settle it is the phrase, not the timestamp: **step the window forward until
-the repeated wording stops coming back at all.** The boundary is where the transcript of the
+the repeated wording stops coming back at all.** As a loop, since doing it by eye is where runs
+give up and guess:
+
+```bash
+for start in 59 60 61 62 63; do
+  ffmpeg -v error -y -ss $start -t 3.5 -i source.mp4 -vn -ac 1 -ar 16000 -c:a pcm_s16le w.wav
+  printf '%s: ' "$start"
+  trx transcribe w.wav --language es --preset verbatim | python3 -c 'import json,sys; print(json.load(sys.stdin)["text"][:70])'
+done
+```
+
+The boundary is the first start whose text no longer contains the repeated phrase. Do not anchor
+the search on a segment boundary `edl build` already snapped to: one run did, got the right
+answer, and said afterwards it would have inherited the error had the snap been wrong. The snap
+comes from the same transcript being questioned. The boundary is where the transcript of the
 window no longer contains the phrase being cut, not where a window happens to begin with
 something that parses.
 
@@ -750,7 +764,13 @@ Verify against the transcript of the render, not against the plan:
 - `unreviewed` is empty, or every stretch in it has been read **with the line before and after
   it in view**, which is the only way a repetition between two lines becomes visible.
 - `lines` has been read once as continuous prose, end to end, not as a numbered list.
-- The non-speech pass reports nothing.
+- The non-speech pass reports nothing, or each span it named has been read from the master's
+  transcript with `vcut say`. A span carrying ordinary transcribed words at a normal level is a
+  false positive and needs no ear: one run stalled on 13.44-14.08s of a master where `say`
+  returned "proyectos open source, lanzarlos en Linkedin" at -17.6 dB mean. Do not re-transcribe
+  the span on its own to settle it — a window that short returns noise whatever it contains, and
+  that same 640ms came back as "No, eh..." while the master says words there. Only a span whose
+  transcript is genuinely empty is a question for a listener.
 - The last line lands.
 
 `deadAir: []` is not evidence of any of this. It measures pauses the cuts left in the audio and

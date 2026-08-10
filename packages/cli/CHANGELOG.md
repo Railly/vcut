@@ -2,6 +2,19 @@
 
 Notable changes to `@crafter/vcut`. Entries say what changed and, where it is not obvious, what measurement led to it.
 
+## 0.7.1
+
+Six runs on one recording. The gate added in 0.6.0 and 0.7.0 catches every defect they shipped —
+run it on any of their final states and it exits 2 — but it is opt-in, and the runs that shipped
+a defect are exactly the ones that never ran it.
+
+### Changed
+
+- **`review` tells the round to verify its own empty answer.** Reporting nothing is now framed as a claim to check rather than a way to finish, with the `semantic check --review` invocation written out in the instructions the round is already reading. Every run that shipped a repetition reported nothing first.
+- **The readings that keep a repeat are named.** "Natural anaphora", "a deliberate echo" and "it connects to what came before" have each been the sentence a run wrote before shipping a defect. They describe what a restatement does, so none of them separates one from a retake, and the instructions now say so next to the deletion test.
+- **The boundary search is written as a loop that can be run rather than a technique to remember.** Stepping windows by hand is where runs give up and guess. The manual also says not to anchor the search on a boundary `edl build` already snapped to: one run did, got the right answer, and reported afterwards it would have inherited the error had the snap been wrong, since the snap comes from the same transcript being questioned.
+- **How to close a non-speech finding without an ear.** A span carrying ordinary transcribed words at a normal level is a false positive, readable with `vcut say`, and does not need a listener: one run stalled on a 640ms span whose master transcript reads "proyectos open source, lanzarlos en Linkedin" at -17.6 dB. Re-transcribing the span alone does not settle it — that same span returns "No, eh..." because a window that short returns noise whatever it holds.
+
 ## 0.7.0
 
 ### Added

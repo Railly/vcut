@@ -441,6 +441,7 @@ describe('review instructions', () => {
     const text = REVIEW_INSTRUCTIONS.join('\n')
     expect(text).toContain('repeated lists wording that occurs more than once')
     expect(text).toContain('Answer every entry in repeated before reporting nothing')
+    expect(text).toContain('vcut semantic check --proposals')
   })
 
   test('name self-direction as a cut rather than a matter of taste', () => {
