@@ -6,6 +6,8 @@ Notable changes to `@crafter/vcut`. Entries say what changed and, where it is no
 
 ### Changed
 
+- **`converge` reports the window that still carried the phrase, not only the first that did not.** The far edge alone needed interpreting, and interpreting it wrong beheads the line: cutting at the reported 62000ms produced "Conocemos, ya llegamos a mil miembros" where the surviving telling is "Y a la que conocemos, ya llegamos a mil miembros". The new `lastWithPhraseMs` carries that telling in full and sat 308ms from the correct boundary against 808ms for the far edge, both rendered and listened to. The human output prints the line so it can be read rather than trusted, and the JSON says which number the cut ends nearer.
+
 - ** reports the window that still carried the phrase, not only the first that did not.** The far edge alone needed interpreting, and interpreting it wrong beheads the line: cutting at the reported 62000ms produced "Conocemos, ya llegamos a mil miembros" where the surviving telling is "Y a la que conocemos, ya llegamos a mil miembros". The new  carries that telling in full and sat 308ms from the correct boundary against 808ms for the far edge, verified by rendering both. The human output prints the line so it can be read rather than trusted, and the JSON says which number the cut ends nearer.
 
 ## 0.10.0
