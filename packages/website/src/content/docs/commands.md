@@ -16,6 +16,7 @@ vcut render --edl <path> [flags]   Render an EDL to video
 vcut locate --edl <path> [flags]   Translate between master time and source time
 vcut audit --edl <path> --render <path>  Check a render against the EDL it came from
 vcut say <media> [flags]           Read back what is spoken at a position
+vcut silences <media> [flags]      Speech/silence blocks over a range, at a chosen resolution
 vcut converge <media> [flags]      Find where a repeated phrase stops coming back
 vcut nonspeech <render> [--verify] Find audible sound that is not language
 vcut schema [name]                 Print the JSON contract for a command
@@ -59,6 +60,25 @@ Review candidates are never cut automatically. They exist so a human looks.
 vcut detect screen.mp4 --audio mic.wav --preset clean
 ```
 
+### vcut silences
+
+```bash
+vcut silences recording.mp4 --from 327.3 --to 330.5 --noise -33 --min 0.08
+```
+
+`detect`'s silence list is the **cutting** instrument, at one threshold and one minimum — the preset proven in production, and what `edl build` cuts against. `silences` is the **placing** instrument: the same measurement, a threshold and minimum you choose, over whatever sub-range you name.
+
+It exists because the gap separating a filler from the next word can measure 80-150ms, well under `detect`'s 0.3s default minimum. Answering "what does the audio do right here, at that resolution" used to mean running raw ffmpeg `silencedetect` by hand and converting `--ss`-relative timestamps back to absolute media time yourself, repeated once per boundary.
+
+| Flag | Default | What it does |
+| --- | --- | --- |
+| `--from <sec>` | `0` | Start of the range to measure |
+| `--to <sec>` | end of media | End of the range to measure |
+| `--noise <dB>` | `-30` | Silence threshold |
+| `--min <sec>` | `0.25` | Minimum silence duration to report |
+
+`blocks` covers the whole requested range in absolute milliseconds, already offset — no arithmetic left for the caller. Never writes an EDL and never changes what gets cut; `edl build` still cuts against `detect.silences`.
+
 ### vcut edl build
 
 Turns a detect report into a draft edit decision list.
@@ -82,6 +102,8 @@ vcut edl build --detect detect.json --output master.mp4 --campaign my-video
 **`--crop` frames the whole edit at once**, which is why it lives here and not per segment. A traditional editor makes you set the frame per clip, so remembering the menu bar after cutting means redoing every segment by hand. Here the crop is one decision applied to all of them, and changing it never touches a cut boundary. Fractions, not pixels, so the same EDL survives a source at another resolution.
 
 The command inverts the cut intervals into the spans worth **keeping**, so the EDL always describes surviving material rather than deleted material.
+
+**The build report includes `semanticCuts`, one entry per accepted semantic proposal**: `removedText`, the transcript words that fall inside its final span, and `boundariesInSilence`, whether each edge lands inside a silence `detect` measured. Read `removedText` before rendering — it is the corrective for a span drifting onto the wrong words unnoticed, which happened on a real cut: a repetition proposal removed "todos estamos" instead of the stutter "en nuestra propia" because measured blocks were mis-assigned, invisible until a render and a windowed re-transcription caught it. A warning fires when `removedText` shares fewer than half its carrying words (4+ letters) with the proposal's `reason` and has 4 or more of them itself, the same threshold that keeps a short filler cut from firing on a reason that never repeats it word for word.
 
 It also reports a removal percentage. Compare it against the content type:
 
