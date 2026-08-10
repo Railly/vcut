@@ -583,6 +583,7 @@ export const REVIEW_INSTRUCTIONS = [
   'A speaker judging their own take is a cut, whatever it sounds like. "otra vez", "no, asi no", "again", "scratch that" are stage directions that reached the microphone, and they are followed by another attempt at the same line. One run cut such a retake correctly and kept a second one in the same master, calling it a rhetorical beat, because it judged the delivery rather than the words.',
   'Reporting nothing is a claim to verify, not a way to finish. Save this output and run `vcut semantic check --proposals <yours> --detect <detect.json> --review <this file>`: it exits 2 while a repeated phrase is unnamed by any reason or still present in these lines, and an empty round that has not passed it is a round that stopped without checking. Every run that shipped a repetition reported nothing first.',
   'A phrase check reports under survivingRepeats is still in the render, and no reason removes it. Naming clears unaddressedRepeats; only a cut clears survivingRepeats. Keeping it is a decision to hand a human, not a round to close: say so and stop, rather than reporting the result clean while check exits 2.',
+  'A reason naming a kept repeat has to ride on a real cut you are already making: there is no reason-only entry, and a zero-length span is rejected. Put the sentence in the reason of whichever proposal sits nearest, or if the round proposes nothing at all, report the kept repeats in your answer and stop — check reports status valid-with-kept-repeats and exits 0, which is a finished round rather than a pending one.',
   'Keeping a repeat is a valid answer and it belongs in a proposal reason, where check can see it and a human approving the EDL can read it. What separates one worth keeping from a retake is not how it reads but what surrounds it: a retake is followed by another attempt at the same sentence, usually with the speaker marking the discard out loud. A phrase that recurs while the sentence around it moves the idea forward is a callback, and cutting it flattens the writing. One recording carries both, twelve seconds apart, and a run got both right by asking what the second occurrence does rather than whether it repeats.',
   'Report nothing when the result reads clean and every invariant holds. An empty array is a valid answer, and it is the signal to stop looping.',
 ]
@@ -741,7 +742,17 @@ export const semanticCommand = async (argv: string[]): Promise<void> => {
     // the line it would have removed was one the author wanted.
     const rejected = issues.length > 0
     emitJson({
-      status: rejected ? 'rejected' : unaddressed.length > 0 ? 'unaddressed-repeats' : 'valid',
+      // Three states, not two. 'valid' with a populated survivingRepeats reads the same as a
+      // clean run, and a round told that only a cut clears that list can reasonably conclude
+      // work remains and cut a callback the author wanted. Naming it is a finished answer, and
+      // the status says so rather than leaving the reader to infer it.
+      status: rejected
+        ? 'rejected'
+        : unaddressed.length > 0
+          ? 'unaddressed-repeats'
+          : surviving.length > 0
+            ? 'valid-with-kept-repeats'
+            : 'valid',
       accepted: proposals.length,
       issues,
       ...(reviewPath === undefined

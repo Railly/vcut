@@ -468,6 +468,9 @@ Repeated lines, false starts, and digressions need something reading the transcr
 never calls a model.** It exports the lines and takes back proposals, so you are the model in
 this loop.
 
+Call `review` once without `--terse` to read the instructions, then with it for every round
+after: the block is identical each time and was 72% of the payload on one measured run.
+
 ```bash
 vcut semantic export --detect detect.json > lines.json
 # read lines.json, write proposals.json yourself
@@ -732,6 +735,13 @@ audible, a difference of under two seconds that decided whether the defect shipp
 anchor by re-transcribing a short window and taking the timestamp of the surviving line's first
 word, then end the cut there.
 
+**A proposal's boundaries do not have to dodge the drift warning.** `edl build` clamps every
+boundary to measured silence before it writes the EDL, so a cut named at a position a drifting
+cue claims is speech still lands in the pause the detector found. Checked on one run's three
+semantic cuts: all six boundaries sat inside a measured silence span, none of them chosen with
+that in mind. Worth knowing because the alternative is a round spent cross-checking every
+boundary against a fifty-entry drift warning that has no bearing on where the cut ends up.
+
 **A span that maps to an implausible range crossed a cut.** Mapping between timelines
 silently produces nonsense when the endpoints land in different segments: a half-second of
 speech comes back as a range tens of seconds long. Check the duration of what you mapped
@@ -772,7 +782,10 @@ Verify against the transcript of the render, not against the plan:
   the loop and presence-after-naming does not reopen it. Read the list before finishing; do not
   cut until it falls silent. An earlier version gated on it, and the only move that changed the
   exit code was cutting further: six runs of one recording, and the line it pushed toward
-  removing was one the author wanted kept. Those two are cleared differently: a reason
+  removing was one the author wanted kept. When repeats are named and kept, `check` reports
+  `valid-with-kept-repeats` and exits 0 — a finished round, not a pending one. Note that a
+  reason has to ride on a real proposal: there is no reason-only entry and a zero-length span
+  is rejected, so a round that cuts nothing reports its kept repeats in its answer instead. Those two are cleared differently: a reason
   clears the first, only a cut clears the second. A round that decides a surviving repeat is
   deliberate has not finished — it has a question for whoever approves the EDL, and saying so
   is the honest end. Reporting the result clean while this exits 2 is the failure six runs

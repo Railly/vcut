@@ -572,3 +572,14 @@ describe('the check gate', () => {
     ).toHaveLength(1)
   })
 })
+
+// 'valid' with a populated survivingRepeats reads the same as a clean run, and a round told
+// that only a cut clears that list can reasonably conclude work remains and cut a callback the
+// author wanted. The status names the difference so the reader does not have to infer it.
+describe('review instructions on kept repeats', () => {
+  test('say a reason must ride on a real proposal', () => {
+    const text = REVIEW_INSTRUCTIONS.join('\n')
+    expect(text).toContain('there is no reason-only entry')
+    expect(text).toContain('valid-with-kept-repeats')
+  })
+})

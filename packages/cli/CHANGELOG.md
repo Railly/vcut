@@ -2,6 +2,21 @@
 
 Notable changes to `@crafter/vcut`. Entries say what changed and, where it is not obvious, what measurement led to it.
 
+## 0.8.1
+
+Four gaps a run reported after passing the loop clean, none of which cost it the result and all
+of which would cost the next one.
+
+### Added
+
+- **`check` reports `valid-with-kept-repeats`** when every repeat is named and some are still in the render. Previously that returned plain `valid`, indistinguishable from a run with nothing left to decide, while the manual says only a cut clears `survivingRepeats` — a round reading both could reasonably conclude work remained and cut a callback the author wanted. Exit code is unchanged at 0: it is a finished round, and the status now says so.
+
+### Changed
+
+- **The instructions say a reason has to ride on a real proposal.** A run tried to name a kept repeat on a zero-length span, had it rejected, and inferred the rule from the error. Another could reasonably conclude the check is unsatisfiable for a keep-only round and invent a throwaway cut to attach a reason to. A round that proposes nothing reports its kept repeats in its answer instead.
+- **The manual says proposal boundaries do not have to dodge the drift warning.** `edl build` clamps every boundary to measured silence before writing the EDL: checked on one run's three semantic cuts, all six boundaries landed inside a silence span without being chosen with that in mind. A run reported cross-checking this as work it had skipped and got away with, when it was never work.
+- **The loop in the manual calls `review` verbose once and `--terse` after.** The flag shipped in 0.8.0 with nothing telling a fresh agent when to use it, which left its benefit depending on already having run the loop once.
+
 ## 0.8.0
 
 ### Added
