@@ -30,6 +30,7 @@ way, and a first pass that stops there ships a recording with its retakes in it.
 | running the whole edit | **Workflow for an agent**, then **semantic** |
 | deciding where to look in a long file | **suspects** |
 | asking what is spoken somewhere | **say** |
+| placing a boundary at sub-second resolution | **silences** |
 | deciding whether a cut is worth making | **semantic → How hard to cut** |
 | trying to stop the loop | **semantic → Before calling it done** |
 | looking at a render that came out wrong | **When something comes out wrong** |
@@ -237,6 +238,41 @@ A list also cannot tell filler from real use. Spanish `este` is filler in "y est
 
 `review` entries (clipping, black frames, frozen frames) are candidates for a human to look at. They are never cut automatically.
 
+## silences
+
+```bash
+vcut silences recording.mp4 --from 327.3 --to 330.5 --noise -33 --min 0.08
+```
+
+`detect`'s silence list is the **cutting** instrument: one threshold, one minimum, the preset
+proven in production, and it is what `edl build` cuts against. `silences` is the **placing**
+instrument: the same measurement, a threshold and minimum you choose, over whatever sub-range
+you name, answering a different question — not "what should be cut" but "what does the audio
+do right here, at the resolution this boundary needs."
+
+It exists because the second question kept getting answered by hand. On a real 7.5-minute run
+(2026-08-10), every semantic boundary was placed by running raw ffmpeg `silencedetect` about
+ten times at -33dB/0.08s, with the offset arithmetic from `--ss` back to absolute media time
+done by hand each call — because the gaps separating a filler ("eh") from the next word measure
+80-150ms, well under `detect`'s 0.3s default minimum and invisible to it.
+
+```
+vcut silences recording.mp4 --from 327.3 --to 330.5 --noise -33 --min 0.08
+
+  327.30-328.07s        silence  (770ms)
+  328.07-328.63s        speech  (560ms)
+  328.63-328.74s        silence  (110ms)
+  328.74-329.68s        speech  (940ms)
+```
+
+Flags: `--from`/`--to` (seconds, default the whole file), `--noise` (dB, default -30),
+`--min` (seconds, default 0.25). Positions on flags are seconds; the JSON speaks milliseconds,
+already absolute — no offset math left for the caller, which is the whole point.
+
+`blocks` covers the entire requested range: every silence `detect`'s own measurement would
+find at that threshold, and the speech filling every gap between them. Never writes an EDL,
+never changes what gets cut. `edl build` still cuts against `detect.silences`.
+
 ## suspects
 
 ```bash
@@ -308,6 +344,40 @@ master position, `vcut say` to hear what landed there.
 Only semantic cuts raise this. Silence cuts do not, and that is deliberate: with word clamping
 every silence cut brushes the margin around a word, so keying the warning on "words were
 removed" fired on 23 of 24 boundaries on a real EDL and would have trained you to skip it.
+
+**Read `semanticCuts[].removedText` before rendering.** Every accepted semantic proposal gets
+its own entry in the build report: the transcript words that fall inside its final span, and
+whether each boundary lands inside a silence `detect` measured.
+
+```
+semantic cuts   2
+  323.63-328.70s  repetition: "luego, no sé, puede pasar muchas cosas y cada uno está..."
+  333.85-335.99s  repetition: "o sea, todos estamos en nuestro"
+```
+
+This is the corrective for a specific, already-shipped mistake: a repetition cut once removed
+"todos estamos" instead of the stutter "en nuestra propia" because measured blocks were
+mis-assigned to words. The mistake was invisible until a render and a windowed
+re-transcription caught it. `removedText` makes the actual span legible at build time, before
+any of that — read it and ask whether it matches what the `reason` describes.
+
+`edl build` now asks that question for you where it can. A span whose `removedText` shares
+fewer than half its carrying words (4+ letters, same comparison `converge` uses) with its own
+`reason`, and has 4 or more carrying words itself, gets a warning:
+
+```
+warning   semantic cut 323.63-328.70s removes "luego, no sé, puede pasar muchas cosas y cada
+          uno está en su propio ritmo,", which the reason does not mention ("'y cada uno esta
+          en su propio ritmo, en su propia carrera' repite..."). Read removedText before
+          rendering: a span can drift onto the wrong words when measured blocks are
+          mis-assigned.
+```
+
+A short span (a lone filler, a couple of words) never fires this: it does not carry enough
+signal to call disjoint, and firing there would train a reader to skip it, the same reasoning
+behind not keying the boundary warning on "words were removed." `boundariesInSilence` is
+reported alongside but not gated on — a semantic boundary landing in speech rather than
+silence is common and not itself wrong, since the model chose it by meaning, not by pause.
 
 Compare the reported `removalPercent` against the target for the content type:
 

@@ -21,6 +21,7 @@ import {
 import { renderCommand } from './render-edl.ts'
 import { sayCommand } from './say.ts'
 import { semanticCommand } from './semantic.ts'
+import { silencesCommand } from './silences.ts'
 import { suspectsCommand } from './suspects.ts'
 
 // Read rather than restated, because a hand-maintained copy drifts silently: 0.4.1 shipped to
@@ -60,6 +61,7 @@ Usage:
   vcut locate --edl <path> [flags]   Translate between master time and source time
   vcut audit --edl <path> --render <path>  Check a render against the EDL it came from
   vcut say <media> [flags]           Read back what is spoken at a position
+  vcut silences <media> [flags]      Speech/silence blocks over a range, at a chosen resolution
   vcut converge <media> [flags]      Find where a repeated phrase stops coming back
   vcut schema [name]                 Print the JSON contract for a command
   vcut skills list|get [name]        Read the bundled agent manual
@@ -363,11 +365,14 @@ const CONTRACTS: Record<string, unknown> = {
       keptDurationMs: 'integer',
       removalPercent: 'number, 0-100',
       wordBoundaryClamping: 'boolean, whether cuts were clamped to word edges',
+      semanticCuts:
+        '[{ startMs, endMs, kind, reason, removedText, boundariesInSilence: [bool, bool] }], one per accepted semantic proposal, span already merged with whatever else lands in the same place',
       warnings: 'string[]',
     },
     notes: [
       'The EDL itself validates against schemas/edl.schema.json.',
       'Every segment is written as proposed and the EDL as draft. Nothing is approved here.',
+      'Read semanticCuts[].removedText before rendering: it is the transcript text the span actually removes, not the raw proposal. A warning fires when removedText and reason share fewer than half their carrying words and removedText has 4 or more of them, which is the corrective for a span drifting onto the wrong words unnoticed.',
     ],
   },
   semantic: {
@@ -384,6 +389,25 @@ const CONTRACTS: Record<string, unknown> = {
       'non-speech covers audible sound that is not language, which neither detect nor the transcript can see. skills/core/scripts/non-speech.py finds those with an audio classifier and prints them in this schema.',
       'Feed accepted proposals to vcut edl build --semantic <path>. Each lands as semanticRisk material.',
       'check exits 1 when anything is malformed, and edl build refuses the whole file rather than skipping entries.',
+    ],
+  },
+  silences: {
+    version: SCHEMA_VERSION,
+    command: 'vcut silences',
+    output: {
+      version: 'number, always 1',
+      input: 'absolute path to the media',
+      rangeStartMs: 'integer, absolute ms where the measured range begins',
+      rangeEndMs: 'integer, absolute ms where the measured range ends',
+      thresholdDb: 'number, the noise floor used',
+      minSilenceMs: 'integer, the minimum silence duration used',
+      blocks:
+        '[{ kind: "speech"|"silence", startMs, endMs, durationMs }], ordered, covering the whole requested range, in absolute ms',
+    },
+    notes: [
+      'This is the placing instrument, not the cutting one: detect.silences is still what edl build cuts against, at the threshold proven in production.',
+      'Positions on --from/--to are seconds; the JSON speaks milliseconds, same rule as every other command.',
+      'Exists for a resolution detect cannot give: the gap between a filler and the next word can measure 80-150ms, well under detect\'s 0.3s default minimum.',
     ],
   },
   say: {
@@ -586,6 +610,9 @@ export const route = async (argv: string[]): Promise<void> => {
   }
   if (command === 'say') {
     return sayCommand(rest)
+  }
+  if (command === 'silences') {
+    return silencesCommand(rest)
   }
   if (command === 'schema') {
     return schemaCommand(rest)

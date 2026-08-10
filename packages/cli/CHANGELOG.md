@@ -2,6 +2,14 @@
 
 Notable changes to `@crafter/vcut`. Entries say what changed and, where it is not obvious, what measurement led to it.
 
+## 0.15.0
+
+### Added
+
+- **`vcut silences <media>` is the placing instrument, next to `detect`'s cutting one.** `detect`'s silence list stays at the preset threshold with a 0.3s minimum, which is right for deciding what to cut and too coarse for deciding exactly where a boundary goes. On a real 7.5-minute run (2026-08-10), every semantic boundary was placed by running raw ffmpeg `silencedetect` about ten times at -33dB/0.08s, with the offset arithmetic from `--ss` back to absolute media time done by hand each call, because the gaps separating a filler ("eh") from the next word measure 80-150ms. `vcut silences <media> [--from <sec> --to <sec>] [--noise <dB>] [--min <sec>]` answers that question in one call: ordered speech/silence blocks over the requested range, in absolute milliseconds, with the range and threshold used alongside them. Defaults to the whole file, -30dB, 0.25s minimum. Never writes an EDL and never changes what gets cut. Verified against the same recording: `vcut silences primer-video.mp4 --from 327.3 --to 330.5 --noise -33 --min 0.08` reports silence 327.3-328.07s, speech to 328.63s, silence to 328.74s, speech to 329.68s, matching the boundaries that session measured by hand within single-digit milliseconds.
+
+- **`edl build` reports what each semantic span actually removes.** Every accepted proposal gains a `semanticCuts` entry: `removedText`, the transcript words inside its final span once it has merged with whatever else lands in the same place, and `boundariesInSilence`, whether each edge lands inside a silence `detect` measured. This is the corrective for a mistake that already shipped: a repetition cut removed "todos estamos" instead of the stutter "en nuestra propia" because measured blocks were mis-assigned to words, and nothing caught it until a render and a windowed re-transcription. `removedText` makes that visible at build time instead. A new warning fires when a span's `removedText` shares fewer than half its carrying words (4+ letters, reusing `converge`'s comparison) with its own `reason` and has 4 or more of them, which is a span removing substantial text its reason never mentions. Verified against a 21-proposal semantic pass on a 7.5-minute recording: every `removedText` read as the filler or retake its `reason` described, and the warning fired on the two proposals that had merged into one wider cut, correctly naming the drift between the fused span's text and either original reason.
+
 ## 0.13.0
 
 ### Added
