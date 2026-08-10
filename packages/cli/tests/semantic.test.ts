@@ -9,7 +9,9 @@ import {
   gapsBetween,
   joinWords,
   quietSegments,
+  REVIEW_INSTRUCTIONS,
   renderedGaps,
+  repeatedPhrases,
   silentSegments,
   survivingLines,
   unreviewedStretches,
@@ -368,5 +370,80 @@ describe('gapsBetween', () => {
       { startMs: 0, endMs: 1_000 },
     ])
     expect(gaps).toEqual([{ startMs: 1_000, endMs: 3_000 }])
+  })
+})
+
+// Five runs of one recording shipped a repetition, and not one of them missed seeing it: the
+// reading that kept it was always "this one is deliberate". Naming the phrase is what turns
+// that into a claim about something specific rather than an impression of the whole.
+describe('repeatedPhrases', () => {
+  const line = (index: number, text: string) => ({
+    index,
+    startMs: index * 1000,
+    endMs: index * 1000 + 900,
+    text,
+  })
+
+  test('names wording that occurs in more than one line', () => {
+    const found = repeatedPhrases([
+      line(0, 'hubiera tenido una forma muy distinta a la que conocemos hoy en dia'),
+      line(1, 'Y a la que conocemos, ya llegamos a mil miembros'),
+    ])
+    // Reported as word runs rather than as the longest repeat, so the phrase a reader has to
+    // account for arrives as its overlapping parts: enough to name what recurs and where.
+    expect(found.map((entry) => entry.phrase)).toContain('la que conocemos')
+    const entry = found.find((item) => item.phrase === 'la que conocemos')
+    expect(entry?.count).toBe(2)
+    expect(entry?.lineIndexes).toEqual([0, 1])
+  })
+
+  test('catches the retake a run kept as a rhetorical beat', () => {
+    const found = repeatedPhrases([
+      line(0, 'Es un honor? No, no, no, otra vez.'),
+      line(1, 'Es un honor.'),
+      line(2, 'No, eso es muy fake.'),
+      line(3, 'Es un honor la verdad.'),
+    ])
+    const entry = found.find((item) => item.phrase === 'es un honor')
+    expect(entry?.count).toBe(3)
+  })
+
+  test('says nothing about a passage that repeats no wording', () => {
+    expect(
+      repeatedPhrases([
+        line(0, 'Hola a todos, hoy quiero contarles una reflexion.'),
+        line(1, 'Venimos construyendo bien duro y son los frutos.'),
+      ]),
+    ).toEqual([])
+  })
+
+  // Punctuation and case are the speaker's delivery, not their words: a run that reports
+  // "es un honor" and "Es un honor?" as different phrases finds nothing worth reporting.
+  test('reads through case and punctuation', () => {
+    const found = repeatedPhrases([line(0, 'Es un honor?'), line(1, 'es, un honor')])
+    expect(found.map((entry) => entry.phrase)).toContain('es un honor')
+  })
+
+  // A stutter the transcript kept is one line saying a thing once, badly. Counting it as a
+  // repetition would put an entry in front of a reader for every hesitation in the file.
+  test('does not report a line as repeating itself', () => {
+    expect(repeatedPhrases([line(0, 'y a la que y a la que conocemos')])).toEqual([])
+  })
+})
+
+// A field nothing points at is a field a reader skips. The list of repeated phrases only
+// binds because the instructions say to answer every entry before reporting nothing, so the
+// wording that makes it a requirement is part of the contract rather than a nicety.
+describe('review instructions', () => {
+  test('require every repeated phrase to be answered', () => {
+    const text = REVIEW_INSTRUCTIONS.join('\n')
+    expect(text).toContain('repeated lists wording that occurs more than once')
+    expect(text).toContain('Answer every entry in repeated before reporting nothing')
+  })
+
+  test('name self-direction as a cut rather than a matter of taste', () => {
+    const text = REVIEW_INSTRUCTIONS.join('\n')
+    expect(text).toContain('otra vez')
+    expect(text).toContain('A speaker judging their own take is a cut')
   })
 })

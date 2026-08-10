@@ -2,6 +2,21 @@
 
 Notable changes to `@crafter/vcut`. Entries say what changed and, where it is not obvious, what measurement led to it.
 
+## 0.5.0
+
+Five runs of one recording through the loop. Four shipped a repetition, and not one of them
+missed seeing it: every reading that kept a defect was "I looked at this and it is deliberate".
+The tool met that with the same silence it gives a correct call.
+
+### Added
+
+- **`semantic review` reports `repeated`**: wording that occurs more than once in the render, with the lines it occurs in. It judges nothing — a name, a term the piece is about and a deliberate echo all repeat legitimately — but it turns "this reads clean" into a decision about a named phrase. Word runs rather than a similarity score, because similarity cannot separate a restatement from two sentences sharing prepositions: on one recording the repeated pair scored 0.150 against 0.114 for a healthy neighbouring pair, while exact runs separated the same two masters four entries to one, and that one was the project's name. The review instructions now require an answer for every entry before an empty report is valid.
+
+### Changed
+
+- **The manual names how to recognise a retake.** It referred to retakes three times without saying what one looks like, so a run kept "¿Es un honor? No, no, no, otra vez. Es un honor. No, eso es muy fake." as a rhetorical beat while correctly cutting an identically shaped retake in the same master. Self-direction that reached the microphone — "otra vez", "no, así no", "scratch that" — is a cut whatever the delivery sounds like, and the test is structural: a self-critique is followed by another attempt at the same line.
+- **A retake cut ends at the first word of the telling being kept.** Inside a fused region the cue timings are averaged, so a boundary drawn from them lands mid-repetition and leaves the final attempt whole while the EDL looks correct. Two runs cut the same retake: one ended at 62792 and removed it, the other at 60820 and left "ah, otra vez. Y a la que conocemos" audible.
+
 ## 0.4.5
 
 Four runs of the same recording through the loop, three of which shipped a defect a listener

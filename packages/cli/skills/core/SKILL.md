@@ -629,6 +629,21 @@ mention "connects to what came before", and kept it. Connecting to what came bef
 restatement does — the question is whether the sentence still lands with the phrase deleted. If
 it does, the phrase is a bridge, and the bridge goes.
 
+**A speaker judging their own take is always a cut, however good it sounds.** "otra vez", "no,
+así no", "eso quedó mal", "espera", "de nuevo" — these are stage directions that ended up in the
+audio. They are not a register choice, and the fact that a line reads as deliberate on the page
+is not evidence it was: a discard delivered with conviction sounds exactly like a rhetorical
+turn, which is the whole difficulty.
+
+The test is structural rather than tonal. A self-critique is followed by another attempt at the
+same line. If the phrase after it restates the phrase before it, everything from the first
+attempt through the last discard goes, and only the final telling survives. One run cut
+"y a la que conocemos / ah, otra vez / y a la que conocemos" correctly and kept
+"¿Es un honor? / No, no, no, otra vez / Es un honor / No, eso es muy fake / Es un honor la
+verdad" in the same master, calling the second a rhetorical beat. Both are the same shape and
+the same word marks both. When it doubted itself later, what settled it was reading the words
+rather than hearing the delivery.
+
 Both readings, in that order, and neither replaces the other. A round that only reads the prose
 misses a repetition whose two tellings sit either side of a cut, because the removed span hides
 how close they are. A round that only reads `unreviewed` misses one that sits entirely between
@@ -650,6 +665,15 @@ named, the usual cause is a boundary set too tight, not a wrong call. A restart 
 obvious once you see the attempt that follows it, so the earliest attempts read as content
 while you are looking at them and as preamble once the last one is in view. Extending an
 existing span usually removes more than any new cut placed beside it.
+
+**End a retake cut at the first word of the telling you are keeping, not at the last word the
+transcript shows.** Inside a fused region the cue timings are the averaged ones, so a boundary
+drawn from them lands mid-repetition and leaves the final attempt whole — the cut looks right in
+the EDL and the render still says the line twice. Two runs cut the same retake: one ended at
+62792 and removed it, the other ended at 60820 and left "ah, otra vez. Y a la que conocemos"
+audible, a difference of under two seconds that decided whether the defect shipped. Find the
+anchor by re-transcribing a short window and taking the timestamp of the surviving line's first
+word, then end the cut there.
 
 **A span that maps to an implausible range crossed a cut.** Mapping between timelines
 silently produces nonsense when the endpoints land in different segments: a half-second of
@@ -683,6 +707,12 @@ reading more found every one of them.
 Verify against the transcript of the render, not against the plan:
 
 - Every invariant below holds.
+- `repeated` is empty, or every entry in it has an answer naming which telling survives and why
+  the others are not the same thing. It lists wording that occurs more than once in the render,
+  which is not a verdict — a name, a term the piece is about, and a deliberate echo all repeat
+  legitimately — but it is where a claim of intent has to be about a specific phrase instead of
+  an impression of the whole. On one recording it separated cleanly: four entries on a master
+  that shipped a retake, one on a master that was clean, and that one was the project's name.
 - `unreviewed` is empty, or every stretch in it has been read **with the line before and after
   it in view**, which is the only way a repetition between two lines becomes visible.
 - `lines` has been read once as continuous prose, end to end, not as a numbered list.

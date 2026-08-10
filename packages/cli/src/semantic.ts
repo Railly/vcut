@@ -397,6 +397,49 @@ export const gapsBetween = (segments: Interval[]): Interval[] => {
   return gaps
 }
 
+// Repeated wording in the render, which is the one defect a reader talks themselves out of.
+// Five runs of one recording shipped a repetition; the reading that kept it was never "I did
+// not see this" but "I saw it and it is deliberate". Nothing downstream could tell that apart
+// from a correct call, so the tool met a wrong judgement with the same silence it gives a right
+// one. This does not judge: it names the phrases that occur twice so a claim of intent has to
+// be made about something specific.
+//
+// Word runs rather than a similarity score. Similarity cannot separate a restatement from two
+// sentences sharing prepositions: measured on one recording the repeated pair scored 0.150
+// against 0.114 for a healthy neighbouring pair. An exact run of words repeating is not a
+// matter of degree, and a speaker restating a line reuses the words rather than paraphrasing.
+const RUN_LENGTH = 3
+
+export const repeatedPhrases = (
+  lines: Line[],
+): Array<{ phrase: string; count: number; lineIndexes: number[] }> => {
+  const seen = new Map<string, number[]>()
+  lines.forEach((line, index) => {
+    const words = line.text
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+      .split(/\s+/)
+      .filter((word) => word.length > 0)
+    const local = new Set<string>()
+    for (let start = 0; start + RUN_LENGTH <= words.length; start += 1) {
+      const run = words.slice(start, start + RUN_LENGTH).join(' ')
+      // A run repeating inside one line still counts once for that line, so a line is never
+      // reported as repeating itself through a stutter the transcript already collapsed.
+      if (local.has(run)) {
+        continue
+      }
+      local.add(run)
+      const where = seen.get(run) ?? []
+      where.push(index)
+      seen.set(run, where)
+    }
+  })
+  return [...seen.entries()]
+    .filter(([, where]) => where.length > 1)
+    .map(([phrase, where]) => ({ phrase, count: where.length, lineIndexes: where }))
+    .sort((left, right) => right.count - left.count || left.phrase.localeCompare(right.phrase))
+}
+
 // A pass reads what it went looking for. Cuts land where attention was, and the stretches
 // between two cuts are where nothing was ever read: they look reviewed because their
 // neighbours are, which is exactly why a marker can survive four rounds sitting between two
@@ -440,7 +483,7 @@ export const unreviewedStretches = (
   return stretches
 }
 
-const REVIEW_INSTRUCTIONS = [
+export const REVIEW_INSTRUCTIONS = [
   'These are the lines of the edit, in the order a viewer hears them. Read the result, not the plan.',
   'linesFrom says where they came from. "master" means the render was transcribed again, so this is literally what a listener hears, word for word, including any word the cuts left half-spoken. "source" means the original transcript projected onto the surviving spans, which shows the plan and can hide a mangled join.',
   'When linesFrom is "master", read it as prose and judge it as prose: a word cut in half, a clause with no verb, a sentence split across two lines that used to be one, the same point still made twice after all the cutting. Timings are the master timeline.',
@@ -466,6 +509,9 @@ const REVIEW_INSTRUCTIONS = [
   'When a listener reports something this text does not show, transcribe that stretch on its own before deciding the text is right: a model reading the whole file collapses three attempts at one line into one, and the same audio cut to a few seconds returns all three.',
   'A converted timestamp looks as confident as a measured one. When a finding contradicts your mapping between the source and the master, check the mapping first, since it is the newer claim.',
   'unreviewed lists the stretches between two cuts that no proposal ever touched. They look reviewed because their neighbours were cut, and that is where a marker survives round after round. Read those first and apply the deletion test to every span in them.',
+  'repeated lists wording that occurs more than once in the text above, with the lines it occurs in. It is not a verdict: a name, a term the subject is about, and a deliberate echo all repeat legitimately. It is the list of places where "I read this and it is fine" has to be a decision about a specific phrase rather than an impression of the whole.',
+  'Answer every entry in repeated before reporting nothing. Say which telling you are keeping and why the others are not tellings of the same thing. A retake reads as a coherent scene, which is why a comprehension check clears it and a deletion test does not: delete each occurrence in turn and see whether the passage still says everything it said.',
+  'A speaker judging their own take is a cut, whatever it sounds like. "otra vez", "no, asi no", "again", "scratch that" are stage directions that reached the microphone, and they are followed by another attempt at the same line. One run cut such a retake correctly and kept a second one in the same master, calling it a rhetorical beat, because it judged the delivery rather than the words.',
   'Report nothing when the result reads clean and every invariant holds. An empty array is a valid answer, and it is the signal to stop looping.',
 ]
 
@@ -585,6 +631,7 @@ export const semanticCommand = async (argv: string[]): Promise<void> => {
       masterMeasured: masterPath !== undefined,
       linesFrom: masterTranscript === undefined ? 'source' : 'master',
       unreviewed: unreviewedStretches(lines, gapsBetween(segments), UNREVIEWED_MS),
+      repeated: repeatedPhrases(lines),
       deadAir,
       lines,
     })
