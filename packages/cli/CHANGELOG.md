@@ -2,6 +2,12 @@
 
 Notable changes to `@crafter/vcut`. Entries say what changed and, where it is not obvious, what measurement led to it.
 
+## 0.8.0
+
+### Added
+
+- **`semantic review --terse` drops the instructions block.** Measured on one run's review output: the block is 31 lines of static prose, ~1650 tokens, **72% of the payload**, and identical in every round. A loop that reads it in round one pays for it again in every round after, which is budget that belongs in reading the transcript. With the flag the same review goes from ~2575 to ~736 tokens and reports `instructionsOmitted` so a reader knows what it is not seeing. Round one should still run without it.
+
 ## 0.7.3
 
 Published because 0.7.2 went out twice: the first commit under that number hardened the check to

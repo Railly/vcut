@@ -23,6 +23,8 @@ Flags:
   --edl <path>          EDL to read back (review only)
   --master <path>       Rendered file to measure silence on (review only)
   --master-transcript <path>  Word-level SRT of the master; lines come from it (review only)
+  --terse               Omit the instructions block, which is identical every round and
+                        was 72% of the payload on one measured run (review only)
   --help                Show this message
 
 Both subcommands emit JSON: the reader is an agent, not a terminal.
@@ -645,6 +647,9 @@ export const semanticCommand = async (argv: string[]): Promise<void> => {
   }
 
   if (subcommand === 'review') {
+    // Round one needs the instructions. Round two knows them, and repeating them is the
+    // single largest line item in the review payload.
+    const terse = argv.includes('--terse')
     const report = readReport(value('--detect'))
     const edlPath = value('--edl')
     if (edlPath === undefined) {
@@ -697,7 +702,12 @@ export const semanticCommand = async (argv: string[]): Promise<void> => {
       input: report.input,
       sourceDurationMs: report.durationMs,
       resultDurationMs: keptMs,
-      instructions: REVIEW_INSTRUCTIONS,
+      // 72% of this payload on one measured run, identical in every round. A round that has
+      // read them once is paying ~1650 tokens per round to be told the same thing, which is
+      // budget that belongs in reading the transcript. --terse drops them and says so.
+      ...(terse
+        ? { instructionsOmitted: REVIEW_INSTRUCTIONS.length }
+        : { instructions: REVIEW_INSTRUCTIONS }),
       masterMeasured: masterPath !== undefined,
       linesFrom: masterTranscript === undefined ? 'source' : 'master',
       unreviewed: unreviewedStretches(lines, gapsBetween(segments), UNREVIEWED_MS),
