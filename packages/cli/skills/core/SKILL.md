@@ -677,9 +677,20 @@ otra vez" and the surviving line does not begin until 62.7s. Every one of them c
 transcript pointed.
 
 Convergence between runs is not evidence a boundary is right — three agents agreeing usually
-means they read the same wrong number. Before setting the end of a retake cut, re-transcribe a
-window that starts after the last attempt and confirm the first words it returns are the telling
-you mean to keep. If the words that come back are still the retake, the boundary is early.
+means they read the same wrong number.
+
+Re-transcribing a window does not settle it either, and this is the part that catches everyone:
+every attempt at a retake says the same words, so a window opened anywhere inside the run comes
+back grammatically complete and reads like the telling you meant to keep. Opened at 59.0, 60.0,
+61.0 and 62.0 seconds, the same passage returned "Ah, otra vez. Y a la que conocemos", then
+"Y a la que conocemos, ya llegamos a mil miembros", then finally "Ya llegamos a mil miembros".
+Three of those look like a clean start. A window whose start you chose from a hypothesis will
+confirm the hypothesis, which is how three runs each verified a boundary and each was wrong.
+
+The test that does settle it is the phrase, not the timestamp: **step the window forward until
+the repeated wording stops coming back at all.** The boundary is where the transcript of the
+window no longer contains the phrase being cut, not where a window happens to begin with
+something that parses.
 
 **End a retake cut at the first word of the telling you are keeping, not at the last word the
 transcript shows.** Inside a fused region the cue timings are the averaged ones, so a boundary
@@ -722,9 +733,12 @@ reading more found every one of them.
 Verify against the transcript of the render, not against the plan:
 
 - Every invariant below holds.
-- `semantic check --review <the review JSON>` exits 0. It fails with exit 2 while any phrase in
-  `repeated` goes unmentioned by every proposal reason, which is the round saying it read the
-  list without answering it. Naming is the bar, not agreeing: keeping a repeat is often right,
+- `semantic check --review <the review JSON>` exits 0. It fails with exit 2 on two counts: a
+  phrase in `repeated` that no proposal reason mentions, and a phrase still present in the
+  render's own lines as often as review found it. The second is the one a reason cannot talk
+  its way past — a run quoted the repeated line in an honest reason, cut a boundary 1772ms
+  short of where the repetition ended, and passed a check that only looked at reasons while
+  the render still said it twice. Naming is the bar, not agreeing: keeping a repeat is often right,
   and writing why in a reason is what leaves the decision where a human approving the EDL can
   find it.
 - `repeated` is empty, or every entry in it has an answer naming which telling survives and why

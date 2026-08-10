@@ -14,6 +14,7 @@ import {
   repeatedPhrases,
   silentSegments,
   survivingLines,
+  survivingRepeats,
   unaddressedRepeats,
   unreviewedStretches,
   validateProposals,
@@ -495,5 +496,54 @@ describe('unaddressedRepeats', () => {
 
   test('ignores a proposal whose reason is not a string', () => {
     expect(unaddressedRepeats([repeat('es un honor')], [{ reason: 42 }])).toHaveLength(1)
+  })
+})
+
+// Naming a phrase in a reason is not removing it. A run quoted the repeated line in an honest
+// reason, cut a boundary 1772ms short of where the repetition ended, and passed the naming
+// check while the render still said it twice.
+describe('survivingRepeats', () => {
+  const line = (index: number, text: string) => ({
+    index,
+    startMs: index * 1000,
+    endMs: index * 1000 + 900,
+    text,
+  })
+  const repeat = (phrase: string, count = 2) => ({ phrase, count, lineIndexes: [1, 2] })
+
+  test('reports a phrase the render still says as often as review found it', () => {
+    const found = survivingRepeats(
+      [repeat('la que conocemos')],
+      [
+        line(1, 'una forma muy distinta a la que conocemos hoy en día'),
+        line(2, 'Y a la que conocemos, ya llegamos'),
+      ],
+    )
+    expect(found.map((entry) => entry.phrase)).toEqual(['la que conocemos'])
+  })
+
+  test('clears a phrase the cut actually removed', () => {
+    expect(
+      survivingRepeats(
+        [repeat('la que conocemos')],
+        [
+          line(1, 'una forma muy distinta a la que conocemos hoy en día'),
+          line(2, 'Ya llegamos a mil miembros'),
+        ],
+      ),
+    ).toEqual([])
+  })
+
+  test('reads through the punctuation and case the render was transcribed with', () => {
+    expect(
+      survivingRepeats(
+        [repeat('es un honor')],
+        [line(1, '¿Es un honor?'), line(2, 'Es un honor.')],
+      ),
+    ).toHaveLength(1)
+  })
+
+  test('says nothing when review found no repeats', () => {
+    expect(survivingRepeats([], [line(1, 'anything at all')])).toEqual([])
   })
 })

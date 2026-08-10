@@ -2,6 +2,16 @@
 
 Notable changes to `@crafter/vcut`. Entries say what changed and, where it is not obvious, what measurement led to it.
 
+## 0.7.0
+
+### Added
+
+- **`semantic check --review` also fails on a repeat that survived the cut.** 0.6.0 checked that every repeated phrase was named in a reason, which a run satisfied honestly while missing the cut: its reason quoted the repeated line, its boundary landed 1772ms short of where the repetition ended, and the render still said the phrase twice. Naming and removing are different claims, and only the second is visible in the result. The check now counts each phrase in the render's own lines, which `review` already carries, so it costs no extra transcription and reports `survivingRepeats` beside `unaddressedRepeats`.
+
+### Changed
+
+- **The manual says why re-transcribing a window does not settle a retake boundary.** Every attempt says the same words, so a window opened anywhere inside the run comes back grammatically complete and reads like the telling worth keeping: opened at 59.0, 60.0, 61.0 and 62.0 seconds the same passage returned "Ah, otra vez. Y a la que conocemos", then "Y a la que conocemos, ya llegamos a mil miembros", then "Ya llegamos a mil miembros". Three of those look like a clean start, which is how three runs each verified a boundary and each was wrong. The test that settles it is the phrase rather than the timestamp: step the window forward until the repeated wording stops coming back.
+
 ## 0.6.1
 
 ### Changed

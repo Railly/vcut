@@ -17,8 +17,9 @@ Usage:
 Flags:
   --detect <path>       Report produced by detect (required)
   --proposals <path>    Proposals to validate (check only)
-  --review <path>       JSON a previous 'review' wrote; exits 2 if its repeated
-                        phrases are unanswered by any proposal reason (check only)
+  --review <path>       JSON a 'review' wrote for this render; exits 2 while a repeated
+                        phrase is unnamed by any reason or still present in the
+                        render's own lines (check only)
   --edl <path>          EDL to read back (review only)
   --master <path>       Rendered file to measure silence on (review only)
   --master-transcript <path>  Word-level SRT of the master; lines come from it (review only)
@@ -455,12 +456,45 @@ type Repeat = { phrase: string; count: number; lineIndexes: number[] }
 
 // The review JSON is this tool's own output, so a missing or malformed `repeated` means an
 // older run wrote it rather than a caller getting it wrong: read it as nothing to answer.
-const readRepeated = (path: string | undefined): Repeat[] => {
+const readReview = (path: string | undefined): { repeated: Repeat[]; lines: Line[] } => {
   if (path === undefined) {
-    return []
+    return { repeated: [], lines: [] }
   }
-  const parsed = JSON.parse(readFileSync(resolve(path), 'utf8')) as { repeated?: unknown }
-  return Array.isArray(parsed.repeated) ? (parsed.repeated as Repeat[]) : []
+  const parsed = JSON.parse(readFileSync(resolve(path), 'utf8')) as {
+    repeated?: unknown
+    lines?: unknown
+  }
+  return {
+    repeated: Array.isArray(parsed.repeated) ? (parsed.repeated as Repeat[]) : [],
+    lines: Array.isArray(parsed.lines) ? (parsed.lines as Line[]) : [],
+  }
+}
+
+// Naming a phrase in a reason is not the same as removing it. A run wrote a reason that quoted
+// the repeated line, cut a boundary 1772ms short of where the repetition ended, and passed this
+// check while the render still said it twice: the reason was honest and the cut missed.
+//
+// The render is the only thing that settles it, and review already carries its lines, so this
+// costs no transcription. A phrase still present as often as review found it was not addressed,
+// whatever any reason says about it.
+export const survivingRepeats = (repeated: Repeat[], masterLines: Line[]): Repeat[] => {
+  const text = masterLines
+    .map((line) => line.text.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' '))
+    .join(' ')
+    .replace(/\s+/g, ' ')
+  return repeated.filter((entry) => {
+    let count = 0
+    let from = 0
+    for (;;) {
+      const at = text.indexOf(entry.phrase, from)
+      if (at === -1) {
+        break
+      }
+      count += 1
+      from = at + 1
+    }
+    return count >= entry.count
+  })
 }
 
 export const unaddressedRepeats = (
@@ -682,18 +716,30 @@ export const semanticCommand = async (argv: string[]): Promise<void> => {
     // transcribing a render that does not exist yet. Passed on later rounds, it turns the list
     // of repeated wording from something to read into something to answer.
     const reviewPath = value('--review')
-    const repeated = readRepeated(reviewPath)
+    const { repeated, lines } = readReview(reviewPath)
+    // Two ways a repeat goes unanswered, and the second is the one a reason cannot fake: it is
+    // still in the render. Naming clears the first, removing it clears the second.
     const unaddressed = unaddressedRepeats(repeated, proposals)
+    const surviving = survivingRepeats(repeated, lines)
+    const pending = [
+      ...unaddressed,
+      ...surviving.filter((entry) => !unaddressed.some((other) => other.phrase === entry.phrase)),
+    ]
     const rejected = issues.length > 0
     emitJson({
-      status: rejected ? 'rejected' : unaddressed.length > 0 ? 'unaddressed-repeats' : 'valid',
+      status: rejected ? 'rejected' : pending.length > 0 ? 'unaddressed-repeats' : 'valid',
       accepted: proposals.length,
       issues,
-      ...(reviewPath === undefined ? {} : { unaddressedRepeats: unaddressed }),
+      ...(reviewPath === undefined
+        ? {}
+        : {
+            unaddressedRepeats: unaddressed,
+            survivingRepeats: surviving,
+          }),
     })
     if (rejected) {
       process.exitCode = 1
-    } else if (unaddressed.length > 0) {
+    } else if (pending.length > 0) {
       process.exitCode = 2
     }
     return
