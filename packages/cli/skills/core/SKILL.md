@@ -561,11 +561,30 @@ finding contradicts the mapping, check the mapping first: it is the newer of the
 Cheapest test is to convert a known landmark and see whether it lands where the audio says it
 does.
 
-**Read `unreviewed` before anything else.** A pass reads what it went looking for, so cuts
-land where the attention was and the stretches between two cuts are where nothing was ever
-read. They look reviewed because their neighbours are. `review` lists them with their text;
-apply the deletion test to every span in that list before scanning anywhere else. A marker
-that survives several rounds is almost always sitting in one.
+**Read `unreviewed` before anything else, and read each span against its neighbours.** A pass
+reads what it went looking for, so cuts land where the attention was and the stretches between
+two cuts are where nothing was ever read. They look reviewed because their neighbours are.
+`review` lists them with their text; apply the deletion test to every span in that list before
+scanning anywhere else. A marker that survives several rounds is almost always sitting in one.
+
+The deletion test asks whether a span repeats something already said, not whether it stands up
+alone. Every line stands up alone — that is why a round can read all of `unreviewed`, judge
+each entry sound, and still ship a repetition. A run that did exactly this left
+"...a forma muy distinta a la que conocemos hoy en día." next to "Y a la que conocemos, ya
+llegamos a mil miembros", both in `lines`, the second also named in `unreviewed`, and returned
+an empty array. Print each `unreviewed` span with the line before and after it, then read
+`lines` concatenated as continuous prose. A repeated idea lives *between* two lines and is
+invisible to any pass that evaluates them one at a time.
+
+Both readings, in that order, and neither replaces the other. A round that only reads the prose
+misses a repetition whose two tellings sit either side of a cut, because the removed span hides
+how close they are. A round that only reads `unreviewed` misses one that sits entirely between
+two lines nothing ever marked, because their neighbours were cut and they look reviewed.
+
+No script substitutes for that reading. Lexical similarity does not separate a repetition from
+two sentences sharing prepositions: on the run above the repeated pair scored 0.150 against
+0.114 for a healthy neighbouring pair, so any threshold catching one catches the other. This
+is the same reason `detect` does not carry a filler word list.
 
 **Transcribe the render every round, and read that.** Not the previous transcript, not the
 source transcript projected forward. Every cut shifts everything after it, so the two
@@ -595,9 +614,15 @@ end, every time.
 Verify against the transcript of the render, not against the plan:
 
 - Every invariant below holds.
-- `unreviewed` is empty, or every stretch in it has been read.
+- `unreviewed` is empty, or every stretch in it has been read **with the line before and after
+  it in view**, which is the only way a repetition between two lines becomes visible.
+- `lines` has been read once as continuous prose, end to end, not as a numbered list.
 - The non-speech pass reports nothing.
 - The last line lands.
+
+`deadAir: []` is not evidence of any of this. It measures pauses the cuts left in the audio and
+says nothing about repeated content; a round has read `[]` there and called the result clean
+while a sentence appeared twice in the same transcript.
 
 **A word missing from the transcript is not proof of a bad cut.** Transcription models drop
 and mangle words, especially at a join. Before reporting one, check whether the EDL still
