@@ -25,7 +25,7 @@ Flags:
   --preset <name>       noisy (-20dB, default) | clean (-30dB) | podcast (-35dB)
   --min-silence <sec>   Minimum silence to consider a cut (default 0.3)
   --margin <sec>        Padding kept around speech (default 0.10)
-  --lang <code>         es | en | pt (default es), selects the filler list
+  --lang <code>         Recording language, free-form; rides into the semantic export
   --audio <path>        Separate audio recording; silence is measured on this
   --transcript <path>   SRT used for word clamping; must be word-level
   --skip-video-scan     Skip black and frozen frame detection

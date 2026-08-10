@@ -186,7 +186,25 @@ const has = async (command: string, args: string[]): Promise<boolean> => {
   }
 }
 
+const INIT_HELP = `vcut init - install everything a first run needs
+
+Usage:
+  vcut init [--no-skills]
+
+Installs ffmpeg through brew when it is missing, the transcriber through npm, the
+transcription model through trx init, and the agent skills through npx skills add
+(into the current directory; --no-skills leaves it alone). Reports anything it could
+not do and exits non-zero. The optional non-speech classifier stays separate:
+vcut setup classifier.`
+
 const setupAll = async (argv: string[]): Promise<void> => {
+  // A --help that runs the installer is worse than no help at all: asking what a command
+  // does must never do the thing. Found by an agent whose exploration of this flag wrote
+  // .agents/ and skills-lock.json into a worktree it was documenting.
+  if (argv.includes('--help')) {
+    process.stdout.write(`${INIT_HELP}\n`)
+    return
+  }
   const skipSkills = argv.includes('--no-skills')
   const modelPath = join(homedir(), '.trx', 'models', 'ggml-large-v3-turbo.bin')
   const blocked: string[] = []

@@ -20,6 +20,8 @@ Notable changes to `@crafter/vcut`. Entries say what changed and, where it is no
 
 ### Fixed
 
+- **`vcut init --help` shows help instead of running the installer.** Asking what a command does must never do the thing: the flag fell through to the install path, which wrote `.agents/` and `skills-lock.json` into the directory of an agent that was only documenting it. Found during the 0.14.0 docs pass.
+- **`vcut detect --help` no longer claims `--lang` selects a filler list.** Filler detection left `detect` in 0.2.0 and every other surface already said so; the CLI's own help string was the last place the dead claim survived.
 - **`semantic check` no longer fails a repeat naming over accents.** `unaddressedRepeats` matched a proposal's `reason` against the repeated phrase with a plain lowercase `includes()`; the phrase comes off the transcript with its diacritics ("así que nada") and a reason typed by hand routinely drops them ("asi que nada"), which failed the match and cost a full build cycle on the run that surfaced it. Both sides are now folded through Unicode NFD plus combining-mark stripping before comparing. `survivingRepeats` was checked against the same failure mode and does not have it: both the phrase and the render lines it is compared against come from the same transcript pass, with no independently-typed text in between to drop an accent, so it was left alone and a test now pins that symmetry.
 
 ### Changed
