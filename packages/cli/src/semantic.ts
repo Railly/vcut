@@ -446,6 +446,16 @@ export const repeatedPhrases = (
     .sort((left, right) => right.count - left.count || left.phrase.localeCompare(right.phrase))
 }
 
+// Lowercasing alone leaves an accent standing between a repeated phrase and the reason that
+// names it: the phrase comes off the transcript with its diacritics ("así que nada") and a
+// reason typed by hand routinely drops them ("asi que nada"), so an honest naming fails
+// unaddressedRepeats' includes() and check exits 2 over a repeat that was in fact named.
+// Measured on the corpus that motivated this: one full build cycle lost to exactly that
+// mismatch. NFD splits a letter from its combining accent, and stripping the combining marks
+// (Unicode category Mn) after that leaves the letters the two spellings actually share.
+export const foldDiacritics = (text: string): string =>
+  text.normalize('NFD').replace(/\p{Mn}/gu, '')
+
 // A repeated phrase nobody wrote about is a round that is not finished. Listing them in review
 // was not enough on its own: a run read its own list, decided one entry was a deliberate turn,
 // wrote no proposal, and shipped the repetition — the same failure as before the field existed,
@@ -503,10 +513,12 @@ export const unaddressedRepeats = (
   repeated: Repeat[],
   proposals: Array<{ reason?: unknown }>,
 ): Repeat[] => {
-  const written = proposals
-    .map((proposal) => (typeof proposal.reason === 'string' ? proposal.reason.toLowerCase() : ''))
-    .join('\n')
-  return repeated.filter((entry) => !written.includes(entry.phrase))
+  const written = foldDiacritics(
+    proposals
+      .map((proposal) => (typeof proposal.reason === 'string' ? proposal.reason.toLowerCase() : ''))
+      .join('\n'),
+  )
+  return repeated.filter((entry) => !written.includes(foldDiacritics(entry.phrase)))
 }
 
 // A pass reads what it went looking for. Cuts land where attention was, and the stretches
