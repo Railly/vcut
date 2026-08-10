@@ -206,7 +206,7 @@ JSON is emitted automatically when stdout is not a TTY, so an agent never needs 
 
 ## Design
 
-Why it is shaped this way: [docs/design-notes.md](docs/design-notes.md). Full documentation at [vcut.crafter.run/docs](https://vcut.crafter.run/docs).
+Why it is shaped this way: [design-notes.md](https://github.com/Railly/vcut/blob/main/packages/cli/docs/design-notes.md). Full documentation at [vcut.crafter.run/docs](https://vcut.crafter.run/docs).
 
 ## License
 

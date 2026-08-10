@@ -196,7 +196,6 @@ export type KeptSegment = {
   approval: 'proposed'
   semanticRisk: 'none' | 'low' | 'material'
   crop: Crop | null
-  syncOffsetMs: number
 }
 
 const MAX_SEGMENTS = 999
@@ -565,6 +564,7 @@ type CliOptions = {
   edgeFadeMs: number
   semanticPath: string | null
   crop: Crop | null
+  syncOffsetMs: number
 }
 
 // content-factory used 50ms per joint and Hunter approved masters cut with it, so this is

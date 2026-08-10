@@ -20,7 +20,7 @@ import {
 import type { SilenceCandidate, Transcript, Word } from '../src/detect.ts'
 
 const silence = (startMs: number, endMs: number): Cut => ({ startMs, endMs, reason: 'silence' })
-const filler = (startMs: number, endMs: number): Cut => ({ startMs, endMs, reason: 'filler' })
+const semantic = (startMs: number, endMs: number): Cut => ({ startMs, endMs, reason: 'semantic' })
 
 describe('mergeIntervals', () => {
   test('sorts and fuses overlapping cuts', () => {
@@ -41,7 +41,7 @@ describe('mergeIntervals', () => {
   })
 
   test('degrades a fused mixed-reason cut to silence', () => {
-    const merged = mergeIntervals([filler(1000, 2000), silence(1500, 3000)])
+    const merged = mergeIntervals([semantic(1000, 2000), silence(1500, 3000)])
     expect(merged).toHaveLength(1)
     expect(merged[0].reason).toBe('silence')
   })
@@ -246,7 +246,7 @@ describe('absorbSlivers', () => {
   })
 
   test('a merged cut reports as silence when its parts disagree', () => {
-    const merged = absorbSlivers([cut(0, 500), { startMs: 600, endMs: 900, reason: 'filler' }], 300)
+    const merged = absorbSlivers([cut(0, 500), { startMs: 600, endMs: 900, reason: 'semantic' }], 300)
     expect(merged[0].reason).toBe('silence')
   })
 
