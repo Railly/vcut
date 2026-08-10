@@ -581,7 +581,7 @@ export const REVIEW_INSTRUCTIONS = [
   'A speaker judging their own take is a cut, whatever it sounds like. "otra vez", "no, asi no", "again", "scratch that" are stage directions that reached the microphone, and they are followed by another attempt at the same line. One run cut such a retake correctly and kept a second one in the same master, calling it a rhetorical beat, because it judged the delivery rather than the words.',
   'Reporting nothing is a claim to verify, not a way to finish. Save this output and run `vcut semantic check --proposals <yours> --detect <detect.json> --review <this file>`: it exits 2 while a repeated phrase is unnamed by any reason or still present in these lines, and an empty round that has not passed it is a round that stopped without checking. Every run that shipped a repetition reported nothing first.',
   'A phrase check reports under survivingRepeats is still in the render, and no reason removes it. Naming clears unaddressedRepeats; only a cut clears survivingRepeats. Keeping it is a decision to hand a human, not a round to close: say so and stop, rather than reporting the result clean while check exits 2.',
-  'Naming a repeat as intentional is a valid answer and it belongs in a proposal reason, where check can see it and a human approving the EDL can read it. "Natural anaphora", "a deliberate echo" and "it connects to what came before" are the readings that kept the last four defects: all of them describe what a restatement does, so none of them separates one from a retake. Delete the phrase and see whether the passage still says everything it said.',
+  'Keeping a repeat is a valid answer and it belongs in a proposal reason, where check can see it and a human approving the EDL can read it. What separates one worth keeping from a retake is not how it reads but what surrounds it: a retake is followed by another attempt at the same sentence, usually with the speaker marking the discard out loud. A phrase that recurs while the sentence around it moves the idea forward is a callback, and cutting it flattens the writing. One recording carries both, twelve seconds apart, and a run got both right by asking what the second occurrence does rather than whether it repeats.',
   'Report nothing when the result reads clean and every invariant holds. An empty array is a valid answer, and it is the signal to stop looping.',
 ]
 
@@ -724,13 +724,14 @@ export const semanticCommand = async (argv: string[]): Promise<void> => {
     // still in the render. Naming clears the first, removing it clears the second.
     const unaddressed = unaddressedRepeats(repeated, proposals)
     const surviving = survivingRepeats(repeated, lines)
-    const pending = [
-      ...unaddressed,
-      ...surviving.filter((entry) => !unaddressed.some((other) => other.phrase === entry.phrase)),
-    ]
+    // Only the unnamed ones gate. A phrase still in the render is worth reporting and is not a
+    // defect on its own: a callback repeats on purpose and reads exactly like a retake to
+    // anything counting words. Gating on presence made naming unable to close the loop, so the
+    // only move that changed the exit code was cutting further — six runs of one recording, and
+    // the line it would have removed was one the author wanted.
     const rejected = issues.length > 0
     emitJson({
-      status: rejected ? 'rejected' : pending.length > 0 ? 'unaddressed-repeats' : 'valid',
+      status: rejected ? 'rejected' : unaddressed.length > 0 ? 'unaddressed-repeats' : 'valid',
       accepted: proposals.length,
       issues,
       ...(reviewPath === undefined
@@ -742,7 +743,7 @@ export const semanticCommand = async (argv: string[]): Promise<void> => {
     })
     if (rejected) {
       process.exitCode = 1
-    } else if (pending.length > 0) {
+    } else if (unaddressed.length > 0) {
       process.exitCode = 2
     }
     return

@@ -448,6 +448,7 @@ describe('review instructions', () => {
     const text = REVIEW_INSTRUCTIONS.join('\n')
     expect(text).toContain('otra vez')
     expect(text).toContain('A speaker judging their own take is a cut')
+    expect(text).toContain('a callback, and cutting it flattens the writing')
   })
 })
 
@@ -546,5 +547,28 @@ describe('survivingRepeats', () => {
 
   test('says nothing when review found no repeats', () => {
     expect(survivingRepeats([], [line(1, 'anything at all')])).toEqual([])
+  })
+})
+
+// survivingRepeats reports, it does not gate. A callback repeats on purpose and reads exactly
+// like a retake to anything counting words, so gating on presence left naming unable to close
+// the loop and made cutting further the only move that changed the exit code.
+describe('the check gate', () => {
+  const repeat = (phrase: string) => ({ phrase, count: 2, lineIndexes: [5, 6] })
+  const lines = [
+    { index: 5, startMs: 0, endMs: 900, text: 'una forma distinta a la que conocemos hoy en día' },
+    { index: 6, startMs: 1000, endMs: 1900, text: 'Y a la que conocemos, ya llegamos a mil' },
+  ]
+
+  test('a named repeat that survives is reported, not withheld', () => {
+    const named = [{ reason: 'kept: "la que conocemos" closes one clause and opens the next' }]
+    expect(unaddressedRepeats([repeat('la que conocemos')], named)).toEqual([])
+    expect(survivingRepeats([repeat('la que conocemos')], lines)).toHaveLength(1)
+  })
+
+  test('a repeat nobody named is still unanswered', () => {
+    expect(
+      unaddressedRepeats([repeat('la que conocemos')], [{ reason: 'the pre-roll' }]),
+    ).toHaveLength(1)
   })
 })

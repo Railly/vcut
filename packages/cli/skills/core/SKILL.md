@@ -631,6 +631,23 @@ mention "connects to what came before", and kept it. Connecting to what came bef
 restatement does — the question is whether the sentence still lands with the phrase deleted. If
 it does, the phrase is a bridge, and the bridge goes.
 
+**A phrase can recur because the speaker restarted or because the writing came back to it, and
+only one of those is a cut.** The difference is not in how the repetition reads — both read
+fine — but in what follows it. A retake is followed by another attempt at the same sentence,
+and usually by the speaker marking the discard out loud. A callback recurs while the sentence
+around it carries the idea somewhere new: "a forma muy distinta a la que conocemos hoy en día.
+Y a la que conocemos, ya llegamos a mil miembros" repeats four words and the second clause says
+something the first did not. Cutting that flattens the writing.
+
+One recording carries both twelve seconds apart, which is why a rule keyed on the wording alone
+gets one of them wrong every time. Ask what the second occurrence does, not whether it repeats.
+
+Two tests settle it. **The discard marker**: a retake carries a spoken tag between the attempts
+— "otra vez", "no, así no" — and its absence is evidence, not a missing detail. **What depends
+on each occurrence**: in a retake both attempts serve the same clause, so deleting the first
+loses nothing. In a callback each occurrence is the antecedent for different material, and
+deleting either leaves a sentence without its subject.
+
 **A speaker judging their own take is always a cut, however good it sounds.** "otra vez", "no,
 así no", "eso quedó mal", "espera", "de nuevo" — these are stage directions that ended up in the
 audio. They are not a register choice, and the fact that a line reads as deliberate on the page
@@ -749,7 +766,13 @@ Verify against the transcript of the render, not against the plan:
 - Every invariant below holds.
 - `semantic check --review <the review JSON>` exits 0. It fails with exit 2 on two counts: a
   phrase in `repeated` that no proposal reason mentions, and a phrase still present in the
-  render's own lines as often as review found it. Those two are cleared differently: a reason
+  render's own lines as often as review found it — reported as `survivingRepeats`, which does
+  **not** fail the check. A phrase still in the render is the right answer for a callback and
+  the wrong one for a retake, and nothing counting words can tell those apart, so naming closes
+  the loop and presence-after-naming does not reopen it. Read the list before finishing; do not
+  cut until it falls silent. An earlier version gated on it, and the only move that changed the
+  exit code was cutting further: six runs of one recording, and the line it pushed toward
+  removing was one the author wanted kept. Those two are cleared differently: a reason
   clears the first, only a cut clears the second. A round that decides a surviving repeat is
   deliberate has not finished — it has a question for whoever approves the EDL, and saying so
   is the honest end. Reporting the result clean while this exits 2 is the failure six runs
