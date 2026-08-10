@@ -1,5 +1,11 @@
 import { describe, expect, test } from 'bun:test'
-import { buildFfmpegArgs, type Edl, edlErrors, outputErrors } from '../src/render-edl.ts'
+import {
+  audioOnlyErrors,
+  buildFfmpegArgs,
+  type Edl,
+  edlErrors,
+  outputErrors,
+} from '../src/render-edl.ts'
 
 const edl = (
   audioTrackPolicy: Edl['output']['audioTrackPolicy'],
@@ -105,7 +111,11 @@ describe('buildFfmpegArgs --audio-only', () => {
   // The promise of the flag: what you hear while iterating is what the finished render
   // will sound like. That only holds if the audio half of the graph is untouched, so it
   // is compared filter for filter against the video path rather than merely inspected.
-  test('builds the same audio chain as the video render', () => {
+  //
+  // The trailing trim is the one exception, and it is a length rather than a sound: the
+  // two renders are measured by different clocks downstream, so audio-only cuts by sample
+  // count and the video path by time. Everything that shapes the sound is still compared.
+  test('builds the same audio chain as the video render, apart from the trailing trim', () => {
     // The concat line legitimately differs (v=0 against v=1); everything that shapes how
     // the audio sounds must not.
     const audioFilters = (args: string[]): string[] => {
@@ -113,10 +123,56 @@ describe('buildFfmpegArgs --audio-only', () => {
       return graph
         .split(';')
         .filter((filter) => /\[a\d+\]$|\[a\]$/.test(filter) && !filter.includes('concat='))
+        .map((filter) => filter.replace(/atrim=end(_sample)?=[\d.]+/, 'atrim=<tail>'))
     }
     expect(
       audioFilters(buildFfmpegArgs(edl('required'), '/tmp/cut.wav', { audioOnly: true })),
     ).toEqual(audioFilters(buildFfmpegArgs(edl('required'), '/tmp/master.mp4')))
+  })
+
+  // The trim that differs has to be the *only* thing that differs, and it has to be the
+  // sample-count form: a time trim here is what cut 98ms off a valid render.
+  test('trims the audio-only tail by sample count, not by time', () => {
+    const graph = buildFfmpegArgs(edl('required'), '/tmp/cut.wav', { audioOnly: true }).join(' ')
+    expect(graph).toContain('atrim=end_sample=')
+    expect(graph).not.toContain('atrim=end=')
+    const video = buildFfmpegArgs(edl('required'), '/tmp/master.mp4').join(' ')
+    expect(video).toContain('atrim=end=')
+    expect(video).not.toContain('atrim=end_sample=')
+  })
+
+  // The gap that the old 60ms tolerance let through as an error: a 98ms shortfall on a real
+  // 58.702s cut. The message has to carry both numbers, because from outside the process
+  // there is no other way to tell a near miss from a broken render.
+  test('reports the measured gap when the duration is wrong', () => {
+    const audioProbe = (durationSeconds: string): Parameters<typeof audioOnlyErrors>[1] => ({
+      streams: [{ codec_type: 'audio', sample_rate: '48000', channels: 2 }],
+      format: { duration: durationSeconds },
+    })
+    const target = edl('required')
+    const expectedMs = target.segments.reduce(
+      (total, segment) => total + segment.outMs - segment.inMs,
+      0,
+    )
+    const short = (expectedMs - 98) / 1000
+    const errors = audioOnlyErrors(target, audioProbe(short.toFixed(6)))
+    expect(errors).toHaveLength(1)
+    expect(errors[0]).toContain(`expected ${expectedMs}ms`)
+    expect(errors[0]).toContain(`got ${Math.round(short * 1000)}ms`)
+  })
+
+  test('accepts a render that lands on the segment sum', () => {
+    const target = edl('required')
+    const expectedMs = target.segments.reduce(
+      (total, segment) => total + segment.outMs - segment.inMs,
+      0,
+    )
+    expect(
+      audioOnlyErrors(target, {
+        streams: [{ codec_type: 'audio', sample_rate: '48000', channels: 2 }],
+        format: { duration: (expectedMs / 1000).toFixed(6) },
+      }),
+    ).toEqual([])
   })
 
   test('drops the picture entirely', () => {

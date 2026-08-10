@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
-import { createReadStream, existsSync, readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { createReadStream, existsSync, readFileSync, renameSync, rmSync } from 'node:fs'
+import { extname, resolve } from 'node:path'
 
 import { run, runInherit } from './exec.ts'
 
@@ -221,10 +221,21 @@ export const edlErrors = (edl: Edl, mode: Mode): string[] => {
 // double the render for a correction this size, and the true peak limiter is what stops the
 // gain from clipping.
 //
-// loudnorm resamples internally and hands back a stream tens of milliseconds longer than it
-// received, which the duration contract in outputErrors rejects. Resampling back to 48k and
-// trimming to the sum of the segments keeps the render exactly as long as the EDL says, and
-// the trim is the honest fix: the extra samples are filter latency, not audio.
+// An audio-only render trims by sample count, a video render by time, because the two are
+// measured by different clocks downstream and the same trim does not satisfy both.
+//
+// Neither filter loses anything alone; the pair does. Counted over one source: concat alone
+// gives 2817704 samples, concat with loudnorm the same 2817704, concat with loudnorm and
+// atrim=end=<seconds> only 2813000 — 4704 samples, 98ms, gone. loudnorm rewrites timestamps,
+// so a trim against the clock cuts against loudnorm's clock rather than the one the segment
+// sum was measured in. The shortfall bore no relation to segment count (82ms at 3 segments,
+// 15ms at 6, 31ms at 12, 98ms at 25), which is what ruled out accumulated filter latency.
+// end_sample counts samples, which nothing upstream can shift, and lands 8 samples (0.17ms)
+// off instead of 98ms.
+//
+// The video path keeps the time trim because it is validated against the container, where the
+// picture sets the duration: cutting it by samples instead makes the audio outlast the video
+// by 94ms and the container reports the longer stream, which its own duration check rejects.
 const loudnessFilter = (edl: Edl): string => {
   const target = edl.audio.speechTargetLufs
   const peak = edl.audio.truePeakMaxDbtp
@@ -344,7 +355,7 @@ export const buildFfmpegArgs = (
       0,
     )
     filters.push(
-      `[acat]aresample=48000${loudnessFilter(edl)},aresample=48000,atrim=end=${seconds(totalMs)},asetpts=PTS-STARTPTS[a]`,
+      `[acat]aresample=48000${loudnessFilter(edl)},aresample=48000,${audioOnly ? `atrim=end_sample=${Math.round((totalMs / 1000) * 48000)}` : `atrim=end=${seconds(totalMs)}`},asetpts=PTS-STARTPTS[a]`,
     )
   }
 
@@ -496,16 +507,17 @@ export const audioOnlyErrors = (edl: Edl, probe: OutputProbe): string[] => {
     0,
   )
   const observedDuration = Number(probe.format.duration) * 1000
-  // loudnorm carries latency, so the concatenated audio ends a few tens of milliseconds
-  // short of the segment sum. Measured at 31ms on a 54.6s cut, and it is trailing decay
-  // rather than material: the same graph produces the same -16.4 LUFS as the video path.
-  // In a video render the container hides this because the picture sets the duration.
-  const toleranceMs = 60
-  if (
-    !Number.isFinite(observedDuration) ||
-    Math.abs(observedDuration - expectedDuration) > toleranceMs
-  ) {
-    errors.push('audio-only render duration differs from EDL')
+  // The graph pads before it trims, so the output lands on the segment sum whichever way
+  // loudnorm drifted. What is left is the encoder rounding to a whole frame. A wider window
+  // here would be a number fitted to one recording: the old 60ms came from a single 31ms
+  // measurement and still rejected a valid 98ms render on the next source.
+  const toleranceMs = 10
+  const driftMs = observedDuration - expectedDuration
+  if (!Number.isFinite(observedDuration) || Math.abs(driftMs) > toleranceMs) {
+    const observed = Number.isFinite(observedDuration) ? Math.round(observedDuration) : 'unknown'
+    errors.push(
+      `audio-only render duration differs from EDL: expected ${expectedDuration}ms, got ${observed}ms (tolerance ${toleranceMs}ms)`,
+    )
   }
   return errors
 }
@@ -601,15 +613,23 @@ export const renderCommand = async (argv: string[]): Promise<void> => {
       errors.push(`${source.id}: source hash mismatch`)
     }
   }
-  if (existsSync(outputPath)) {
+  // A dry run writes nothing, so refusing it because the output is already there leaves no way
+  // to inspect the command after a failed attempt — which is exactly when it is needed.
+  if (!options.dryRun && existsSync(outputPath)) {
     errors.push('output already exists')
   }
   if (errors.length > 0) {
     throw new Error(errors.join('\n'))
   }
 
-  const args = buildFfmpegArgs(edl, outputPath, { audioOnly: options.audioOnly })
+  // ffmpeg writes straight to its target, so the target is a sibling temp file until the
+  // render has proven itself. Same directory, so the rename stays on one filesystem.
+  const pendingPath = `${outputPath}.partial-${process.pid}${extname(outputPath)}`
+  const args = buildFfmpegArgs(edl, pendingPath, { audioOnly: options.audioOnly })
   if (options.dryRun) {
+    // Printed against the real destination: the temp file is this function's business, and a
+    // command nobody can paste and run is not a useful thing to print.
+    const shown = buildFfmpegArgs(edl, outputPath, { audioOnly: options.audioOnly })
     console.log(
       JSON.stringify(
         {
@@ -623,7 +643,7 @@ export const renderCommand = async (argv: string[]): Promise<void> => {
             0,
           ),
           outputPath,
-          command: ['ffmpeg', ...args],
+          command: ['ffmpeg', ...shown],
         },
         null,
         2,
@@ -636,15 +656,19 @@ export const renderCommand = async (argv: string[]): Promise<void> => {
   if (exitCode !== 0) {
     throw new Error(`ffmpeg exited with ${exitCode}`)
   }
-  const probe = await probeOutput(outputPath)
+  const probe = await probeOutput(pendingPath)
   // The picture checks describe a file this one deliberately has no picture in. Duration
   // still has to hold: it is what says the cuts landed where the EDL asked.
   const validationErrors = options.audioOnly
     ? audioOnlyErrors(edl, probe)
     : outputErrors(edl, probe)
   if (validationErrors.length > 0) {
+    // A render that failed its own contract is not something to leave lying around under the
+    // name of a good one: the next command would read it as finished work.
+    rmSync(pendingPath, { force: true })
     throw new Error(validationErrors.join('\n'))
   }
+  renameSync(pendingPath, outputPath)
   console.log(
     JSON.stringify({
       status: 'rendered',
