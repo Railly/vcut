@@ -92,7 +92,9 @@ Piped or captured, the same command emits JSON. No flag needed.
 | `vcut locate --edl` | Translates between master time and source time |
 | `vcut audit --edl --render` | Checks a render's audio against the EDL it came from |
 | `vcut say <media>` | Reads back what is spoken at a position, from a transcript or by asking the audio |
+| `vcut silences <media>` | Speech/silence blocks over a range, at a threshold and minimum you choose |
 | `vcut converge <media>` | Finds where a repeated phrase stops coming back |
+| `vcut nonspeech <render> [--verify]` | Finds audible sound that is not language; `--verify` reads a window around each span instead of the whole-file transcript |
 | `vcut schema [name]` | The JSON contract per command, versioned |
 | `vcut skills get vcut` | The bundled agent manual, as markdown |
 | `vcut init` | Installs everything a first run needs, and reports what it could not |
@@ -123,7 +125,7 @@ never on the first round.
 - **`--crop top:0.06`** frames the whole edit at once, so remembering the menu bar after cutting does not mean redoing every segment.
 - **`--edge-fade`** (default 50ms) ramps each segment edge to zero. Not a crossfade: overlapping the sides would drift the audio against concatenated video.
 - **Loudness** is normalised to the `speechTargetLufs` the EDL declares, on the concatenated result rather than per segment.
-- **`skills/core/scripts/non-speech.py`** finds breaths and mic bumps, which neither the silence pass nor the transcript can see. `vcut setup classifier` fetches what it needs; without it that check falls back to a human ear.
+- **`vcut nonspeech <render> --verify`** finds breaths, mic bumps, and stretched hesitations the transcript cleaned away, which neither the silence pass nor the transcript can see on their own. `--verify` re-transcribes a short window around each span instead of checking it against the whole-file transcript, which is circular for exactly this class of sound. `vcut setup classifier` fetches what the underlying model needs; without it the check falls back to a human ear.
 
 ## Presets
 

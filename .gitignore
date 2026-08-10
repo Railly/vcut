@@ -6,3 +6,10 @@ tmp/
 *.tgz
 .vercel
 .env*
+
+# Scratch media a command left in the working directory instead of tmpdir. Should never
+# happen (transcribeWindow always writes to os.tmpdir()), kept as a backstop.
+/packages/cli/vcut-*.wav
+/packages/cli/vcut-*.wav.srt
+/packages/cli/vcut-*_clean.wav
+/packages/cli/vcut-*_clean.wav.srt

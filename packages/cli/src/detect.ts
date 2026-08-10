@@ -25,7 +25,7 @@ Flags:
   --preset <name>       noisy (-20dB, default) | clean (-30dB) | podcast (-35dB)
   --min-silence <sec>   Minimum silence to consider a cut (default 0.3)
   --margin <sec>        Padding kept around speech (default 0.10)
-  --lang <code>         es | en | pt (default es), selects the filler list
+  --lang <code>         Recording language, free-form; rides into the semantic export
   --audio <path>        Separate audio recording; silence is measured on this
   --transcript <path>   SRT used for word clamping; must be word-level
   --skip-video-scan     Skip black and frozen frame detection
@@ -473,6 +473,17 @@ export const humanReport = (report: DetectReport): string => {
   return lines.join('\n')
 }
 
+// Fixed rather than derived from a value in this report: both point at the file this JSON is
+// conventionally saved as (detect.json, the name humanReport's own nextStep already teaches),
+// not at anything specific to one run.
+export const DETECT_NEXT = [
+  { question: 'where to look first', verb: 'vcut suspects --detect detect.json' },
+  {
+    question: 'build the draft EDL',
+    verb: 'vcut edl build --detect detect.json --output <master path> --campaign <id>',
+  },
+]
+
 export const detectCommand = async (argv: string[]): Promise<void> => {
   if (argv.includes('--help') || argv.length === 0) {
     console.log(HELP)
@@ -575,7 +586,7 @@ export const detectCommand = async (argv: string[]): Promise<void> => {
     warnings,
   }
   if (mode === 'json') {
-    emitJson(report)
+    emitJson({ ...report, next: DETECT_NEXT })
     return
   }
   console.log(humanReport(report))

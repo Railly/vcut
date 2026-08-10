@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto'
 import { createReadStream, existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-
-import type { DetectReport, Interval, Transcript } from './detect.ts'
+import { containsPhrase } from './converge.ts'
+import type { DetectReport, Interval, SilenceCandidate, Transcript, Word } from './detect.ts'
 import { parseSrt } from './detect.ts'
 import { run } from './exec.ts'
 import {
@@ -16,7 +16,8 @@ import {
   resolveMode,
   UsageError,
 } from './output.ts'
-import { readProposals } from './semantic.ts'
+import type { Proposal } from './semantic.ts'
+import { joinWords, readProposals } from './semantic.ts'
 
 const HELP = `vcut edl build - turn a detect report into a draft edit decision list
 
@@ -51,6 +52,7 @@ type BuildSummary = {
   removalPercent: number
   removalTargets: Record<string, string>
   wordBoundaryClamping: boolean
+  semanticCuts: SemanticCutReport[]
   warnings: string[]
 }
 
@@ -76,6 +78,16 @@ export const matchTarget = (removalPercent: number): string => {
     : `in range for ${hits.map((range) => range.label).join(', ')}`
 }
 
+/** The field entry names semanticCuts directly rather than pointing at another command,
+ * since the answer is already in this same payload. */
+export const buildEdlNext = (edlPath: string) => [
+  { question: 'hear the cut', verb: `vcut render --edl ${edlPath} --audio-only` },
+  {
+    question: 'what each semantic span removes',
+    verb: 'already in this payload: read the semanticCuts field',
+  },
+]
+
 export const humanSummary = (summary: BuildSummary): string => {
   const fraction = summary.removalPercent / 100
   const lines = [
@@ -88,8 +100,17 @@ export const humanSummary = (summary: BuildSummary): string => {
     line('cuts applied', String(summary.cuts)),
     line('target check', matchTarget(summary.removalPercent)),
     line('word clamping', summary.wordBoundaryClamping ? 'on' : 'off (no word-level transcript)'),
+    line('semantic cuts', String(summary.semanticCuts.length)),
     line('approval', 'draft, every segment proposed'),
   ]
+  for (const cut of summary.semanticCuts) {
+    lines.push(
+      line(
+        `  ${(cut.startMs / 1000).toFixed(2)}-${(cut.endMs / 1000).toFixed(2)}s`,
+        `${cut.kind}: "${cut.removedText || '(no transcript)'}"`,
+      ),
+    )
+  }
   for (const warning of summary.warnings) {
     lines.push(line('warning', warning))
   }
@@ -317,6 +338,120 @@ export const boundariesAfterSpeech = (
     found.push({ index, inMs: segment.inMs, cutMs: gapEnd - gapStart, wordsRemoved })
   }
   return found
+}
+
+/**
+ * A semantic proposal's cut span after it merges with whatever else lands in the same place.
+ *
+ * `mergeIntervals`/`absorbSlivers` fuse overlapping and adjacent cuts before `invertToSegments`
+ * ever sees them, so the span a proposal actually removes can run wider than what the model
+ * asked for — it absorbed a neighbouring silence cut, or another proposal it touched. Reporting
+ * the raw proposal span as `removedText` would describe words the build never removes; this
+ * finds the merged span that contains the proposal's start, which is what invertToSegments cuts
+ * against.
+ */
+export const clampedSpanFor = (proposal: Interval, merged: Cut[]): Interval => {
+  const hit = merged.find((cut) => proposal.startMs >= cut.startMs && proposal.startMs < cut.endMs)
+  return hit ?? proposal
+}
+
+/** The transcript words that fall inside a span, joined as read. Empty string with no transcript. */
+export const removedText = (span: Interval, words: Word[]): string =>
+  words
+    .filter((word) => word.endMs > span.startMs && word.startMs < span.endMs)
+    .map((word) => word.text)
+    .join(' ')
+    .trim()
+
+/** Whether each edge of a span lands inside a silence detect measured, rather than in speech. */
+export const boundariesInSilence = (
+  span: Interval,
+  silences: SilenceCandidate[],
+): [boolean, boolean] => {
+  const inside = (ms: number) =>
+    silences.some((silence) => ms >= silence.startMs && ms <= silence.endMs)
+  return [inside(span.startMs), inside(span.endMs)]
+}
+
+const REASON_MISMATCH_MIN_CARRYING_WORDS = 4
+const REASON_MISMATCH_MAX_SHARED_FRACTION = 0.5
+
+/**
+ * A span whose removed text and stated reason talk about different things.
+ *
+ * The corrective this exists for: a repetition cut removed "todos estamos" instead of the
+ * stutter "en nuestra propia" because measured blocks were mis-assigned to words, and the
+ * mistake was invisible until a render and a windowed re-transcription caught it. `removedText`
+ * makes the actual span legible; this warning is the check that reads it automatically instead
+ * of relying on someone reading every span by hand.
+ *
+ * Reuses converge.ts's carrying-word comparison (words of 4+ letters, punctuation and case
+ * stripped) rather than a literal substring match, for the same reason converge needs it: short
+ * words are grammar and drift between transcriptions, and a reason paraphrases rather than
+ * quoting.
+ *
+ * Fires only when removedText has enough carrying words to judge — a short span (a single
+ * filler, a couple of words) does not carry enough signal to call disjoint, and firing there
+ * would train a reader to skip the warning the way a duration-based check did for
+ * boundariesAfterSpeech.
+ */
+export const reasonMismatch = (removed: string, reason: string): boolean => {
+  const carryingWords = (text: string) =>
+    text
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[̀-ͯ]/g, '')
+      .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+      .split(/\s+/)
+      .filter((word) => word.length >= REASON_MISMATCH_MIN_CARRYING_WORDS)
+
+  const removedCarrying = carryingWords(removed)
+  if (removedCarrying.length < REASON_MISMATCH_MIN_CARRYING_WORDS) {
+    return false
+  }
+  const shared = removedCarrying.filter((word) => containsPhrase(reason, word)).length
+  return shared / removedCarrying.length < REASON_MISMATCH_MAX_SHARED_FRACTION
+}
+
+export type SemanticCutReport = {
+  startMs: number
+  endMs: number
+  kind: Proposal['kind']
+  reason: string
+  removedText: string
+  boundariesInSilence: [boolean, boolean]
+}
+
+/** Per-proposal build report: what each accepted semantic span actually removes. */
+export const describeSemanticCuts = (
+  proposals: Proposal[],
+  merged: Cut[],
+  words: Word[],
+  silences: SilenceCandidate[],
+): { cuts: SemanticCutReport[]; warnings: string[] } => {
+  const cuts: SemanticCutReport[] = []
+  const warnings: string[] = []
+
+  for (const proposal of proposals) {
+    const span = clampedSpanFor(proposal, merged)
+    const text = removedText(span, words)
+    const inSilence = boundariesInSilence(span, silences)
+    cuts.push({
+      startMs: span.startMs,
+      endMs: span.endMs,
+      kind: proposal.kind,
+      reason: proposal.reason,
+      removedText: text,
+      boundariesInSilence: inSilence,
+    })
+    if (reasonMismatch(text, proposal.reason)) {
+      warnings.push(
+        `semantic cut ${(span.startMs / 1000).toFixed(2)}-${(span.endMs / 1000).toFixed(2)}s removes "${text}", which the reason does not mention ("${proposal.reason}"). Read removedText before rendering: a span can drift onto the wrong words when measured blocks are mis-assigned.`,
+      )
+    }
+  }
+
+  return { cuts, warnings }
 }
 
 export const invertToSegments = (
@@ -603,6 +738,17 @@ export const buildEdlCommand = async (argv: string[]): Promise<void> => {
   }))
   const allCuts = [...clamped, ...semanticCuts]
 
+  // Same merge invertToSegments applies internally, run here so each proposal's report can
+  // point at the span it actually ends up removing rather than the one it asked for.
+  const mergedCuts = absorbSlivers(mergeIntervals(allCuts), report.minSilenceMs)
+  const words = transcript.wordLevel ? joinWords(transcript) : []
+  const { cuts: semanticCutReports, warnings: reasonWarnings } = describeSemanticCuts(
+    semanticProposals,
+    mergedCuts,
+    words,
+    report.silences,
+  )
+
   const sourceId = slug(report.input.split('/').pop() ?? 'source')
   // The detect report already knows the separate recording, so the EDL is built from one
   // answer rather than asking for the path a second time and risking a different file.
@@ -693,16 +839,18 @@ export const buildEdlCommand = async (argv: string[]): Promise<void> => {
       'scripted-talking-head': '10-20%',
     },
     wordBoundaryClamping: boundaries.length > 0,
+    semanticCuts: semanticCutReports,
     warnings: [
       ...report.warnings,
       ...boundariesAfterSpeech(segments, semanticCuts, wordBoundaries(transcript)).map(
         (boundary) =>
           `${segments[boundary.index]?.id ?? `segment ${boundary.index + 1}`} opens right after a semantic cut of ${(boundary.cutMs / 1000).toFixed(2)}s${boundary.wordsRemoved === 0 ? '' : ` (${boundary.wordsRemoved} ${boundary.wordsRemoved === 1 ? 'word' : 'words'})`}. A tail of removed speech surviving that join reads as a real sentence, so check it once rendered: vcut say <render> --transcript <srt> --at <the master position from vcut locate>.`,
       ),
+      ...reasonWarnings,
     ],
   }
   if (mode === 'json') {
-    emitJson(summary)
+    emitJson({ ...summary, next: buildEdlNext(summary.edlPath) })
     return
   }
   console.log(humanSummary(summary))

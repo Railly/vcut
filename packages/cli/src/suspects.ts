@@ -154,6 +154,27 @@ const human = (
   console.log(lines.join('\n'))
 }
 
+export type NextHint = { question: string; verb: string }
+
+/** What to run next once positions to check are ranked. Empty with nothing to point at. */
+export const suspectsNext = (input: string, suspects: Suspect[]): NextHint[] => {
+  const top = suspects[0]
+  if (top === undefined) {
+    return []
+  }
+  const topThree = suspects.slice(0, 3).map((suspect) => (suspect.atMs / 1000).toFixed(2))
+  return [
+    {
+      question: 'what is said at the top suspect',
+      verb: `vcut say ${input} --transcribe --at ${(top.atMs / 1000).toFixed(2)} --window 4`,
+    },
+    {
+      question: 'what is said at several suspects at once',
+      verb: `vcut say ${input} --transcribe --positions ${topThree.join(',')}`,
+    },
+  ]
+}
+
 export const suspectsCommand = async (argv: string[]): Promise<void> => {
   if (argv.includes('--help')) {
     process.stdout.write(`${HELP}\n`)
@@ -175,6 +196,7 @@ export const suspectsCommand = async (argv: string[]): Promise<void> => {
     human(report, { ...found, suspects }, ratio)
     return
   }
+  const next = suspectsNext(report.input, suspects)
   emitJson({
     input: report.input,
     durationMs: report.durationMs,
@@ -186,5 +208,6 @@ export const suspectsCommand = async (argv: string[]): Promise<void> => {
       gapMs: Math.round(suspect.gapMs),
       ratio: Number(suspect.ratio.toFixed(3)),
     })),
+    ...(next.length === 0 ? {} : { next }),
   })
 }

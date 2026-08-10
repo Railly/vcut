@@ -2,16 +2,22 @@ import { describe, expect, test } from 'bun:test'
 import {
   absorbSlivers,
   boundariesAfterSpeech,
+  boundariesInSilence,
+  buildEdlNext,
   type Cut,
+  clampedSpanFor,
   clampToWords,
+  describeSemanticCuts,
   invertToSegments,
   matchTarget,
   mergeIntervals,
   parseCrop,
+  reasonMismatch,
+  removedText,
   snapToFrame,
   wordBoundaries,
 } from '../src/build-edl.ts'
-import type { Transcript } from '../src/detect.ts'
+import type { SilenceCandidate, Transcript, Word } from '../src/detect.ts'
 
 const silence = (startMs: number, endMs: number): Cut => ({ startMs, endMs, reason: 'silence' })
 const filler = (startMs: number, endMs: number): Cut => ({ startMs, endMs, reason: 'filler' })
@@ -361,5 +367,218 @@ describe('boundariesAfterSpeech', () => {
     const found = boundariesAfterSpeech(segments, [span(4000, 11000)], [])
     expect(found).toHaveLength(1)
     expect(found[0]?.wordsRemoved).toBe(0)
+  })
+})
+
+describe('clampedSpanFor', () => {
+  const semantic = (startMs: number, endMs: number): Cut => ({ startMs, endMs, reason: 'semantic' })
+
+  test('returns the merged cut that contains the proposal, not the raw proposal', () => {
+    // The proposal asked for 5000-5500; it absorbed into a wider merged span because a
+    // silence cut sat right beside it.
+    const merged = [semantic(4900, 5800)]
+    expect(clampedSpanFor({ startMs: 5000, endMs: 5500 }, merged)).toEqual(merged[0])
+  })
+
+  test('falls back to the raw proposal when nothing merged contains it', () => {
+    const proposal = { startMs: 100, endMs: 200 }
+    expect(clampedSpanFor(proposal, [])).toEqual(proposal)
+  })
+})
+
+describe('removedText', () => {
+  const word = (text: string, startMs: number, endMs: number): Word => ({
+    text,
+    startsWord: true,
+    startMs,
+    endMs,
+  })
+
+  test('joins words falling inside the span, in order', () => {
+    const words = [word('en', 1000, 1200), word('nuestra', 1200, 1600), word('propia', 1600, 2000)]
+    expect(removedText({ startMs: 900, endMs: 2100 }, words)).toBe('en nuestra propia')
+  })
+
+  test('includes a word that only overlaps the edge', () => {
+    const words = [word('propia', 1600, 2000)]
+    expect(removedText({ startMs: 1800, endMs: 2500 }, words)).toBe('propia')
+  })
+
+  test('empty string with no transcript words', () => {
+    expect(removedText({ startMs: 0, endMs: 5000 }, [])).toBe('')
+  })
+
+  test('empty string when nothing falls inside the span', () => {
+    const words = [word('hola', 100, 400)]
+    expect(removedText({ startMs: 5000, endMs: 6000 }, words)).toBe('')
+  })
+})
+
+describe('boundariesInSilence', () => {
+  const silence = (startMs: number, endMs: number): SilenceCandidate => ({
+    kind: 'silence',
+    startMs,
+    endMs,
+    durationMs: endMs - startMs,
+  })
+
+  test('both edges inside measured silence', () => {
+    expect(
+      boundariesInSilence({ startMs: 1000, endMs: 2000 }, [
+        silence(900, 1100),
+        silence(1900, 2100),
+      ]),
+    ).toEqual([true, true])
+  })
+
+  test('one edge in silence, the other in speech', () => {
+    expect(boundariesInSilence({ startMs: 1000, endMs: 2000 }, [silence(900, 1100)])).toEqual([
+      true,
+      false,
+    ])
+  })
+
+  test('neither edge touches a measured silence', () => {
+    expect(boundariesInSilence({ startMs: 5000, endMs: 6000 }, [silence(0, 100)])).toEqual([
+      false,
+      false,
+    ])
+  })
+})
+
+describe('reasonMismatch', () => {
+  test('fires when removedText and reason share no carrying words', () => {
+    expect(
+      reasonMismatch(
+        'todos estamos muy contentos hoy trabajando',
+        'stutter en nuestra propia empresa',
+      ),
+    ).toBe(true)
+  })
+
+  test('stays silent when the reason quotes the removed text', () => {
+    expect(
+      reasonMismatch(
+        'en nuestra propia empresa nueva',
+        'repite "en nuestra propia empresa" antes de continuar',
+      ),
+    ).toBe(false)
+  })
+
+  test('stays silent when removedText is too short to carry a signal', () => {
+    expect(reasonMismatch('eh nada', 'filler word removed, not carrying meaning')).toBe(false)
+  })
+
+  test('stays silent on an empty removedText', () => {
+    expect(reasonMismatch('', 'anything at all')).toBe(false)
+  })
+})
+
+describe('describeSemanticCuts', () => {
+  const word = (text: string, startMs: number, endMs: number): Word => ({
+    text,
+    startsWord: true,
+    startMs,
+    endMs,
+  })
+  const silence = (startMs: number, endMs: number): SilenceCandidate => ({
+    kind: 'silence',
+    startMs,
+    endMs,
+    durationMs: endMs - startMs,
+  })
+
+  test('the corrective case: a repetition cut that removed the wrong words gets flagged', () => {
+    // The measured motivation: a repetition cut removed "todos estamos" instead of the
+    // stutter "en nuestra propia" because measured blocks were mis-assigned.
+    const proposals = [
+      {
+        startMs: 1000,
+        endMs: 2000,
+        kind: 'repetition' as const,
+        reason: 'stutter en nuestra propia empresa repetido dos veces',
+      },
+    ]
+    const merged: Cut[] = [{ startMs: 1000, endMs: 2000, reason: 'semantic' }]
+    const words = [
+      word('todos', 1000, 1250),
+      word('estamos', 1250, 1500),
+      word('muy', 1500, 1600),
+      word('contentos', 1600, 1800),
+      word('trabajando', 1800, 1900),
+    ]
+    const { cuts, warnings } = describeSemanticCuts(proposals, merged, words, [])
+    expect(cuts).toHaveLength(1)
+    expect(cuts[0]?.removedText).toBe('todos estamos muy contentos trabajando')
+    expect(warnings).toHaveLength(1)
+    expect(warnings[0]).toContain('todos estamos muy contentos trabajando')
+  })
+
+  test('no warning when the reason names the removed text', () => {
+    const proposals = [
+      {
+        startMs: 1000,
+        endMs: 2000,
+        kind: 'filler' as const,
+        reason: 'removes the repeated "en nuestra propia empresa" before the real sentence',
+      },
+    ]
+    const merged: Cut[] = [{ startMs: 1000, endMs: 2000, reason: 'semantic' }]
+    const words = [
+      word('en', 1000, 1200),
+      word('nuestra', 1200, 1500),
+      word('propia', 1500, 1700),
+      word('empresa', 1700, 1950),
+    ]
+    const { warnings } = describeSemanticCuts(proposals, merged, words, [])
+    expect(warnings).toHaveLength(0)
+  })
+
+  test('no warning on a short removedText regardless of the reason', () => {
+    const proposals = [{ startMs: 1000, endMs: 1300, kind: 'filler' as const, reason: 'stray eh' }]
+    const merged: Cut[] = [{ startMs: 1000, endMs: 1300, reason: 'semantic' }]
+    const words = [word('eh', 1000, 1200)]
+    const { warnings } = describeSemanticCuts(proposals, merged, words, [])
+    expect(warnings).toHaveLength(0)
+  })
+
+  test('reports boundariesInSilence per proposal', () => {
+    const proposals = [
+      { startMs: 1000, endMs: 2000, kind: 'filler' as const, reason: 'filler removed' },
+    ]
+    const merged: Cut[] = [{ startMs: 1000, endMs: 2000, reason: 'semantic' }]
+    const { cuts } = describeSemanticCuts(
+      proposals,
+      merged,
+      [],
+      [silence(950, 1050), silence(1950, 2050)],
+    )
+    expect(cuts[0]?.boundariesInSilence).toEqual([true, true])
+  })
+
+  test('empty removedText and no warning with no transcript at all', () => {
+    const proposals = [
+      { startMs: 1000, endMs: 2000, kind: 'filler' as const, reason: 'no transcript available' },
+    ]
+    const merged: Cut[] = [{ startMs: 1000, endMs: 2000, reason: 'semantic' }]
+    const { cuts, warnings } = describeSemanticCuts(proposals, merged, [], [])
+    expect(cuts[0]?.removedText).toBe('')
+    expect(warnings).toHaveLength(0)
+  })
+})
+
+describe('buildEdlNext', () => {
+  test('names a non-empty question and a non-empty verb for each entry', () => {
+    const hints = buildEdlNext('/tmp/edl.json')
+    expect(hints.length).toBeGreaterThan(0)
+    for (const hint of hints) {
+      expect(hint.question.length).toBeGreaterThan(0)
+      expect(hint.verb.length).toBeGreaterThan(0)
+    }
+  })
+
+  test('the hear-the-cut verb carries the given edl path', () => {
+    const hints = buildEdlNext('/tmp/edl.json')
+    expect(hints.some((hint) => hint.verb.includes('/tmp/edl.json'))).toBe(true)
   })
 })

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { findSuspects } from '../src/suspects.ts'
+import { findSuspects, suspectsNext } from '../src/suspects.ts'
 
 // Pauses at a steady cadence, which is what fluent delivery produces.
 const fluent = (count: number, everyMs = 2000): Array<{ startMs: number; endMs: number }> =>
@@ -89,5 +89,29 @@ describe('findSuspects', () => {
     const narrow = findSuspects(pauses, 300, 0.2).suspects.length
     const wide = findSuspects(pauses, 300, 0.8).suspects.length
     expect(wide).toBeGreaterThanOrEqual(narrow)
+  })
+})
+
+describe('suspectsNext', () => {
+  test('is empty when there is nothing to point at', () => {
+    expect(suspectsNext('/media.mp4', [])).toEqual([])
+  })
+
+  test('names a non-empty question and a non-empty verb for each entry', () => {
+    const hints = suspectsNext('/media.mp4', [
+      { atMs: 10_000, gapMs: 50, ratio: 0.1 },
+      { atMs: 20_000, gapMs: 60, ratio: 0.2 },
+    ])
+    expect(hints.length).toBeGreaterThan(0)
+    for (const hint of hints) {
+      expect(hint.question.length).toBeGreaterThan(0)
+      expect(hint.verb.length).toBeGreaterThan(0)
+    }
+  })
+
+  test('the single-position verb runs vcut say --at, the sweep verb runs --positions', () => {
+    const hints = suspectsNext('/media.mp4', [{ atMs: 10_000, gapMs: 50, ratio: 0.1 }])
+    expect(hints.some((hint) => hint.verb.includes('--at'))).toBe(true)
+    expect(hints.some((hint) => hint.verb.includes('--positions'))).toBe(true)
   })
 })

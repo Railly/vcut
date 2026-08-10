@@ -17,12 +17,11 @@
  * the same way every measurement here runs ffmpeg.
  */
 
-import { existsSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { existsSync } from 'node:fs'
+import { resolve } from 'node:path'
 
-import { run } from './exec.ts'
 import { emitJson, heading, line, nextStep, resolveMode, UsageError } from './output.ts'
+import { transcribeWindow } from './transcribe-window.ts'
 
 const HELP = `vcut converge - find where a repeated phrase stops coming back
 
@@ -90,52 +89,15 @@ export const containsPhrase = (text: string, phrase: string): boolean => {
 export const firstClear = (probes: Probe[]): Probe | null =>
   probes.find((probe) => !probe.contains) ?? null
 
-const transcribe = async (
+// transcribeWindow lives in transcribe-window.ts now, shared with say --transcribe and
+// nonspeech --verify: cut a clip, run trx --preset verbatim over it, read the text back.
+const transcribe = (
   media: string,
   startMs: number,
   windowMs: number,
   language: string | undefined,
-): Promise<string> => {
-  const clip = join(tmpdir(), `vcut-converge-${process.pid}-${startMs}.wav`)
-  const cut = await run('ffmpeg', [
-    '-v',
-    'error',
-    '-y',
-    '-ss',
-    (startMs / 1000).toFixed(3),
-    '-t',
-    (windowMs / 1000).toFixed(3),
-    '-i',
-    media,
-    '-vn',
-    '-ac',
-    '1',
-    '-ar',
-    '16000',
-    '-c:a',
-    'pcm_s16le',
-    clip,
-  ])
-  if (cut.exitCode !== 0) {
-    throw new UsageError(cut.stderr.trim() || 'ffmpeg could not cut the window')
-  }
-  try {
-    const args = ['transcribe', clip, '--preset', 'verbatim']
-    if (language !== undefined) {
-      args.push('--language', language)
-    }
-    const said = await run('trx', args)
-    if (said.exitCode !== 0) {
-      throw new UsageError(
-        said.stderr.trim() || 'trx could not transcribe the window. Is it installed?',
-      )
-    }
-    const parsed = JSON.parse(said.stdout) as { text?: unknown }
-    return typeof parsed.text === 'string' ? parsed.text.replace(/\s+/g, ' ').trim() : ''
-  } finally {
-    rmSync(clip, { force: true })
-  }
-}
+): Promise<string> =>
+  transcribeWindow(media, startMs, startMs + windowMs, language, 'vcut-converge')
 
 const numberFlag = (argv: string[], flag: string, fallback: number): number => {
   const index = argv.indexOf(flag)

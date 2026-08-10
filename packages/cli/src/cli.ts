@@ -1,13 +1,13 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { join, resolve } from 'node:path'
 import { auditCommand } from './audit-command.ts'
 import { buildEdlCommand } from './build-edl.ts'
 import { convergeCommand } from './converge.ts'
 import { detectCommand, positional } from './detect.ts'
 import { run, runInherit } from './exec.ts'
 import { locateCommand } from './locate.ts'
+import { nonspeechCommand } from './nonspeech.ts'
 import {
   emitJson,
   fail,
@@ -15,35 +15,18 @@ import {
   line,
   type Mode,
   nextStep,
+  packageVersion,
   resolveMode,
   UsageError,
 } from './output.ts'
 import { renderCommand } from './render-edl.ts'
 import { sayCommand } from './say.ts'
 import { semanticCommand } from './semantic.ts'
+import { silencesCommand } from './silences.ts'
+import { skillsDir } from './skills-dir.ts'
 import { suspectsCommand } from './suspects.ts'
 
-// Read rather than restated, because a hand-maintained copy drifts silently: 0.4.1 shipped to
-// npm with this constant still reading 0.4.0, so the published binary reported a version it
-// was not. The release only bumps package.json, which makes that the one place worth trusting.
-const packageVersion = (): string => {
-  let dir = dirname(fileURLToPath(import.meta.url))
-  for (let depth = 0; depth < 5; depth += 1) {
-    const candidate = join(dir, 'package.json')
-    if (existsSync(candidate)) {
-      const parsed = JSON.parse(readFileSync(candidate, 'utf8')) as { version?: string }
-      if (typeof parsed.version === 'string') {
-        return parsed.version
-      }
-    }
-    const parent = dirname(dir)
-    if (parent === dir) {
-      break
-    }
-    dir = parent
-  }
-  return 'unknown'
-}
+export { skillsDir } from './skills-dir.ts'
 
 export const VERSION = packageVersion()
 export const SCHEMA_VERSION = 1
@@ -60,7 +43,9 @@ Usage:
   vcut locate --edl <path> [flags]   Translate between master time and source time
   vcut audit --edl <path> --render <path>  Check a render against the EDL it came from
   vcut say <media> [flags]           Read back what is spoken at a position
+  vcut silences <media> [flags]      Speech/silence blocks over a range, at a chosen resolution
   vcut converge <media> [flags]      Find where a repeated phrase stops coming back
+  vcut nonspeech <render> [--verify] Find audible sound that is not language
   vcut schema [name]                 Print the JSON contract for a command
   vcut skills list|get [name]        Read the bundled agent manual
   vcut doctor                        Check external dependencies
@@ -75,26 +60,6 @@ Global flags:
 
 Every command writes data to stdout and diagnostics to stderr. Exit code 2 means
 the invocation was wrong, 1 means the run failed.`
-
-const here = dirname(fileURLToPath(import.meta.url))
-
-export const skillsDir = (): string => {
-  const candidates = [
-    process.env.VCUT_SKILLS_DIR,
-    join(here, 'skills'),
-    join(here, '..', 'skills'),
-    join(here, '..', '..', 'skills'),
-  ].filter((candidate): candidate is string => candidate !== undefined)
-
-  for (const candidate of candidates) {
-    if (existsSync(candidate)) {
-      return candidate
-    }
-  }
-  throw new Error(
-    'could not find skills/ near the executable. Set VCUT_SKILLS_DIR to its location.',
-  )
-}
 
 const DEPENDENCIES = [
   { name: 'ffmpeg', why: 'silence detection and rendering' },
@@ -221,7 +186,25 @@ const has = async (command: string, args: string[]): Promise<boolean> => {
   }
 }
 
+const INIT_HELP = `vcut init - install everything a first run needs
+
+Usage:
+  vcut init [--no-skills]
+
+Installs ffmpeg through brew when it is missing, the transcriber through npm, the
+transcription model through trx init, and the agent skills through npx skills add
+(into the current directory; --no-skills leaves it alone). Reports anything it could
+not do and exits non-zero. The optional non-speech classifier stays separate:
+vcut setup classifier.`
+
 const setupAll = async (argv: string[]): Promise<void> => {
+  // A --help that runs the installer is worse than no help at all: asking what a command
+  // does must never do the thing. Found by an agent whose exploration of this flag wrote
+  // .agents/ and skills-lock.json into a worktree it was documenting.
+  if (argv.includes('--help')) {
+    process.stdout.write(`${INIT_HELP}\n`)
+    return
+  }
   const skipSkills = argv.includes('--no-skills')
   const modelPath = join(homedir(), '.trx', 'models', 'ggml-large-v3-turbo.bin')
   const blocked: string[] = []
@@ -363,11 +346,14 @@ const CONTRACTS: Record<string, unknown> = {
       keptDurationMs: 'integer',
       removalPercent: 'number, 0-100',
       wordBoundaryClamping: 'boolean, whether cuts were clamped to word edges',
+      semanticCuts:
+        '[{ startMs, endMs, kind, reason, removedText, boundariesInSilence: [bool, bool] }], one per accepted semantic proposal, span already merged with whatever else lands in the same place',
       warnings: 'string[]',
     },
     notes: [
       'The EDL itself validates against schemas/edl.schema.json.',
       'Every segment is written as proposed and the EDL as draft. Nothing is approved here.',
+      'Read semanticCuts[].removedText before rendering: it is the transcript text the span actually removes, not the raw proposal. A warning fires when removedText and reason share fewer than half their carrying words and removedText has 4 or more of them, which is the corrective for a span drifting onto the wrong words unnoticed.',
     ],
   },
   semantic: {
@@ -386,11 +372,30 @@ const CONTRACTS: Record<string, unknown> = {
       'check exits 1 when anything is malformed, and edl build refuses the whole file rather than skipping entries.',
     ],
   },
+  silences: {
+    version: SCHEMA_VERSION,
+    command: 'vcut silences',
+    output: {
+      version: 'number, always 1',
+      input: 'absolute path to the media',
+      rangeStartMs: 'integer, absolute ms where the measured range begins',
+      rangeEndMs: 'integer, absolute ms where the measured range ends',
+      thresholdDb: 'number, the noise floor used',
+      minSilenceMs: 'integer, the minimum silence duration used',
+      blocks:
+        '[{ kind: "speech"|"silence", startMs, endMs, durationMs }], ordered, covering the whole requested range, in absolute ms',
+    },
+    notes: [
+      'This is the placing instrument, not the cutting one: detect.silences is still what edl build cuts against, at the threshold proven in production.',
+      'Positions on --from/--to are seconds; the JSON speaks milliseconds, same rule as every other command.',
+      "Exists for a resolution detect cannot give: the gap between a filler and the next word can measure 80-150ms, well under detect's 0.3s default minimum.",
+    ],
+  },
   say: {
     version: SCHEMA_VERSION,
     command: 'vcut say',
     output: {
-      atMs: 'integer, the position asked about',
+      atMs: 'integer, the position asked about. Absent when --positions is used',
       windowMs: 'integer, how much context was read',
       text: 'the words in the window, joined',
       words: '[{ text, startMs, endMs }]',
@@ -398,11 +403,14 @@ const CONTRACTS: Record<string, unknown> = {
       meanDb: 'number|null',
       segment: '{ id, sourceMs }|null, only with --edl',
       warning: 'present when the transcript is not word-level',
+      positions:
+        '[{ atMs, windowMs, text, words, peakDb, meanDb, segment?, warning? }], only with --positions: one object per position, same shape as a single call, in the order given',
     },
     notes: [
       'Reads an existing transcript. vcut never calls a model, here as everywhere else.',
       'Do not answer this by transcribing a short slice instead: a window under about two seconds returns noise whatever the audio contains, so the result cannot tell a real word from a guess.',
       'A window with no words but real level is the interesting case: something audible the transcript never saw. That is what the non-speech classifier is for.',
+      '--positions answers several windows in one call instead of one --at call per position. Mutually exclusive with --at/--through. With --transcribe it transcribes strictly sequentially, never concurrently, since each call loads a Whisper model into memory.',
     ],
   },
   audit: {
@@ -442,6 +450,26 @@ const CONTRACTS: Record<string, unknown> = {
       'Deriving it by hand is the trap this replaces: the accumulated total can match the rendered file to the millisecond while individual positions land seconds away.',
       'Pass --render to compare the map against a file that exists. Agreement on the total is necessary, not sufficient.',
       'A --source position that was cut is reported as removed with the next surviving segment, not as an error.',
+    ],
+  },
+  nonspeech: {
+    version: SCHEMA_VERSION,
+    command: 'vcut nonspeech',
+    output: {
+      status: '"ok" | "classifier-absent"',
+      detail: 'string, present only when status is "classifier-absent"',
+      verified: 'boolean, present and true only when --verify was passed',
+      spans:
+        'without --verify: [{ startMs, endMs }]. With --verify: [{ startMs, endMs, text, peakDb, meanDb, reading }]',
+      reading: '"vocalization-suspect" | "words-around" | "empty", --verify only',
+      means: 'a one-line gloss of what each reading means, --verify only',
+    },
+    notes: [
+      'Runs skills/core/scripts/non-speech.py against a rendered preview. Run it on the render, not the source: on raw footage every pause scores as non-speech, correctly and uselessly.',
+      'The classifier is optional (python3, panns-inference, and a ~320MB model under ~/.vcut/panns). Its absence is a supported state, reported as status "classifier-absent" with exit 0, the same policy vcut doctor already applies. Without it, invariant 7 needs a human ear.',
+      "vcut calls no model of its own: python3 and trx are binaries on the caller's PATH, exactly like ffmpeg.",
+      '--verify exists because reading the whole-file transcript to close a classifier hit is circular for this class of sound: the transcript is exactly what could not see it. It re-transcribes a window of the span plus 1.2s of context on each side and reports what that window actually says.',
+      'vocalization-suspect means the windowed transcript names a hesitation sound (eh, ehm, mmm, aah, tolerant of a stretched vowel), or the span has real level with no words inside it. words-around means the window transcribes to ordinary words sitting either side of the span, i.e. a breath in a pause. empty means no words and no real level. A span whose windowed transcript is genuinely empty at real level is still a question for a listener, not a false positive to wave off.',
     ],
   },
   render: {
@@ -586,6 +614,12 @@ export const route = async (argv: string[]): Promise<void> => {
   }
   if (command === 'say') {
     return sayCommand(rest)
+  }
+  if (command === 'nonspeech') {
+    return nonspeechCommand(rest)
+  }
+  if (command === 'silences') {
+    return silencesCommand(rest)
   }
   if (command === 'schema') {
     return schemaCommand(rest)

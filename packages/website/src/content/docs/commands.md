@@ -16,7 +16,9 @@ vcut render --edl <path> [flags]   Render an EDL to video
 vcut locate --edl <path> [flags]   Translate between master time and source time
 vcut audit --edl <path> --render <path>  Check a render against the EDL it came from
 vcut say <media> [flags]           Read back what is spoken at a position
+vcut silences <media> [flags]      Speech/silence blocks over a range, at a chosen resolution
 vcut converge <media> [flags]      Find where a repeated phrase stops coming back
+vcut nonspeech <render> [--verify] Find audible sound that is not language
 vcut schema [name]                 Print the JSON contract for a command
 vcut skills list|get [name]        Read the bundled agent manual
 vcut doctor                        Check external dependencies
@@ -26,6 +28,12 @@ vcut version                       Print the version
 ```
 
 Global flags: `--json` forces machine output, `--human` forces the summary, `--help` works on any command.
+
+Every JSON output carries `vcutVersion`, the version of the binary that produced it, so an
+agent working from a cached manual can tell the tool changed underneath it. Selected outputs
+(`suspects`, `detect`, `edl build`, `semantic review`, `nonspeech`, `render --audio-only`) also
+carry `next`, a short list of `{question, verb}` naming what to run next — a hint, not an
+instruction.
 
 ### vcut detect
 
@@ -58,6 +66,25 @@ Review candidates are never cut automatically. They exist so a human looks.
 vcut detect screen.mp4 --audio mic.wav --preset clean
 ```
 
+### vcut silences
+
+```bash
+vcut silences recording.mp4 --from 327.3 --to 330.5 --noise -33 --min 0.08
+```
+
+`detect`'s silence list is the **cutting** instrument, at one threshold and one minimum — the preset proven in production, and what `edl build` cuts against. `silences` is the **placing** instrument: the same measurement, a threshold and minimum you choose, over whatever sub-range you name.
+
+It exists because the gap separating a filler from the next word can measure 80-150ms, well under `detect`'s 0.3s default minimum. Answering "what does the audio do right here, at that resolution" used to mean running raw ffmpeg `silencedetect` by hand and converting `--ss`-relative timestamps back to absolute media time yourself, repeated once per boundary.
+
+| Flag | Default | What it does |
+| --- | --- | --- |
+| `--from <sec>` | `0` | Start of the range to measure |
+| `--to <sec>` | end of media | End of the range to measure |
+| `--noise <dB>` | `-30` | Silence threshold |
+| `--min <sec>` | `0.25` | Minimum silence duration to report |
+
+`blocks` covers the whole requested range in absolute milliseconds, already offset — no arithmetic left for the caller. Never writes an EDL and never changes what gets cut; `edl build` still cuts against `detect.silences`.
+
 ### vcut edl build
 
 Turns a detect report into a draft edit decision list.
@@ -81,6 +108,8 @@ vcut edl build --detect detect.json --output master.mp4 --campaign my-video
 **`--crop` frames the whole edit at once**, which is why it lives here and not per segment. A traditional editor makes you set the frame per clip, so remembering the menu bar after cutting means redoing every segment by hand. Here the crop is one decision applied to all of them, and changing it never touches a cut boundary. Fractions, not pixels, so the same EDL survives a source at another resolution.
 
 The command inverts the cut intervals into the spans worth **keeping**, so the EDL always describes surviving material rather than deleted material.
+
+**The build report includes `semanticCuts`, one entry per accepted semantic proposal**: `removedText`, the transcript words that fall inside its final span, and `boundariesInSilence`, whether each edge lands inside a silence `detect` measured. Read `removedText` before rendering — it is the corrective for a span drifting onto the wrong words unnoticed, which happened on a real cut: a repetition proposal removed "todos estamos" instead of the stutter "en nuestra propia" because measured blocks were mis-assigned, invisible until a render and a windowed re-transcription caught it. A warning fires when `removedText` shares fewer than half its carrying words (4+ letters) with the proposal's `reason` and has 4 or more of them itself, the same threshold that keeps a short filler cut from firing on a reason that never repeats it word for word.
 
 It also reports a removal percentage. Compare it against the content type:
 
@@ -222,6 +251,7 @@ audit  22 of 22 segments compared
 ```bash
 vcut say cut.mp4 --transcript cut.srt --at 50.2 --edl edl.json    # read the transcript
 vcut say cut.mp4 --transcribe --lang es --at 57.5 --window 4      # ask the audio
+vcut say cut.mp4 --transcribe --positions 19.5,30.0,41.9          # sweep several positions
 ```
 
 Reads back what is spoken at a position, with the level there and, with `--edl`, which segment it falls in.
@@ -230,6 +260,7 @@ Reads back what is spoken at a position, with the level there and, with `--edl`,
 | --- | --- |
 | `--at <sec>` | Position to read around, or the start of a range with `--through` |
 | `--through <sec>` | Read everything from `--at` to here rather than a window around it |
+| `--positions <list>` | Several positions at once, comma-separated seconds. One object per position, same shape `--at` returns, in order. Mutually exclusive with `--at`/`--through` |
 | `--transcript <path>` | Word-level SRT to read from (required unless `--transcribe`) |
 | `--transcribe` | Cut the window and run the transcriber over it instead of reading |
 | `--lang <code>` | Language passed to the transcriber (`--transcribe` only) |
@@ -242,6 +273,8 @@ Reads back what is spoken at a position, with the level there and, with `--edl`,
 **`--transcribe` is for the case reading cannot answer.** A whole-file pass averages: where a speaker said a line three times it can write it once, and no amount of re-reading recovers the difference. Measured on one recording, reading at 57.5s gave "la que conocemos, ya llegamos a" where transcribing the same window gave "Y a la que conocemos, ya llegue. Y a la que conocemos" — the repetition four runs failed to find. Use a window of four seconds or more, and note it costs one transcriber call. vcut still calls no model of its own: it runs the transcriber already on your PATH, the same way it runs ffmpeg.
 
 A window with no words but real level is the case worth stopping on: something audible the transcript never saw, which is what the non-speech classifier is for.
+
+**`--positions` answers several windows in one call**, because sweeping several spans was a shell loop of individual `--at` calls: one session swept 18 classifier spans exactly that way. With `--transcribe`, positions transcribe strictly sequentially, never concurrently — each call loads a Whisper model into memory, and racing several is the load that chokes a machine already carrying a video editor.
 
 ### vcut converge
 
@@ -265,6 +298,30 @@ It exists because that judgement went wrong more often than any other: three run
 **`boundaryMs` is not where to cut.** A retake and the telling that survives it overlap, so the point where the wording disappears sits past the start of the line worth keeping. Cutting to it beheads that line: on one recording, ending at the reported 62000ms gave "Conocemos, ya llegamos a mil miembros" where ending at 61192ms kept "Y a la que conocemos, ya llegamos a mil miembros". Both were rendered and listened to; neither transcript reads as broken. `lastWithPhraseMs` carries that telling in full and sat 308ms from the correct boundary against 808ms for the far edge.
 
 Exit 1 with a null `boundaryMs` means the phrase was still recurring at `--to`, which is a reason to widen the span rather than evidence there is nothing to cut.
+
+### vcut nonspeech
+
+```bash
+vcut nonspeech master.mp4                       # spans only, the classifier's own output
+vcut nonspeech master.mp4 --verify --lang es     # each span read back through a window
+```
+
+Runs the bundled classifier (`skills/core/scripts/non-speech.py`) against a rendered preview and reports audible sound that is not language: a breath, a mic bump, a stretched hesitation the transcript cleans away even with a verbatim preset. Run it on the render, not the source: on raw footage every pause scores as non-speech, correctly and uselessly.
+
+| Flag | What it does |
+| --- | --- |
+| `--verify` | Re-transcribe a window around each span with `trx` and attach a reading |
+| `--lang <code>` | Language passed to the transcriber (`--verify` only) |
+
+**`--verify` is not optional in practice.** Without it you get positions and nothing else, and closing each one against the whole-file transcript is circular: that transcript is exactly the instrument that could not see this class of sound. `--verify` cuts a window of the span plus 1.2s of context on each side and re-transcribes it, attaching `text`, `peakDb`, `meanDb`, and a `reading`:
+
+- `vocalization-suspect` — the window names a hesitation sound (eh, ehm, mmm, aah, tolerant of a stretched vowel), or the span carries real level with no words inside it.
+- `words-around` — the window transcribes to ordinary words either side of the span: a breath in a pause.
+- `empty` — no words and no real level.
+
+Measured on a real 7.5-minute run: 18 spans closed by reading the whole-file transcript were all read as breaths, and seven turned out to be audible "eeeh" fillers a listener caught on the first playback. `--verify` against the same render named them by their text instead.
+
+The classifier is optional: `python3`, `panns-inference`/`scipy`/`numpy`, and a ~320MB model under `~/.vcut/panns` fetched by `vcut setup classifier`. Its absence is a supported state — `nonspeech` reports it and exits 0, the same policy `vcut doctor` already applies — and invariant 7 falls back to a human ear. `--verify` additionally needs `trx` on PATH. vcut still calls no model of its own: `python3` and `trx` are binaries on the caller's PATH, exactly like `ffmpeg`.
 
 ### vcut schema
 

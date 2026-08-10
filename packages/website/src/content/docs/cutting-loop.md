@@ -37,7 +37,11 @@ vcut semantic check --proposals proposals.json --detect detect.json \
   --review review-$N.json          # exit 2 while a repeated phrase goes unnamed
 ```
 
-Then fold the findings into `proposals.json`, bump `N`, and run it again. Render the video once, at the end, and run `vcut audit` and the non-speech classifier there — they need a picture and answer a question no round is asking.
+Then fold the findings into `proposals.json`, bump `N`, and run it again. Render the video once, at the end, and run `vcut audit` and `vcut nonspeech --verify` there — they need a picture and answer a question no round is asking.
+
+Close a `nonspeech` hit with `--verify`, not by reading the whole-file transcript. That transcript is exactly the instrument that could not see this class of sound in the first place, so checking a hit against it is circular: measured on a real 7.5-minute run, 18 spans closed that way were all read as breaths and seven were audible "eeeh" fillers a listener caught immediately. `--verify` re-transcribes a short window around each span instead and reports which are `vocalization-suspect`, `words-around`, or `empty`.
+
+**Read `semanticCuts[].removedText` in the build's own JSON before rendering.** Every accepted proposal reports the transcript text its final span actually removes, which can drift from what the proposal asked for once it merges with a neighbouring cut. A repetition cut once removed "todos estamos" instead of the intended "en nuestra propia" this way, invisible until a render and a re-transcription caught it — `removedText` makes that visible at build time. `edl build` also warns when a span's removed text and its own `reason` share too little in common.
 
 `--terse` drops the instructions block, which is identical every round and was 72% of one measured payload. Read it once on the first call, then leave it out.
 
@@ -63,6 +67,14 @@ llegamos a mil miembros" instead of "Y a la que conocemos, ya llegamos a mil mie
 transcripts read fine, and only one sounds right.
 
 It replaces neither the reading nor the loop. A repetition delivered fluently leaves no rhythmic trace and only the prose shows it. What it replaces is scanning a file you have not read to decide where to spend attention.
+
+Once you know roughly where a boundary goes, placing it exactly can need a finer measurement than `detect` gives you:
+
+```bash
+vcut silences source.mp4 --from 327.3 --to 330.5 --noise -33 --min 0.08
+```
+
+`detect`'s silence list is the **cutting** instrument, at the preset threshold and a 0.3s minimum — the one `edl build` cuts against. `silences` is the **placing** instrument: same measurement, a threshold and minimum you choose, over the sub-range you name. The gap separating a filler from the next word can measure 80-150ms, under `detect`'s default minimum and invisible to it; answering "what does the audio do right here" used to mean running raw `silencedetect` by hand and converting its range-relative timestamps back to absolute media time yourself, once per boundary.
 
 ### Iterate on audio
 
@@ -142,7 +154,7 @@ Four energy statistics were tried and all four failed:
 
 Each measures a **proxy** for non-speech, and every proxy is dominated by ordinary variation in speech. Periodicity gets closer, since voiced speech has vibrating folds and a breath is turbulence, but unvoiced consonants are turbulence too and every sibilant becomes a false positive.
 
-A general voice-activity detector is not enough either: one scored a breath at 0.87 voice, indistinguishable from words. What worked was an AudioSet classifier keyed on the **absence of speech** rather than the presence of breathing. That is what `skills/core/scripts/non-speech.py` does, and why it lives outside the CLI: it needs Python and a 300MB checkpoint, and vcut otherwise runs anywhere ffmpeg does.
+A general voice-activity detector is not enough either: one scored a breath at 0.87 voice, indistinguishable from words. What worked was an AudioSet classifier keyed on the **absence of speech** rather than the presence of breathing. `vcut nonspeech` runs that classifier (`skills/core/scripts/non-speech.py`) as a subprocess rather than a built-in dependency: it needs Python and a 300MB checkpoint, and vcut otherwise runs anywhere ffmpeg does. `--verify`, which turns a raw span into a `reading`, lives in the CLI itself and needs no Python beyond what the classifier already needed.
 
 ### Noise reduction is not offered
 

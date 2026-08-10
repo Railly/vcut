@@ -73,7 +73,7 @@ recording.mp4  6m 22s
   net after margins       ##..................  10.3%  (~39s once 100ms is kept on each side)
   silences                119 spans, 1m 03s
   longest silence         1s at 6m 20s
-  fillers                 not checked (transcript is not word-level)
+  filler words            not scanned; a word list cannot tell filler from ordinary use. Run vcut semantic.
   review candidates       1 (never cut automatically)
                           clipping: peak level -0.24 dB exceeds -1 dBFS
 ```
@@ -92,13 +92,40 @@ Piped or captured, the same command emits JSON. No flag needed.
 | `vcut locate --edl` | Translates between master time and source time |
 | `vcut audit --edl --render` | Checks a render's audio against the EDL it came from |
 | `vcut say <media>` | Reads back what is spoken at a position, from a transcript or by asking the audio |
+| `vcut silences <media>` | Speech/silence blocks over a range, at a threshold and minimum you choose |
 | `vcut converge <media>` | Finds where a repeated phrase stops coming back |
+| `vcut nonspeech <render> [--verify]` | Finds audible sound that is not language; `--verify` reads a window around each span instead of the whole-file transcript |
 | `vcut schema [name]` | The JSON contract per command, versioned |
 | `vcut skills get vcut` | The bundled agent manual, as markdown |
 | `vcut init` | Installs everything a first run needs, and reports what it could not |
 | `vcut doctor` | Checks external dependencies |
 | `vcut setup classifier` | Fetches the optional non-speech classifier |
 | `vcut <input>` | Shorthand for `vcut detect` |
+
+## Cutting is a loop
+
+Silence removal is the first round of several. Each class of defect only becomes visible once
+the one above it is gone: a pause two adjoining segments create together did not exist in
+either of them, a broken join only reads as broken once both sides are adjacent, and a
+discourse marker is inaudible inside loose speech and obvious inside tight speech.
+
+The loop, its stopping condition, and what has already been tried and failed live in the
+manual the CLI serves, which always matches the version installed:
+
+```bash
+vcut skills get core      # the procedure, the invariants, what eleven runs taught
+vcut skills get debug     # how to investigate a cut that came out wrong
+```
+
+Stop when a round proposes nothing, not when the removal percentage looks respectable, and
+never on the first round.
+
+## Beyond silence
+
+- **`--crop top:0.06`** frames the whole edit at once, so remembering the menu bar after cutting does not mean redoing every segment.
+- **`--edge-fade`** (default 50ms) ramps each segment edge to zero. Not a crossfade: overlapping the sides would drift the audio against concatenated video.
+- **Loudness** is normalised to the `speechTargetLufs` the EDL declares, on the concatenated result rather than per segment.
+- **`vcut nonspeech <render> --verify`** finds breaths, mic bumps, and stretched hesitations the transcript cleaned away, which neither the silence pass nor the transcript can see on their own. `--verify` re-transcribes a short window around each span instead of checking it against the whole-file transcript, which is circular for exactly this class of sound. `vcut setup classifier` fetches what the underlying model needs; without it the check falls back to a human ear.
 
 ## Presets
 
@@ -112,14 +139,31 @@ Tune with `--min-silence` (seconds, default 0.3) and `--margin` (seconds, defaul
 
 ## Filler words
 
-A word list cannot tell a filler from ordinary use — `este` is a filler in "y este, entonces"
-and a demonstrative in "en este caso" — so `detect` does not scan for them. They are proposed
-by whoever reads the transcript, through `vcut semantic`, which is also why every cut lands
-as a proposal rather than a decision.
+Word-level timestamps mean one cue per word. A normal SRT has one cue per sentence, which is not enough to cut a single word without guessing. vcut tells you when this is the case instead of silently reporting zero.
 
-Cutting a single word needs word-level timestamps (one cue per word). `detect` says when the
-transcript it was given is not word-level rather than silently reporting zero. Details, and
-how to produce one, are in `vcut skills get core`.
+```bash
+whisper-cli -m ggml-large-v3-turbo.bin -f audio.wav -l es \
+  --max-len 1 --split-on-word --output-srt
+```
+
+`trx transcribe <input> --words --language es -m large-v3-turbo` does the same from `trx@0.7.1`
+on. `--split-on-word` is not optional: without it `--max-len 1` cuts at token boundaries, so
+"Crafter" arrives as `Cra` + `fter` and the transcript looks word-level while breaking every
+cut that relies on it. Measured on one recording: 26% of cues were fragments without the flag,
+0% with it, and `detect` now warns when it sees this.
+
+Ask for a large model. One cue per word means one cue per *token*, and what counts as a token
+depends on the model. On the same three minutes of Spanish, `small` returns 26% of its cues as
+word fragments, splitting "Crafter" into `Cra` + `fter`; `large-v3-turbo` returns 0% and costs
+13 seconds. Fragments weaken word clamping and make the semantic export unreadable.
+
+```bash
+vcut detect recording.mp4 --transcript words.srt --lang es
+```
+
+Lists ship for `es`, `en`, and `pt`.
+
+detect finds silence, not filler words. A word list matches tokens, not intent: Spanish `este` is filler in "y este, entonces" and a demonstrative in "en este caso", and no list survives a new language. Filler words are proposed by a model through `vcut semantic`, like every other judgement call.
 
 ## For agents
 
@@ -153,9 +197,11 @@ JSON is emitted automatically when stdout is not a TTY, so an agent never needs 
 
 ## Limits
 
-- No semantic cutting. Repeated lines and false starts need a human or an LLM reading the transcript.
-- No crossfade at the joins yet; segments concatenate directly.
-- External audio, sync offset, and noise reduction are rejected rather than silently ignored.
+- Semantic cutting is proposal-only. `vcut semantic export` hands the transcript to a model as numbered lines and `edl build --semantic` folds the proposals back in, each one marked `semanticRisk: material`. vcut never calls a model itself: no dependency, no API key, same EDL for the same proposals file.
+- Audio ramps 50ms at each segment edge (`--edge-fade 0` disables it). Not a crossfade: overlapping the two sides would shorten the render against concatenated video and drift the audio out of sync, so each side fades within its own segment. A joint under a fully continuous sentence can still be heard as a dip.
+- A silence detector decides by level, so a soft consonant under the threshold is cut like a pause. If a word loses its opening sound, the fix is the recording or a lower threshold, not a larger margin.
+- Audio recorded separately works: `detect --audio mic.wav` measures silence on that file, and the EDL carries both sources. `edl build --audio-offset <ms>` corrects two recorders that did not start together.
+- Noise reduction is not offered. There is no safe default: the right amount depends on the room, and on one measured recording a denoiser at a default setting pushed a weak syllable from -45 dB to -57, which is the same defect as a threshold set too high. Loudness normalisation is the part that is safe to automate, and it is on by default.
 - No face tracking or automatic zoom.
 
 ## Design

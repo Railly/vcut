@@ -1,7 +1,10 @@
 import { describe, expect, test } from 'bun:test'
+import { readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { matchTarget } from '../src/build-edl.ts'
 import { classifierStatus } from '../src/cli.ts'
-import { bar, duration, resolveMode } from '../src/output.ts'
+import { bar, duration, emitJson, packageVersion, resolveMode } from '../src/output.ts'
 
 describe('resolveMode', () => {
   test('defaults to JSON when stdout is not a TTY', () => {
@@ -61,6 +64,50 @@ describe('matchTarget', () => {
 
   test('says the source may already be edited when below every range', () => {
     expect(matchTarget(4)).toContain('already be edited')
+  })
+})
+
+describe('emitJson', () => {
+  // Captured with console.log rather than mocking JSON.stringify, since a caller reads
+  // stdout, not the internals: this test proves the same thing an agent piping the output
+  // would observe.
+  const captured = (value: unknown): unknown => {
+    const original = console.log
+    let printed = ''
+    console.log = (text: string) => {
+      printed = text
+    }
+    try {
+      emitJson(value)
+    } finally {
+      console.log = original
+    }
+    return JSON.parse(printed)
+  }
+
+  test('stamps vcutVersion on every object output', () => {
+    const output = captured({ status: 'ok' }) as { vcutVersion: string; status: string }
+    expect(output.status).toBe('ok')
+    expect(output.vcutVersion).toBe(packageVersion())
+  })
+
+  test('the stamped version matches package.json', () => {
+    const packageJson = join(dirname(fileURLToPath(import.meta.url)), '..', 'package.json')
+    const declared = (JSON.parse(readFileSync(packageJson, 'utf8')) as { version: string }).version
+    const output = captured({ ok: true }) as { vcutVersion: string }
+    expect(output.vcutVersion).toBe(declared)
+  })
+
+  test('does not overwrite a caller-supplied vcutVersion silently different from itself', () => {
+    // The stamp always wins: a command building its own object should never be able to lie
+    // about which binary produced it, even by accident.
+    const output = captured({ vcutVersion: 'not-the-real-version' }) as { vcutVersion: string }
+    expect(output.vcutVersion).toBe(packageVersion())
+  })
+
+  test('leaves a non-object value alone', () => {
+    expect(captured(['a', 'b'])).toEqual(['a', 'b'])
+    expect(captured('plain string')).toBe('plain string')
   })
 })
 

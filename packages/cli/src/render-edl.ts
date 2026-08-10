@@ -3,6 +3,7 @@ import { createReadStream, existsSync, readFileSync, renameSync, rmSync } from '
 import { extname, resolve } from 'node:path'
 
 import { run, runInherit } from './exec.ts'
+import { emitJson } from './output.ts'
 
 const HELP = `vcut render - render an EDL to video
 
@@ -588,6 +589,16 @@ const parseCli = (args: string[]): CliOptions => {
   }
 }
 
+// Only for --audio-only: that render exists to be listened back to, which is a trx call and a
+// semantic review away. A full video render has no equally short next step worth naming.
+export const renderAudioOnlyNext = (outputPath: string) => [
+  { question: 'hear what the cut says', verb: `trx transcribe ${outputPath} --preset verbatim` },
+  {
+    question: 'review the result as a viewer would hear it',
+    verb: `vcut semantic review --edl <edl path> --detect <detect path> --master ${outputPath}`,
+  },
+]
+
 export const renderCommand = async (argv: string[]): Promise<void> => {
   if (argv.includes('--help') || argv.length === 0) {
     console.log(HELP)
@@ -630,25 +641,19 @@ export const renderCommand = async (argv: string[]): Promise<void> => {
     // Printed against the real destination: the temp file is this function's business, and a
     // command nobody can paste and run is not a useful thing to print.
     const shown = buildFfmpegArgs(edl, outputPath, { audioOnly: options.audioOnly })
-    console.log(
-      JSON.stringify(
-        {
-          status: 'ready',
-          mode: options.mode,
-          ...(options.audioOnly ? { audioOnly: true } : {}),
-          sources: edl.sources.length,
-          segments: edl.segments.length,
-          expectedDurationMs: edl.segments.reduce(
-            (total, segment) => total + segment.outMs - segment.inMs,
-            0,
-          ),
-          outputPath,
-          command: ['ffmpeg', ...shown],
-        },
-        null,
-        2,
+    emitJson({
+      status: 'ready',
+      mode: options.mode,
+      ...(options.audioOnly ? { audioOnly: true } : {}),
+      sources: edl.sources.length,
+      segments: edl.segments.length,
+      expectedDurationMs: edl.segments.reduce(
+        (total, segment) => total + segment.outMs - segment.inMs,
+        0,
       ),
-    )
+      outputPath,
+      command: ['ffmpeg', ...shown],
+    })
     return
   }
 
@@ -669,18 +674,18 @@ export const renderCommand = async (argv: string[]): Promise<void> => {
     throw new Error(validationErrors.join('\n'))
   }
   renameSync(pendingPath, outputPath)
-  console.log(
-    JSON.stringify({
-      status: 'rendered',
-      ...(options.audioOnly ? { audioOnly: true } : {}),
-      outputPath,
-      sha256: await sha256(outputPath),
-      duration: probe.format.duration,
-      ...(options.audioOnly
-        ? {}
-        : {
-            frames: probe.streams.find((stream) => stream.codec_type === 'video')?.nb_read_frames,
-          }),
-    }),
-  )
+  const next = options.audioOnly ? renderAudioOnlyNext(outputPath) : []
+  emitJson({
+    status: 'rendered',
+    ...(options.audioOnly ? { audioOnly: true } : {}),
+    outputPath,
+    sha256: await sha256(outputPath),
+    duration: probe.format.duration,
+    ...(options.audioOnly
+      ? {}
+      : {
+          frames: probe.streams.find((stream) => stream.codec_type === 'video')?.nb_read_frames,
+        }),
+    ...(next.length === 0 ? {} : { next }),
+  })
 }

@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import {
+  DETECT_NEXT,
   PRESET_DB,
   parseBlackLog,
   parseClipping,
@@ -221,5 +222,20 @@ describe('wordsContradictingSilence', () => {
   test('drift is the distance to the end of the silence, not to its start', () => {
     const found = wordsContradictingSilence([word('x', 1100, 1500)], [silence(1000, 2000)])
     expect(found[0]?.driftMs).toBe(900)
+  })
+})
+
+describe('DETECT_NEXT', () => {
+  test('names a non-empty question and a non-empty verb for each entry', () => {
+    expect(DETECT_NEXT.length).toBeGreaterThan(0)
+    for (const hint of DETECT_NEXT) {
+      expect(hint.question.length).toBeGreaterThan(0)
+      expect(hint.verb.length).toBeGreaterThan(0)
+    }
+  })
+
+  test('points at suspects and edl build', () => {
+    expect(DETECT_NEXT.some((hint) => hint.verb.includes('vcut suspects'))).toBe(true)
+    expect(DETECT_NEXT.some((hint) => hint.verb.includes('vcut edl build'))).toBe(true)
   })
 })
