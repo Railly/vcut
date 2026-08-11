@@ -62,6 +62,12 @@ jobs:
             fi
           fi
 
+      - name: Install ffmpeg
+        # The fixture tests introduced with 0.15.0 build real lavfi sources and render them,
+        # which is coverage worth paying an apt-get for: the alternative is guarding those
+        # tests off in CI, which is where they matter most.
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+
       - name: Install dependencies
         if: steps.version.outputs.changed == 'true'
         run: bun install --frozen-lockfile
