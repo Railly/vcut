@@ -32,7 +32,9 @@ transcript of each render, and vcut does not store renders or their transcripts 
 renders themselves before trusting a semantic diff alone.
 
 The session must already exist (run vcut open, then vcut commit at least twice) — like cut and
-commit, this reads a session's history rather than creating one.`
+commit, this reads a session's history rather than creating one.
+
+Also accepts --fields/--jq. See vcut --help for the full picture.`
 
 const flagValue = (argv: string[], name: string): string | undefined => {
   const index = argv.indexOf(name)

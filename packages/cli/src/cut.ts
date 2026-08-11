@@ -105,7 +105,9 @@ Appends the proposal to the session's proposals.json (created on first cut). Pro
 --list never locks, since it only reads. A session already locked by another live process
 fails with an error naming its pid, verb, and age rather than racing the write — see
 vcut session gc --help for how a stale lock (dead pid) clears on the next attempt by anyone.
-Next: vcut peek to hear the span, vcut commit when done proposing.`
+Next: vcut peek to hear the span, vcut commit when done proposing.
+
+Also accepts --fields/--jq. See vcut --help for the full picture.`
 
 const BOOLEAN_FLAGS = new Set(['--json', '--human', '--help', '--list'])
 

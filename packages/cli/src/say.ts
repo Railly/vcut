@@ -69,7 +69,9 @@ transcript averages inside a fused region; --transcribe alone returns prose with
 which is why one run bisected a single boundary with six to eight shrinking windows before
 extracting the span by hand. This extracts the span once, re-transcribes it with word-level
 cues, and offsets every timing back to absolute source milliseconds, so the answer arrives as
-numbers. Ask it for the span you doubt, not for a slice: the window rules above still hold.`
+numbers. Ask it for the span you doubt, not for a slice: the window rules above still hold.
+
+Also accepts --fields/--jq. See vcut --help for the full picture.`
 
 export type Spoken = {
   atMs: number

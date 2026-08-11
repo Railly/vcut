@@ -62,7 +62,9 @@ the EDL's master-time map against the render's own measured duration before trus
 reading is lands, removed-text-leaked, or check-by-ear. removed-text-leaked is a place to
 look, not a verdict: a false-start's removedText can legitimately share vocabulary with the
 sentence that survives it, which reads as leaked overlap without being one. Confirm with a
-wider say --transcribe window before acting on it.`
+wider say --transcribe window before acting on it.
+
+Also accepts --fields/--jq. See vcut --help for the full picture.`
 
 const DEFAULT_WINDOW_S = 4
 

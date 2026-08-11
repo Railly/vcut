@@ -46,7 +46,9 @@ locked-protected and never deletable, whatever else is true of it.
 The EDL a human approved is never inside a session directory (commit writes it to
 --output/--edl, wherever the caller pointed), so gc clearing a whole session can never
 touch an approved edit — only the disposable detect cache, transcript copy, refs, and
-round history behind it.`
+round history behind it.
+
+Also accepts --fields/--jq. See vcut --help for the full picture.`
 
 const flagValue = (argv: string[], name: string): string | undefined => {
   const index = argv.indexOf(name)

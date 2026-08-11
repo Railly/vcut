@@ -57,7 +57,9 @@ span: what the cached transcript claims (transcript), what the audio says when r
 just now (heard), the speech/silence shape at fine resolution (blocks), and the level
 (level). viewsDisagree compares transcript against heard and names the kind of disagreement,
 including the soft-speech class neither silences nor a level threshold alone can see. A
-disagreement is a place to look, not a verdict: a short window transcribes noisily.`
+disagreement is a place to look, not a verdict: a short window transcribes noisily.
+
+Also accepts --fields/--jq. See vcut --help for the full picture.`
 
 const BOOLEAN_FLAGS = new Set(['--json', '--human', '--help'])
 

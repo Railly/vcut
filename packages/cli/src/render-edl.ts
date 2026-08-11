@@ -3,7 +3,14 @@ import { createReadStream, existsSync, readFileSync, renameSync, rmSync } from '
 import { extname, resolve } from 'node:path'
 
 import { run, runInherit, runWithProgress } from './exec.ts'
-import { duration, emitJson } from './output.ts'
+import {
+  duration,
+  emitJson,
+  heading,
+  line,
+  type Mode as OutputMode,
+  resolveMode,
+} from './output.ts'
 
 const HELP = `vcut render - render an EDL to video
 
@@ -17,6 +24,7 @@ Flags:
   --audio-only          Render the audio alone, for iterating on a cut
   --dry-run             Print the ffmpeg command without running it
   --quiet               Skip the progress lines on stderr
+  --json / --human      Output mode
   --help                Show this message
 
 Preview mode accepts proposed segments. Master mode requires an approved EDL,
@@ -36,7 +44,9 @@ render blocks until ffmpeg exits and prints one progress line to stderr per
 report (time rendered, percent of the EDL's own duration, encode speed).
 stdout stays reserved for the result: nothing to poll, nothing to grep a
 process table for. --quiet drops the progress lines and keeps everything
-else the same.`
+else the same.
+
+Also accepts --json/--human/--fields/--jq. See vcut --help for the full picture.`
 
 type Source = {
   id: string
@@ -980,13 +990,57 @@ export const runRender = async (edl: Edl, options: RenderOptions): Promise<Rende
   }
 }
 
+// render is the command a human runs interactively more than most in this CLI — it is the
+// step that produces the file someone is about to watch or listen to — so unlike the
+// JSON-only commands elsewhere in this codebase, --human here gets a real summary rather than
+// a rejection. Kept to the handful of facts a human actually wants after kicking off a render:
+// what happened, where it landed, how long it took to play back, and what to do next.
+const humanReport = (result: RenderResult): string => {
+  if (result.status === 'ready') {
+    const lines = [
+      heading('render  dry run'),
+      line('edl mode', result.mode ?? 'preview'),
+      line('output', result.outputPath),
+      line('segments', String(result.segments ?? 0)),
+      line('duration', duration(result.expectedDurationMs ?? 0)),
+    ]
+    if (result.command !== undefined) {
+      lines.push(line('command', result.command.join(' ')))
+    }
+    return lines.join('\n')
+  }
+  const lines = [
+    heading('render  rendered'),
+    line('output', result.outputPath),
+    line('mode', result.audioOnly === true ? 'audio-only' : 'video'),
+  ]
+  if (result.duration !== undefined) {
+    lines.push(line('duration', `${result.duration}s`))
+  }
+  if (result.frames !== undefined) {
+    lines.push(line('frames', result.frames))
+  }
+  if (result.sha256 !== undefined) {
+    lines.push(line('sha256', result.sha256.slice(0, 12)))
+  }
+  for (const hint of result.next ?? []) {
+    lines.push(line('next', hint.verb))
+  }
+  return lines.join('\n')
+}
+
 export const renderCommand = async (argv: string[]): Promise<void> => {
   if (argv.includes('--help') || argv.length === 0) {
     console.log(HELP)
     return
   }
+  const outputMode: OutputMode = resolveMode(argv, Boolean(process.stdout.isTTY))
   const options = parseCli(argv)
   const edl = JSON.parse(readFileSync(options.edlPath, 'utf8')) as Edl
   const result = await runRender(edl, options)
+  if (outputMode === 'human') {
+    console.log(humanReport(result))
+    return
+  }
   emitJson(result)
 }

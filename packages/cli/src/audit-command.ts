@@ -40,7 +40,9 @@ video once, at the end, for the master.
 
 A low score is a place to look, not a verdict. Correlation over a short window is weak on
 quiet passages, and loudness normalisation reshapes them further. Confirm with vcut say
-before believing a number here.`
+before believing a number here.
+
+Also accepts --fields/--jq. See vcut --help for the full picture.`
 
 const flagValue = (argv: string[], name: string): string | undefined => {
   const index = argv.indexOf(name)

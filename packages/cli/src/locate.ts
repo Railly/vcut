@@ -38,7 +38,9 @@ Flags:
   --help             Show this message
 
 The map is derived from the EDL, which records intent. Pass --render to compare that
-intent against a file that actually exists.`
+intent against a file that actually exists.
+
+Also accepts --fields/--jq. See vcut --help for the full picture.`
 
 export type Placement = {
   id: string

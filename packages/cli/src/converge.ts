@@ -40,7 +40,9 @@ Flags:
 
 Reports the first offset whose transcript no longer contains the phrase, and every window it
 read on the way. A retake repeats the same words, so any window inside one comes back reading
-like a clean start: the phrase leaving is the signal, not a window that parses.`
+like a clean start: the phrase leaving is the signal, not a window that parses.
+
+Also accepts --fields/--jq. See vcut --help for the full picture.`
 
 export type Probe = { atMs: number; text: string; contains: boolean }
 

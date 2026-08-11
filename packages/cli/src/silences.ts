@@ -42,7 +42,9 @@ Flags:
 Answers the placing question detect cannot: speech/silence blocks at a threshold and minimum
 you choose, over a sub-range, in absolute milliseconds. detect's silence list stays the one
 edl build cuts against; this is for finding exactly where a boundary goes, at whatever
-resolution the boundary needs. Positions on flags are seconds; the JSON speaks milliseconds.`
+resolution the boundary needs. Positions on flags are seconds; the JSON speaks milliseconds.
+
+Also accepts --fields/--jq. See vcut --help for the full picture.`
 
 const DEFAULT_NOISE_DB = -30
 const DEFAULT_MIN_SILENCE_S = 0.25

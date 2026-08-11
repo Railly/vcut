@@ -1,9 +1,10 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { createHash } from 'node:crypto'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { run } from '../src/exec.ts'
+import { UsageError } from '../src/output.ts'
 import {
   audioOnlyErrors,
   buildFfmpegArgs,
@@ -16,6 +17,7 @@ import {
   makeProgressWatcher,
   outputErrors,
   renderAudioOnlyNext,
+  renderCommand,
   runRender,
 } from '../src/render-edl.ts'
 
@@ -772,5 +774,103 @@ describe.if(hasFfmpeg)('runRender progress streaming', () => {
     })
     expect(result.status).toBe('rendered')
     expect(lines).toHaveLength(0)
+  })
+})
+
+// Issue #31: render never called resolveMode and always emitted JSON, so --human on render was
+// accepted and silently ignored. render is decided to honor --human with a real summary rather
+// than reject it, since it is the command a human runs interactively more than most.
+describe('renderCommand output mode', () => {
+  const capture = async (argv: string[]): Promise<string> => {
+    const original = console.log
+    let printed = ''
+    console.log = (text: string) => {
+      printed = text
+    }
+    try {
+      await renderCommand(argv)
+    } finally {
+      console.log = original
+    }
+    return printed
+  }
+
+  test('--help mentions the global output flags', async () => {
+    const printed = await capture(['--help'])
+    expect(printed).toContain('--json')
+    expect(printed).toContain('--human')
+    expect(printed).toContain('--fields')
+    expect(printed).toContain('--jq')
+  })
+
+  describe('with a dry-run EDL', () => {
+    let workDir: string
+    let edlPath: string
+    let sourcePath: string
+
+    beforeAll(() => {
+      workDir = mkdtempSync(join(tmpdir(), 'vcut-render-human-'))
+      sourcePath = join(workDir, 'source.mp4')
+      writeFileSync(sourcePath, 'not real media, dry-run never opens it')
+      const sha256 = createHash('sha256').update(readFileSync(sourcePath)).digest('hex')
+      const fixture: Edl = {
+        timebase: 'milliseconds',
+        sources: [
+          {
+            id: 'src-1',
+            path: sourcePath,
+            sha256,
+            durationMs: 5_000,
+            hasVideo: true,
+            hasAudio: true,
+          },
+        ],
+        segments: [{ id: 'seg-1', sourceId: 'src-1', inMs: 0, outMs: 5_000, approval: 'proposed' }],
+        audio: {
+          externalAudioSourceId: null,
+          syncOffsetMs: 0,
+          edgeFadeMs: 0,
+        },
+        output: {
+          path: join(workDir, 'master.mp4'),
+          width: 320,
+          height: 240,
+          fps: 30,
+          videoCodec: 'h264',
+          pixelFormat: 'yuv420p',
+          colorSpace: 'bt709',
+          audioTrackPolicy: 'required',
+          overwrite: false,
+        },
+        approval: { status: 'draft', approvedAt: null, approvedBy: null },
+      }
+      edlPath = join(workDir, 'edl.json')
+      writeFileSync(edlPath, JSON.stringify(fixture))
+    })
+
+    afterAll(() => {
+      rmSync(workDir, { recursive: true, force: true })
+    })
+
+    test('--human renders a summary rather than JSON', async () => {
+      const printed = await capture(['--edl', edlPath, '--dry-run', '--human'])
+      expect(printed).toContain('render')
+      expect(printed).toContain('dry run')
+      expect(printed).toContain(edlPath.replace(/edl\.json$/, 'master.mp4'))
+      // Not JSON: a human summary never opens with a brace the way emitJson's output does.
+      expect(printed.trimStart().startsWith('{')).toBe(false)
+    })
+
+    test('--json still renders JSON on the same input', async () => {
+      const printed = await capture(['--edl', edlPath, '--dry-run', '--json'])
+      const parsed = JSON.parse(printed) as { status: string }
+      expect(parsed.status).toBe('ready')
+    })
+
+    test('--human --jq is a usage error on render too, not a silent no-op', async () => {
+      await expect(
+        renderCommand(['--edl', edlPath, '--dry-run', '--human', '--jq', '.status']),
+      ).rejects.toThrow(UsageError)
+    })
   })
 })
