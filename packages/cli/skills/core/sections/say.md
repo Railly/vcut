@@ -4,6 +4,7 @@
 vcut say cut.mp4 --transcript cut.srt --at 50.2
 vcut say cut.mp4 --transcript cut.srt --at 50.2 --edl edl.json --window 3
 vcut say cut.mp4 --transcribe --positions 19.5,30.0,41.9 --window 4
+vcut say source.mp4 --transcribe --words --at 550.0 --through 553.0 --lang es
 ```
 
 Reads back what is spoken at a position, with the level there and, with `--edl`, which
@@ -32,6 +33,49 @@ reason to be wrong. Measured on one recording: reading at 57.5s gave "la que con
 llegamos a", transcribing the same window with `--transcribe` gave "Y a la que conocemos, ya
 llegue. Y a la que conocemos" — a repetition four runs failed to find because the text they read
 did not contain it.
+
+### `--words` is the arbiter when the two modes above disagree
+
+**Reach for it the moment you catch yourself about to bisect a boundary by hand.** Reading and
+transcribing answer different questions and can contradict each other about where a word is,
+and neither of them can settle it: `--transcript` returns timings a whole-file pass averaged,
+`--transcribe` returns prose with no timings at all. `--transcribe --words` extracts exactly
+`--at`..`--through`, re-transcribes that span asking for word-level cues, and offsets every one
+back to absolute source milliseconds, so the answer comes back as numbers you can hand straight
+to `vcut cut --start-ms/--end-ms`.
+
+```bash
+vcut say source.mp4 --transcribe --words --at 550.0 --through 553.0 --lang es
+```
+
+```
+at 550.000              Y a la que conocemos, ya llegamos a mil miembros
+words                   measured now, absolute source ms
+551412-551690           conocemos
+551690-551980           ya
+```
+
+The measured case it exists for (2026-08-10 run, second agnostic pass): inside a fused region
+the whole-file transcript placed a keeper's start at 550740ms when the true boundary sat at
+roughly 551300-551600ms — a 600-900ms error, and large enough to ship a defect. `--transcribe`
+at two-second windows made it worse rather than better, returning hallucinations ("Fíjole.",
+"Me siento muerto.") for real speech. The run settled it by hand: six to eight `--transcribe`
+calls at shrinking windows, then raw `ffmpeg -ss/-t` plus a fresh transcription to build its own
+ground truth. That bisection cost about a third of a 218k-token run and produced one number.
+This is that procedure as one call.
+
+**It costs one real transcription per call**, the same price as `--transcribe` and for the same
+reason: it is a transcription. That is the whole cost model — a boundary question is one call,
+not one call per candidate offset. `--words` needs `--transcribe`; without it, `say` already
+returns the transcript's own words, which are exactly the numbers `--words` exists to doubt.
+
+`wordsFrom: "fresh-transcription"` marks the array as measured rather than read, so two
+contradictory numbers for the same word are always distinguishable. The `transcript is not
+word-level` warning never fires alongside it: those cues did not come from that transcript.
+
+The window rules still hold. Ask for the span you doubt, not a slice — a fragment under a couple
+of seconds transcribes as noise here exactly as it does everywhere else, and word timings over
+noise are noise with decimal places.
 
 A window with **no words but real level** is the case worth stopping on. Something is audible
 that the transcript never saw, which is what `vcut nonspeech` exists to find — see

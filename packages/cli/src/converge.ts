@@ -89,6 +89,46 @@ export const containsPhrase = (text: string, phrase: string): boolean => {
 export const firstClear = (probes: Probe[]): Probe | null =>
   probes.find((probe) => !probe.contains) ?? null
 
+/**
+ * The near edge, which this command does not measure and does not need its own instrument for.
+ *
+ * converge answers the far edge: where the repeated wording stops coming back. The cut ends
+ * earlier than that, at the first word of the telling being kept, and nothing here can say
+ * where that word starts — every probe is a window whose own start was chosen by the stepping,
+ * so its text begins where the loop happened to open it rather than where the speaker did.
+ * A run needing that number bisected it by hand with six to eight shrinking `--transcribe`
+ * windows.
+ *
+ * `say --transcribe --words` measures it directly: one transcription of the span between the
+ * last window carrying the phrase and the first clear one, returning every word with its
+ * absolute start. That makes a second command here redundant — the near edge is a word
+ * boundary, and word boundaries have an instrument now. What was missing was not a measurement
+ * but the pointer to it, so this emits the exact call with this run's own numbers in it.
+ *
+ * Span rather than point: the answer sits somewhere between the two edges, and a window that
+ * covers both is the one a transcriber can place words in. Language rides along because the
+ * probes were transcribed with it and the arbiter has to hear the same language they did.
+ */
+export const nearEdgeHint = (
+  media: string,
+  lastWithPhraseMs: number | null,
+  boundaryMs: number | null,
+  language: string | undefined,
+): Array<{ question: string; verb: string }> => {
+  if (lastWithPhraseMs === null || boundaryMs === null) {
+    return []
+  }
+  const from = (lastWithPhraseMs / 1000).toFixed(2)
+  const through = (boundaryMs / 1000).toFixed(2)
+  const lang = language === undefined ? '' : ` --lang ${language}`
+  return [
+    {
+      question: 'where exactly does the telling you are keeping start (the near edge)',
+      verb: `vcut say ${media} --transcribe --words --at ${from} --through ${through}${lang}`,
+    },
+  ]
+}
+
 // transcribeWindow lives in transcribe-window.ts now, shared with say --transcribe and
 // nonspeech --verify: cut a clip, run trx --preset verbatim over it, read the text back.
 const transcribe = (
@@ -161,6 +201,12 @@ export const convergeCommand = async (argv: string[]): Promise<void> => {
   const clear = firstClear(probes)
   const lastWithPhrase = [...probes].reverse().find((probe) => probe.contains) ?? null
   const mode = resolveMode(argv, Boolean(process.stdout.isTTY))
+  const next = nearEdgeHint(
+    resolved,
+    lastWithPhrase === null ? null : lastWithPhrase.atMs,
+    clear === null ? null : clear.atMs,
+    value('--lang'),
+  )
 
   if (mode === 'human') {
     const lines = [heading('converge'), line('phrase', phrase)]
@@ -188,6 +234,12 @@ export const convergeCommand = async (argv: string[]): Promise<void> => {
           `read the line above: the cut ends where that telling starts, nearer ${lastWithPhrase?.atMs ?? clear.atMs}ms than ${clear.atMs}ms`,
         ),
       )
+      // The far edge is measured; the near edge is not, and estimating it off a probe's own
+      // start is what a hand bisection was already doing badly. Name the command that measures
+      // it rather than leaving the reader to derive the span.
+      for (const hint of next) {
+        lines.push(nextStep(hint.verb))
+      }
     }
     console.log(lines.join('\n'))
     return
@@ -212,6 +264,11 @@ export const convergeCommand = async (argv: string[]): Promise<void> => {
     lastWithPhraseText: lastWithPhrase === null ? null : lastWithPhrase.text,
     means:
       'boundaryMs is the far edge of what is safe to remove; the cut usually ends nearer lastWithPhraseMs, where the telling you keep begins',
+    // lastWithPhraseMs is an estimate of the near edge, not a measurement of it: it is where a
+    // probe window happened to open, not where the surviving line starts. say --transcribe
+    // --words over the span between the two edges measures that word boundary directly, which
+    // is the step a run hand-bisected with six to eight shrinking windows.
+    next,
     probes,
   })
   if (clear === null) {

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { containsPhrase, firstClear, normalise } from '../src/converge.ts'
+import { containsPhrase, firstClear, nearEdgeHint, normalise } from '../src/converge.ts'
 
 describe('containsPhrase', () => {
   // The case this command exists for: three runs cut the same retake about 1772ms short, each
@@ -77,5 +77,49 @@ describe('the two boundaries', () => {
     expect(Math.abs(61_192 - (lastWith?.atMs ?? 0))).toBeLessThan(
       Math.abs(61_192 - (clear?.atMs ?? 0)),
     )
+  })
+})
+
+// converge measures the far edge and can only estimate the near one: lastWithPhraseMs is where
+// the stepping happened to open a window, 308ms off on the case above. The near edge is a word
+// boundary, so say --transcribe --words measures it directly rather than a second command here
+// re-deriving it. What was missing was the pointer, not the measurement.
+describe('nearEdgeHint', () => {
+  test('names the span between the two edges, in seconds', () => {
+    const [hint] = nearEdgeHint('/tmp/source.mp4', 61_500, 62_000, 'es')
+    expect(hint?.verb).toContain('--transcribe --words')
+    expect(hint?.verb).toContain('--at 61.50')
+    expect(hint?.verb).toContain('--through 62.00')
+  })
+
+  test('carries the language the probes were transcribed with', () => {
+    const [hint] = nearEdgeHint('/tmp/source.mp4', 61_500, 62_000, 'es')
+    expect(hint?.verb).toContain('--lang es')
+  })
+
+  test('leaves --lang off when none was given, rather than inventing one', () => {
+    const [hint] = nearEdgeHint('/tmp/source.mp4', 61_500, 62_000, undefined)
+    expect(hint?.verb).not.toContain('--lang')
+  })
+
+  test('names the media the probes were read from', () => {
+    const [hint] = nearEdgeHint('/tmp/source.mp4', 61_500, 62_000, 'es')
+    expect(hint?.verb).toContain('/tmp/source.mp4')
+  })
+
+  // With no boundary there is no span to measure, and a hint pointing at half a range would be
+  // worse than none: the near edge is only answerable between two known edges.
+  test('is empty when the phrase never stopped recurring', () => {
+    expect(nearEdgeHint('/tmp/source.mp4', 61_500, null, 'es')).toEqual([])
+  })
+
+  test('is empty when no window ever carried the phrase', () => {
+    expect(nearEdgeHint('/tmp/source.mp4', null, 62_000, 'es')).toEqual([])
+  })
+
+  test('asks a question, since a bare command does not say what it answers', () => {
+    const [hint] = nearEdgeHint('/tmp/source.mp4', 61_500, 62_000, 'es')
+    expect(hint?.question.length).toBeGreaterThan(0)
+    expect(hint?.question).toContain('near edge')
   })
 })

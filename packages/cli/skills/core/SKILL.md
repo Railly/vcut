@@ -155,6 +155,20 @@ dot paths; `--jq` does the structural work — filter a `nonspeech` list to the
 vcut nonspeech cut.wav --verify --jq '.spans[] | select(.reading == "vocalization-suspect")'
 ```
 
+**`say --transcribe --words` measures a word boundary, so never bisect one by hand.** When the
+transcript and a re-transcribed window disagree about where a word starts — a fused region, a
+retake's near edge, any boundary worth doubting — that is the arbiter: it extracts exactly
+`--at`..`--through`, re-transcribes it with word-level cues, and returns every word in absolute
+source milliseconds, one transcription for the whole span. The alternative is what a run
+actually did: six to eight `--transcribe` calls at shrinking windows, then raw `ffmpeg -ss/-t`
+plus a fresh transcription to build its own ground truth, about a third of its budget for one
+number. Shrinking a window does not converge on the answer, because a short window reads like a
+clean start wherever you open it.
+
+```bash
+vcut say source.mp4 --transcribe --words --at 550.0 --through 553.0 --lang es
+```
+
 **`semantic merge` combines proposal files, so never merge JSON by hand.** Two rounds of
 proposals, re-sorted by `startMs`, in one call:
 
@@ -272,8 +286,10 @@ Run `vcut schema <name>` for the field-by-field contract instead of parsing `--h
 | What in this file is worth cutting? | `detect <input>` |
 | What is said at a position, from the existing transcript? | `say --transcript ... --at <s>` |
 | What is actually said there, when the transcript may have averaged it away? | `say --transcribe --at <s>` |
+| Where exactly does a word start, when those two disagree? | `say --transcribe --words --at <a> --through <b>` |
 | Where exactly, at sub-second resolution, does a boundary belong? | `silences <media> --from <s> --to <s> --min 0.08` |
 | Where does a retake's boundary really fall? | `converge --phrase "..." --from <s>` |
+| Where does the telling I am keeping start (a retake's near edge)? | `say --transcribe --words` over `converge`'s two edges |
 | What audible sound does the transcript not see at all? | `nonspeech <render> --verify` |
 | What text is a semantic span about to remove? | `cut` at propose time, or `edl build` → `semanticCuts[].removedText` |
 | Did every semantic cut's join land clean, in one call? | `joins --edl <path> --render <path>` |

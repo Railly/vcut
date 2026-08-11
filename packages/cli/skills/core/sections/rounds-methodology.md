@@ -280,9 +280,19 @@ transcript shows.** Inside a fused region the cue timings are the averaged ones,
 drawn from them lands mid-repetition and leaves the final attempt whole — the cut looks right in
 the EDL and the render still says the line twice. Two runs cut the same retake: one ended at
 62792 and removed it, the other ended at 60820 and left "ah, otra vez. Y a la que conocemos"
-audible, a difference of under two seconds that decided whether the defect shipped. Find the
-anchor by re-transcribing a short window and taking the timestamp of the surviving line's first
-word, then end the cut there.
+audible, a difference of under two seconds that decided whether the defect shipped. Measure that
+anchor rather than reading it off the transcript:
+
+```bash
+vcut say source.mp4 --transcribe --words --at <lastWithPhraseMs/1000> --through <boundaryMs/1000> --lang es
+```
+
+That re-transcribes the span with word-level cues and reports every word in absolute source
+milliseconds, so the surviving line's first word arrives as a number. `converge` prints this
+call with its own two edges already filled in. Do not shrink windows toward it by hand: a run
+spent six to eight `--transcribe` calls plus a raw `ffmpeg -ss/-t` extraction on exactly this
+question, and a short window reads like a clean start wherever it opens, so the bisection gets
+more confident without getting closer.
 
 **A proposal's boundaries do not have to dodge the drift warning.** `edl build` clamps every
 boundary to measured silence before it writes the EDL, so a cut named at a position a drifting

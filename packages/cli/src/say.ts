@@ -23,13 +23,14 @@ import { run } from './exec.ts'
 import { masterToSource, placements } from './locate.ts'
 import { emitJson, heading, line, type Mode, resolveMode, UsageError } from './output.ts'
 import type { Edl } from './render-edl.ts'
-import { transcribeWindow } from './transcribe-window.ts'
+import { transcribeWindow, transcribeWindowWords } from './transcribe-window.ts'
 
 const HELP = `vcut say - read back what is spoken at a position
 
 Usage:
   vcut say <media> --transcript <path> --at <seconds> [flags]
   vcut say <media> --transcribe --at <seconds> [flags]
+  vcut say <media> --transcribe --words --at <a> --through <b> [flags]
   vcut say <media> --transcript <path> --positions <s1,s2,...> [flags]
   vcut say <media> --transcribe --positions <s1,s2,...> [flags]
 
@@ -37,6 +38,10 @@ Flags:
   --transcript <path>   Word-level SRT to read from (required unless --transcribe)
   --transcribe          Ask the audio instead of the transcript: cuts the window and runs
                         trx over it. The answer a fused region cannot give from text
+  --words               With --transcribe: return every word of that span with its absolute
+                        startMs/endMs in the source, measured now rather than read. THE
+                        arbiter when --transcript and --transcribe disagree. Costs one real
+                        transcription per call
   --lang <code>         Language passed to the transcriber (--transcribe only)
   --at <sec>            Position to read around, or the start of a range with --through
   --through <sec>       Read everything from --at to here, instead of a window around --at
@@ -57,7 +62,14 @@ model's guess; the transcript already knows.
 one session swept 18 classifier spans that way. locate --sources answers a list for the same
 reason. With --transcribe, positions transcribe one at a time, never concurrently: each call
 loads a Whisper model into memory, and racing several is the kind of load that chokes a
-machine already carrying a video editor.`
+machine already carrying a video editor.
+
+--words is the fallback when the two modes above disagree about where a word is. Reading the
+transcript averages inside a fused region; --transcribe alone returns prose with no timings,
+which is why one run bisected a single boundary with six to eight shrinking windows before
+extracting the span by hand. This extracts the span once, re-transcribes it with word-level
+cues, and offsets every timing back to absolute source milliseconds, so the answer arrives as
+numbers. Ask it for the span you doubt, not for a slice: the window rules above still hold.`
 
 export type Spoken = {
   atMs: number
@@ -154,6 +166,10 @@ export type PositionAnswer = {
   windowMs: number
   text: string
   words: Array<{ text: string; startMs: number; endMs: number }>
+  // Where the words came from, present only when it is not the default. An agent holding two
+  // contradictory numbers for the same word needs to know which one was measured just now and
+  // which one a whole-file pass averaged, and a words array alone cannot say.
+  wordsFrom?: 'transcript' | 'fresh-transcription'
   peakDb: number | null
   meanDb: number | null
   segment?: { id: string; sourceMs: number } | null
@@ -171,6 +187,12 @@ type SharedOptions = {
   mediaPath: string | undefined
   transcript: { words: Word[]; wordLevel: boolean } | null
   transcribe: boolean
+  // --words rides on --transcribe rather than standing as a third mode: the question it
+  // answers ("what does the audio itself say here") is already --transcribe's, and what
+  // changes is the resolution of the answer — cues instead of prose. Naming it after the flag
+  // every transcript in this manual is generated with (trx transcribe --words) keeps one word
+  // meaning one thing across the CLI and the transcriber it shells out to.
+  words: boolean
   lang: string | undefined
   edl: Edl | null
 }
@@ -203,26 +225,56 @@ const answerPosition = async (
     segment = hit === null ? null : { id: hit.placement.id, sourceMs: hit.sourceMs }
   }
 
-  const heard = options.transcribe
-    ? await transcribeWindow(
-        resolve(options.mediaPath as string),
-        startMs,
-        endMs,
-        options.lang,
-        'vcut-say',
-      )
-    : null
+  // With --words the same transcription that produces the text also produces the cues, so
+  // asking for both is one trx call rather than two. transcribeWindowWords has already
+  // offset every cue from clip time to absolute source time.
+  //
+  // Resolved inside the branch, never above it: a transcript-only call is allowed to carry no
+  // media at all (there is nothing to measure a level on and nothing to transcribe), and
+  // resolving undefined throws before any of that is reached. Both --transcribe paths already
+  // guarantee a media path upstream.
+  const fresh =
+    options.transcribe && options.words
+      ? await transcribeWindowWords(
+          resolve(options.mediaPath as string),
+          startMs,
+          endMs,
+          options.lang,
+          'vcut-say',
+        )
+      : null
+  const heard =
+    fresh !== null
+      ? fresh.text
+      : options.transcribe
+        ? await transcribeWindow(
+            resolve(options.mediaPath as string),
+            startMs,
+            endMs,
+            options.lang,
+            'vcut-say',
+          )
+        : null
   const text = heard ?? words.map((word) => word.text).join(' ')
+  const reported = fresh === null ? words : fresh.words
 
   return {
     atMs,
     windowMs,
     text,
-    words: words.map((word) => ({ text: word.text, startMs: word.startMs, endMs: word.endMs })),
+    words: reported.map((word) => ({
+      text: word.text,
+      startMs: word.startMs,
+      endMs: word.endMs,
+    })),
+    ...(fresh === null ? {} : { wordsFrom: 'fresh-transcription' as const }),
     peakDb: level.peakDb,
     meanDb: level.meanDb,
     ...(options.edl === null ? {} : { segment }),
-    ...(options.transcript === null || options.transcript.wordLevel
+    // A transcript that is not word-level is only a problem for words this command read out
+    // of it. With --words the cues come from a transcription made here, so the cached
+    // transcript's own resolution has no bearing on the answer.
+    ...(fresh !== null || options.transcript === null || options.transcript.wordLevel
       ? {}
       : { warning: 'transcript is not word-level' }),
   }
@@ -245,6 +297,15 @@ const printHuman = (answer: PositionAnswer): void => {
   // the transcript never saw, which is what the classifier exists to catch.
   if (answer.text === '' && answer.peakDb !== null && answer.peakDb > -40) {
     lines.push(line('note', 'audible, but no words here. Run the non-speech classifier'))
+  }
+  // The words are the answer with --words, not a detail of it: the question being asked is
+  // where one of them starts. Printing only the joined text would leave the human mode unable
+  // to answer what the JSON mode was extended for.
+  if (answer.wordsFrom === 'fresh-transcription') {
+    lines.push(line('words', 'measured now, absolute source ms'))
+    for (const word of answer.words) {
+      lines.push(line(`${word.startMs}-${word.endMs}`, word.text))
+    }
   }
   if (answer.segment !== undefined && answer.segment !== null) {
     lines.push(line('segment', `${answer.segment.id}, source ${seconds(answer.segment.sourceMs)}`))
@@ -279,11 +340,20 @@ export const sayCommand = async (argv: string[]): Promise<void> => {
   }
 
   const transcribe = argv.includes('--transcribe')
+  const words = argv.includes('--words')
   if (transcriptPath === undefined && !transcribe) {
     throw new UsageError(HELP)
   }
   if (transcribe && mediaPath === undefined) {
     throw new UsageError('--transcribe needs the media to read from')
+  }
+  // --words without --transcribe would silently return the transcript's own cues, which the
+  // caller already gets by default and which are exactly the numbers this flag exists to
+  // doubt. Saying so beats answering a different question than the one asked.
+  if (words && !transcribe) {
+    throw new UsageError(
+      "--words measures word timings by re-transcribing, so it needs --transcribe. Without it, say already returns the transcript's own words",
+    )
   }
   const resolvedTranscript = transcriptPath === undefined ? undefined : resolve(transcriptPath)
   if (resolvedTranscript !== undefined && !existsSync(resolvedTranscript)) {
@@ -307,6 +377,7 @@ export const sayCommand = async (argv: string[]): Promise<void> => {
     mediaPath,
     transcript,
     transcribe,
+    words,
     lang: flagValue(argv, '--lang'),
     edl,
   }

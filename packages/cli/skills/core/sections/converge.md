@@ -35,6 +35,31 @@ the final telling and end the cut there. `edl build` clamps to measured silence,
 lands it correctly, but the span you propose should already name the line you mean to keep
 rather than the point where the words stopped repeating.
 
+### Measuring the near edge, instead of estimating it
+
+**`converge` measures the far edge and does not measure the near one.** `lastWithPhraseMs` is
+the closer of the two numbers it reports, but it is still an estimate: it is where the stepping
+happened to open a window, not where the speaker started the line. On the case measured it sat
+308ms off the correct boundary against 808ms for the far edge — better, and still off.
+
+The near edge is a word boundary, and word boundaries have an instrument. One call over the
+span between the two edges measures it:
+
+```bash
+vcut say source.mp4 --transcribe --words --at <lastWithPhraseMs/1000> --through <boundaryMs/1000> --lang es
+```
+
+Every word in that span comes back with its absolute start and end in the source; the first word
+of the surviving telling is where the cut ends. `converge` emits that exact call, with this
+run's own numbers already in it, as `next` in its JSON and as a Next line in `--human` — there
+is nothing to derive.
+
+**Do not hand-bisect this.** The run that needed both edges stepped `say --transcribe` through
+six to eight shrinking windows to find one start, which is the procedure `--words` replaces:
+a short window returns a sentence that reads like a clean start wherever you open it, so
+shrinking the window makes the text more confident and no more correct. See
+`--section say` for what that failure cost and why it recurs.
+
 Both cuts were rendered and listened to. Ending at 61192ms keeps "Y a la que conocemos, ya
 llegamos a mil miembros". Ending at 62000ms buys 0.7 seconds and leaves "Conocemos, ya llegamos
 a mil miembros" — the line beheaded, and audibly wrong. Neither transcript reads as broken; the
