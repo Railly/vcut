@@ -26,6 +26,7 @@ import {
   cachedTranscriptPath,
   deriveRefs,
   openSession,
+  pointCachedTranscriptAtSession,
   writeCachedDetect,
   writeRefs,
 } from './session.ts'
@@ -229,6 +230,10 @@ export const openCommand = async (argv: string[]): Promise<void> => {
   }
   const transcriptPresent =
     args.transcriptPath !== null || existsSync(cachedTranscriptPath(session.dir))
+
+  // Point the cached detect.json's transcript.path at the session's own copy, once, here —
+  // see pointCachedTranscriptAtSession's own doc for why this replaces per-reader patching.
+  report = pointCachedTranscriptAtSession(session.dir, report)
 
   const blocks = deriveRefs(report.silences, report.durationMs)
   const refs = writeRefs(session.dir, args.preset, blocks)

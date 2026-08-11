@@ -28,8 +28,10 @@
  * `peek` themselves, read once here so a caller does not have to run a second command to find
  * out what they are about to remove.
  *
- * No lockfile. `cut` and `commit` both read-modify-write `proposals.json` the way every other
- * session file already does; concurrent-writer safety is B-V4's B7 lock, not this slice's.
+ * Proposing and `--drop` take the session's advisory lock (B-V4, B7-Q1) for the duration of
+ * the write; `--list` never locks, since it only reads. A second writer on the same session
+ * gets `SessionLockedError` naming the holder's pid, verb, and age rather than a race on
+ * `proposals.json`.
  */
 
 import { existsSync, readFileSync } from 'node:fs'
@@ -41,6 +43,7 @@ import { resolveRef } from './peek.ts'
 import { wordsInWindow } from './say.ts'
 import type { Proposal } from './semantic.ts'
 import {
+  acquireLock,
   appendProposal,
   cachedTranscriptPath,
   checkSession,
@@ -49,6 +52,7 @@ import {
   type RefBlock,
   readProposalsFile,
   readRefs,
+  releaseLock,
   type SessionProposal,
 } from './session.ts'
 
@@ -76,9 +80,12 @@ never opened is a caller mistake, not something this command creates on the fly.
 earlier generation is a usage error naming the ref and the session's current gen, the same
 enforcement peek already applies.
 
-Appends the proposal to the session's proposals.json (created on first cut). No lockfile: two
-writers on the same session is B-V4. Next: vcut peek to hear the span, vcut commit when done
-proposing.`
+Appends the proposal to the session's proposals.json (created on first cut). Proposing and
+--drop take the session's advisory lock for the duration of the write and release it after;
+--list never locks, since it only reads. A session already locked by another live process
+fails with an error naming its pid, verb, and age rather than racing the write — see
+vcut session gc --help for how a stale lock (dead pid) clears on the next attempt by anyone.
+Next: vcut peek to hear the span, vcut commit when done proposing.`
 
 const BOOLEAN_FLAGS = new Set(['--json', '--human', '--help', '--list'])
 
@@ -271,7 +278,13 @@ export const cutCommand = async (argv: string[]): Promise<void> => {
     if (!Number.isInteger(index)) {
       throw new UsageError(`--drop takes a 0-based integer index, got ${dropArg}`)
     }
-    const remaining = dropProposal(session.dir, index)
+    acquireLock(session.dir, 'cut --drop')
+    let remaining: SessionProposal[]
+    try {
+      remaining = dropProposal(session.dir, index)
+    } finally {
+      releaseLock(session.dir)
+    }
     if (mode === 'json') {
       emitJson({
         version: 1,
@@ -323,7 +336,12 @@ export const cutCommand = async (argv: string[]): Promise<void> => {
     removedText,
     proposedAt: new Date().toISOString(),
   }
-  appendProposal(session.dir, proposal)
+  acquireLock(session.dir, 'cut')
+  try {
+    appendProposal(session.dir, proposal)
+  } finally {
+    releaseLock(session.dir)
+  }
 
   const hints = cutNext(resolvedMedia, span)
   if (mode === 'json') {
