@@ -11,7 +11,7 @@ vcut <input>                       Shorthand for: vcut detect <input>
 vcut detect <input> [flags]        Find silences and review candidates
 vcut suspects --detect <path>      Where to look first, ranked, without reading the file
 vcut edl build [flags]             Turn a detect report into a draft EDL
-vcut semantic export|check|review  Hand the transcript to a model, take proposals back
+vcut semantic export|check|review|merge  Hand the transcript to a model, take proposals back
 vcut render --edl <path> [flags]   Render an EDL to video
 vcut locate --edl <path> [flags]   Translate between master time and source time
 vcut audit --edl <path> --render <path>  Check a render against the EDL it came from
@@ -22,12 +22,12 @@ vcut converge <media> [flags]      Find where a repeated phrase stops coming bac
 vcut nonspeech <render> [--verify] Find audible sound that is not language
 vcut open <media> [flags]          Open or resume a session, map its blocks with stable refs
 vcut peek <media> (--ref|--at)     The four views of a position, aligned, disagreement named
-vcut cut <media> --refs|--span     Propose a semantic cut against a session, see what it removes
+vcut cut <media> --refs|--span|--start-ms/--end-ms  Propose a semantic cut against a session
 vcut commit <media> [flags]        Build + render a session's proposals into a draft EDL
 vcut rounds <media> [--diff N M]   A session's committed rounds, diffed between two
 vcut session list|gc [flags]       See what a session store holds, and clear it explicitly
 vcut schema [name]                 Print the JSON contract for a command
-vcut skills list|get [name]        Read the bundled agent manual
+vcut skills list|get|path [name]   Read the bundled agent manual, or one section of it
 vcut doctor                        Check external dependencies
 vcut init [--no-skills]            Install everything a first run needs
 vcut setup classifier              Fetch the optional non-speech classifier
@@ -35,8 +35,9 @@ vcut version                       Print the version
 ```
 
 Global flags: `--json` forces machine output, `--human` forces the summary, `--fields <a.b,c,d>`
-projects JSON output to those dot paths (comma separated, implies `--json`), `--help` works on
-any command.
+projects JSON output to those dot paths (comma separated, implies `--json`), `--jq <expr>`
+filters or reshapes JSON output with a jq-subset expression (implies `--json`, mutually
+exclusive with `--fields`), `--help` works on any command.
 
 Every JSON output carries `vcutVersion`, the version of the binary that produced it, so an
 agent working from a cached manual can tell the tool changed underneath it. Selected outputs
@@ -52,6 +53,22 @@ not exist becomes a `fieldErrors` entry naming it rather than failing the call, 
 made roughly 40 `python3 -c` calls extracting 2-3 fields each from full payloads it had already
 read, with `jq` on `PATH` the whole time — a native flag is part of the output contract,
 discoverable in `--help` and `schema`, rather than a second syntax recomposed per call.
+
+**`--jq <expr>` does the structural work `--fields` cannot.** `--fields` projects to dot paths;
+it has no way to filter, select, or sort. `--jq` adds field access, array iteration, `select()`
+with comparisons, and `sort_by()`, so a payload can be filtered or its arrays reordered without
+leaving the call. It exists for the same reason `--fields` does: a caller should never reach for
+`python3 -c` to filter or merge a JSON payload vcut already produced.
+
+```bash
+vcut cut recording.mp4 --list --jq '.proposals[] | select(.kind == "repetition")'
+vcut rounds recording.mp4 --diff --jq '.semanticCuts | sort_by(.startMs)'
+```
+
+**This is a documented subset of jq, not jq itself.** No variables, no user functions, no
+`reduce`/`foreach`, no string interpolation, no regex, no object or array construction (`{...}`
+or `[...]`). An expression outside the subset throws naming exactly what was not understood,
+rather than silently returning something close. The full subset listing ships in `vcut --help`.
 
 ### vcut detect
 
@@ -122,6 +139,9 @@ vcut edl build --detect detect.json --output master.mp4 --campaign my-video
 | `--crop <spec>` | — | `top\|bottom\|left\|right:<fraction>`, or `x,y,width,height` |
 | `--semantic <path>` | — | Model proposals from `vcut semantic` |
 | `--audio-offset <ms>` | `0` | Shift the separate audio; positive delays it |
+| `--report-json <path>` | — | Write the full JSON build report to this path, regardless of stdout mode |
+
+**`--report-json` composes with `--human`.** Without it, a build that prints the readable summary on stdout has no JSON report to hand `vcut joins --report`, so getting both used to mean running the build twice. `--report-json <path>` writes the same JSON `edl build` would otherwise print — the shape `vcut commit` already writes as `rounds/round-N/report.json` — to disk in one call, so one build produces both the summary a human reads and the report a later `joins` call needs.
 
 **`--crop` frames the whole edit at once**, which is why it lives here and not per segment. A traditional editor makes you set the frame per clip, so remembering the menu bar after cutting means redoing every segment by hand. Here the crop is one decision applied to all of them, and changing it never touches a cut boundary. Fractions, not pixels, so the same EDL survives a source at another resolution.
 
@@ -206,20 +226,25 @@ The four views of one position, aligned in a single call: what the session's cac
 ```bash
 vcut cut recording.mp4 --refs b202..b207 --kind tangent --reason "sneeze, speaker says cut it"
 vcut cut recording.mp4 --span 0..13.25 --kind tangent --reason "pre-roll before the take begins"
+vcut cut recording.mp4 --start-ms 61192 --end-ms 62000 --kind repetition --reason "retake boundary"
 vcut cut recording.mp4 --list
 vcut cut recording.mp4 --drop 0
 ```
 
-Proposes a semantic cut against a session's own refs, and shows what it removes at propose time rather than after a build. `--refs` takes a single ref or an inclusive range (`b042..b044`, from the first ref's own start to the second's own end); `--span <startS>..<endS>` is the escape hatch for a raw span when no ref fits. Mutually exclusive.
+Proposes a semantic cut against a session's own refs, and shows what it removes at propose time rather than after a build. `--refs` takes a single ref or an inclusive range (`b042..b044`, from the first ref's own start to the second's own end); `--span <startS>..<endS>` is the escape hatch for a raw span when no ref fits; `--start-ms <n> --end-ms <n>` is a third, equally first-class way in, taking the raw milliseconds `say`, `silences`, and `semantic export` already emit. All three are mutually exclusive.
 
 | Flag | What it does |
 | --- | --- |
 | `--refs <ref[..ref]>` | A block ref or an inclusive range from this session's `refs.json` |
 | `--span <s..s>` | A raw span in seconds when no ref fits |
+| `--start-ms <n>` | Raw span start in milliseconds, the unit `say`/`silences`/`semantic export` emit. Requires `--end-ms`. Mutually exclusive with `--refs` and `--span` |
+| `--end-ms <n>` | Raw span end in milliseconds. Requires `--start-ms` |
 | `--kind <kind>` | Required: `false-start` \| `repetition` \| `tangent` \| `filler` |
 | `--reason <text>` | Required, non-empty. Read by a human deciding whether to approve |
 | `--list` | Print the session's accumulated proposals with their `removedText` |
 | `--drop <index>` | Remove the proposal at this 0-based index |
+
+**`--start-ms`/`--end-ms` is not a lesser path than `--refs`.** It takes the same session-tracked route: the proposal accumulates in `proposals.json`, shows in `vcut rounds --diff`, and echoes `removedText` at propose time the same as a ref-based cut. It exists because a finding born in milliseconds — from `say`, `silences`, or `peek` — previously had no way into a session's refs without converting to seconds by hand for `--span`, and the gap was wide enough that agents abandoned the session entirely and hand-built EDLs through the stateless pipeline instead. Bounds are validated against the session's own source duration, and an inverted range is a usage error rather than a silent swap.
 
 The session must already exist — `cut` never creates one, and a ref from an earlier generation is a usage error naming the ref and the session's current `gen`, the same enforcement `peek` already applies. `removedText` is quoted from the session's cached transcript, not re-transcribed. Proposals accumulate in the session's `proposals.json`; `--list`/`--drop` read and edit that list without hand-editing JSON.
 
@@ -317,15 +342,20 @@ vcut edl build --detect detect.json --semantic proposals.json ...
 
 | Subcommand | What it does |
 | --- | --- |
-| `export --detect <path>` | Numbered lines with timings, rebuilt into words and split on measured pauses |
+| `export --detect <path>` | Numbered lines with timings, rebuilt into words and split on measured pauses. Every line carries `nearestRef`, the session's block ref closest to that line's own `startMs` |
 | `check --proposals <path> --detect <path>` | Validates proposals without building |
 | `check --review <path>` | Also fails the round while a repeated phrase goes unnamed |
 | `review --edl <path> --detect <path>` | Reads an EDL back: what survives, and where nobody looked |
+| `merge <a.json> <b.json> [more.json...] [--out <path>]` | Folds two or more proposal files into one, dropping spans identical on all four fields, re-sorted by `startMs` |
 | `--terse` (export, review) | Omits the instructions block, identical every call and 72% of one measured payload |
 
 A proposal is `{startMs, endMs, kind, reason}` where `kind` is `false-start`, `repetition`, `tangent`, `filler`, or `non-speech`. Every semantic cut lands as `semanticRisk: material` on the segments around it, so a reviewer can find them without reading all of them. Measured against each proposal's **merged** span (after it absorbs a neighbouring silence cut or another proposal), not the raw span proposed — a segment touching the wider, real cut boundary reads `material` even when its edge sits past where the raw proposal ended.
 
+**`nearestRef` closes the loop back into a session.** A proposal written from `export` goes straight into `vcut cut --refs <nearestRef>` instead of retyping the line's raw `startMs`/`endMs` — the same lookup `vcut open` already attaches to suspects. When no ref lands close enough, `--start-ms`/`--end-ms` on `vcut cut` takes the line's own milliseconds directly.
+
 Nothing malformed passes: an inverted span, a span past the end of the source, an unknown kind, or an empty `reason` is refused by index and aborts the build. A proposal that vanished between check and build would read as the model choosing not to cut there, which is worse than a refusal.
+
+**`merge` combines two or more rounds of proposals into one.** Every proposal file has the same shape, so folding a second round's `proposals.json` into the first is a structural operation — exact duplicates on `{startMs, endMs, kind, reason}` collapse to one, and the result is re-sorted by `startMs` before it goes anywhere near `edl build`. `--out <path>` writes the merged array there, the same shape as an input file, instead of printing the summary object to stdout.
 
 **`check --review` is the gate on a round.** Hand it the JSON `review` wrote and it exits **2** while any phrase in `repeated` goes unmentioned by every proposal reason. Naming is the bar, not agreeing: keeping a repeat is often right, and saying why in a reason puts the decision where a human approving the EDL can find it. A phrase still present in the render is reported as `survivingRepeats` and does **not** fail the check, because a callback repeats on purpose and nothing counting words can tell one from a retake. When repeats are named and kept, the status reads `valid-with-kept-repeats` and the exit is 0: a finished round, not a pending one.
 
@@ -541,11 +571,21 @@ What gets installed is a **thin stub**. It carries the description an agent matc
 
 ```bash
 vcut skills list
-vcut skills get core     # the usage guide, raw markdown on stdout
-vcut skills path
+vcut skills get core                  # the small, always-loaded usage guide, raw markdown on stdout
+vcut skills get core --section cut    # one deep-dive section instead of the whole manual
+vcut skills path                      # filesystem path to the skills directory (or one skill's directory)
 ```
 
 The guide ships inside the npm package and is served by the CLI itself, so it always matches the installed version. A copy pasted into an agent's config would go stale the moment you upgrade; a stub that points at `skills get` cannot.
+
+**The manual is sectioned.** `vcut skills get core` used to serve one document, every command's full detail concatenated, whether the clip being edited needed any of it or not — a fixed ~35-40k token tax paid up front regardless of clip length. `core` is now small: the flow, the invariants, and enough to run a first edit. Everything past that — per-command detail, the methodology for working a round, why the classifier needs a model and not a statistic — lives in a section, loaded only when a caller actually needs it:
+
+```bash
+vcut skills get core --section cut     # ref ranges, --start-ms, --span, --list/--drop
+vcut skills get core --section render  # audio-only, progress, loudness, reproducibility
+```
+
+`vcut skills list` prints the available sections with a one-line blurb for each — what question it answers, not just its name, since `cut` or `joins` alone does not tell a caller whether their question is inside it. A section name that does not exist is refused with the list of ones that do, rather than a bare error.
 
 ### vcut doctor
 

@@ -6,7 +6,7 @@ order: 1
 
 ## Getting started
 
-vcut turns a raw recording into a clean master in three steps, and stops at every point where a human should look.
+vcut turns a raw recording into a clean master in four steps, and stops at every point where a human should look.
 
 ```bash
 npm install -g @crafter/vcut
@@ -31,7 +31,7 @@ vcut init                # installs everything a first run needs, ffmpeg include
 precondition check in a script. `vcut doctor` reruns the same check afterwards, any time
 something looks wrong.
 
-### The three steps
+### The four steps
 
 ```bash
 # 1. Find what is worth cutting. Writes candidates, decides nothing.
@@ -40,11 +40,19 @@ vcut detect recording.mp4 --preset clean > detect.json
 # 2. Draft an edit decision list. Every segment is proposed.
 vcut edl build --detect detect.json --output master.mp4 --campaign my-video
 
-# 3. Preview it, watch it, and only then render a master.
+# 3. Iterate on the audio, which is where the decisions are.
+vcut render --edl edl.json --audio-only --output cut.wav
+
+# 4. Preview it, watch it, and only then render a master.
 vcut render --edl edl.json --mode preview
 ```
 
-The middle step is not optional plumbing. The EDL is the artifact you read and disagree with before anything gets rendered.
+The EDL from step 2 is not optional plumbing. It is the artifact you read and disagree with before anything gets rendered.
+
+Step 3 exists because a round of edits asks audio questions, and rendering the picture to
+answer them costs about a hundred times the wall clock: measured on one 22-segment EDL,
+**0.25s against 31.8s** for the same cuts. See [Iterate on audio](#iterate-on-audio) in the
+cutting loop for why this is where most of a round's work actually happens.
 
 ### Editing across several calls
 
@@ -60,8 +68,11 @@ vcut commit recording.mp4 --output master.mp4 --campaign my-video         # buil
 
 `open` caches the same detect pass step 1 above runs, and turns its silences into stable block
 refs (`b001`, `b002`, ...) a later `cut` points at by name instead of a hand-typed millisecond
-pair. The three-step quickstart above is still correct for a one-off cut with no session; `open`
-is where an edit that is going to take more than one round starts instead.
+pair. The four-step quickstart above is the escape hatch: correct for a one-off cut with no
+second round, or a script with no long-lived working directory. `open` is where an edit that is
+going to take more than one round starts instead — see
+[The stateless pipeline is an escape hatch, not an alternative](#the-stateless-pipeline-is-an-escape-hatch-not-an-alternative)
+for why the session is the default and not the quickstart above.
 
 ### Reading the summary
 
