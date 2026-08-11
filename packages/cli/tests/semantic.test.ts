@@ -779,7 +779,8 @@ describe('semanticCommand merge', () => {
       console.log = originalLog
     }
     const exitCode = process.exitCode
-    process.exitCode = originalExitCode
+    // Bun 1.3.11 ignores `process.exitCode = undefined`; only a number clears a set code.
+    process.exitCode = originalExitCode ?? 0
     return { output: JSON.parse(printed), exitCode }
   }
 
