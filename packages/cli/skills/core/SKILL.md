@@ -42,7 +42,9 @@ ran.
 | Where does a retake's boundary really fall? | `converge --phrase "..." --from <s>` |
 | Where exactly, at sub-second resolution, does a boundary belong? | `silences <media> --from <s> --to <s> --min 0.08` — the **placing** instrument, not `detect`'s **cutting** one |
 | What audible sound does the transcript not see at all? | `nonspeech <render> --verify` |
-| What text is a semantic span about to remove, before I render anything? | `edl build` → read `semanticCuts[].removedText` |
+| What text is a semantic span about to remove, before I render anything? | `edl build` → read `semanticCuts[].removedText`, or `cut` (below) to see it before you even build |
+| Propose a cut against a session, by ref, and see what it removes before building? | `cut <media> --refs b042..b044 --kind <k> --reason "..."` |
+| Build and render everything a session has accumulated, in one call? | `commit <media> --output <path> --campaign <id>` |
 | Did a proposed cut survive into the render? | `semantic review` (what remains), then `semantic check --review` (exit 2 if a named repeat is unanswered) |
 | Where in the master does a source position land, or the reverse? | `locate --master <s>` / `locate --source <s>` |
 | Did the render carry the wrong material at a join? | `audit --edl <path> --render <path>` |
@@ -60,6 +62,8 @@ ran.
 | working a long recording across several calls without re-passing paths | **open** |
 | asking what is spoken somewhere | **say** |
 | checking whether four instruments agree about one position, instead of juggling them by hand | **peek** |
+| proposing a cut against a session instead of hand-typed milliseconds | **cut** |
+| building and rendering a session's accumulated proposals in one call | **commit** |
 | checking a breath or a filler the transcript cannot see | **Non-verbal sound needs a classifier, not a statistic**, **The muletillas playbook** |
 | placing a boundary at sub-second resolution | **silences** |
 | deciding whether a cut is worth making | **semantic → How hard to cut** |
@@ -440,6 +444,124 @@ hide.
 it, and a `silences` call at fine resolution over the same span to place a boundary once the
 words are settled. Both are absent when `viewsDisagree.disagree` is `false` — nothing to
 chase on a clean read.
+
+## cut
+
+```bash
+vcut cut recording.mp4 --refs b202..b207 --kind tangent --reason "sneeze, speaker says cut it"
+vcut cut recording.mp4 --span 0..13.25 --kind tangent --reason "pre-roll before the take begins"
+vcut cut recording.mp4 --list
+vcut cut recording.mp4 --drop 0
+```
+
+Proposes a semantic cut against a session's own refs instead of a hand-typed millisecond pair,
+and shows what it removes at the moment you propose it rather than after a build. `--refs`
+takes a single ref or an inclusive range (`b042..b044`): a range runs from the first ref's own
+start to the second's own end, spanning whatever lies between — silence, another block, or
+both. Resolution reuses `peek`'s `resolveRef`, so an unknown ref or one from an earlier `gen`
+is the same usage error naming the ref and the session's current generation, not a guess. A
+reversed range (`b044..b042`) is also a usage error rather than a silent swap, since typing a
+range backwards is almost always two refs transposed.
+
+`--span <startS>..<endS>` is the escape hatch for when no ref fits — a cut that straddles what
+the detector read as one long block, or a boundary a ref's own edges do not reach. Mutually
+exclusive with `--refs`, so a call is never ambiguous about which one is driving the span.
+
+**This is the corrective the arc names directly.** The corrupted-cut class this replaces — a
+measured block mis-assigned to the wrong words, invisible until a render — cannot be written
+here: the span comes from a ref that points at a block the session already measured, not from
+a number typed while looking at a different output. `removedText` is quoted from the session's
+own cached transcript at propose time, not re-transcribed: the same words a human would see
+running `peek` themselves, read once here so proposing does not cost a second command.
+
+```
+testing-10m.mp4  proposed
+  span                    660.93-670.37s
+  kind                    tangent
+  reason                  sneeze aside — speaker says "Eso si, borra la profa"
+  removedText             que va a ser mucho mejor. Quiero estornudar. ¡Wow! Ah, perdón,
+                          estorné. Eso sí, borra la profa.
+```
+
+`kind` is required and is the same four semantic kinds the model proposal shape already uses
+(`false-start`, `repetition`, `tangent`, `filler` — `non-speech` is not a `cut` kind, since that
+class comes from the classifier, not a ref). `reason` is required and non-empty, read by a
+human deciding whether to approve, same as everywhere else in this manual.
+
+**The session must already exist.** Unlike `open` and `peek`, `cut` never creates one: cutting
+against a session nobody opened is a caller mistake, not a flow this command smooths over. The
+error names the exact `vcut open` call to run first.
+
+Proposals accumulate in the session's `proposals.json` (created on first `cut`), not in a file
+you write and pass by hand. `--list` reads them back with their `removedText`; `--drop <index>`
+removes one by its 0-based position — a human changing their mind about a proposed cut is a
+normal step, and editing that JSON by hand is exactly the friction this arc exists to remove.
+Re-adding after a drop appends at the end, not back at the dropped slot.
+
+No lockfile guards two writers on the same session here — that is `session gc`'s neighbour in
+B-V4. `cut` and `commit` both read-modify-write `proposals.json` the way every other session
+file already does, which is correct for one writer and is exactly the gap the later lock
+closes for two.
+
+## commit
+
+```bash
+vcut commit recording.mp4 --output master.mp4 --campaign my-video
+vcut commit recording.mp4 --output master.mp4 --campaign my-video --video
+```
+
+Builds the EDL from a session's cached detect report and its accumulated proposals, then
+renders it — the whole loop's build-and-listen step in one call, once a session has proposals
+worth building.
+
+**The build is byte-identical to running `edl build` by hand.** `commit` calls the exact same
+seam `edl build` itself calls internally rather than a second implementation of the
+merge/clamp/invert pipeline, so there is nothing here that can drift from what the standalone
+command does on the same detect report and proposals. A session's cached detect report keeps
+its own transcript path patched to the session's own cached copy before the build runs — the
+same thing `peek` already does, and for the same reason: the path a detect report remembers can
+move or vanish, and the session's own copy is the one guaranteed to still be there.
+
+**The EDL is written to the current directory by default (`./edl.json`), never only inside the
+session.** The session is disposable cache; the EDL is the artefact a human approves, and it
+lives where they wrote it, exactly as `open`'s own manual entry already says about everything
+else the session holds.
+
+**`--audio-only` is the default render**, matching the manual's own per-round rule above:
+every round's question is about sound, and rendering the picture for it costs 100x the wall
+clock for nothing a round needs. `--video` renders the preview instead, for the one call at the
+end of a loop. Output lands beside the EDL as `<name>.wav` unless `--output` already names one.
+
+```
+committed  ./edl.json
+  removalPercent          14.2%
+  semantic cuts           2
+    660.24-671.83s        tangent: "Y así creo que va a ser mucho mejor. Quiero estornudar.
+                          ¡Wow! Ah, perdón, estorné. Eso sí, borra la profa. Bueno, lo que"
+    0.00-13.76s           tangent: "Hola, ¿qué tal? Eh, bueno, vengo a comentarles..."
+  render                  rendered
+  output                  ./master.wav
+```
+
+`build` in the JSON output is the same `BuildSummary` shape `edl build` emits — `removalPercent`,
+`semanticCuts` with `removedText`, `boundariesInSilence`, warnings, all of it. `render` is the
+same shape `render` emits. Nothing about reading either output changes because it came from
+`commit` instead of the two commands run by hand.
+
+**Records the round in the session** (`rounds/round-N/`: the EDL copy and the build report),
+so a session carries its own history of what was proposed and what got built from it. Renders
+and wavs stay out of the session, matching everything else the session holds: cheap to
+regenerate, expensive to store.
+
+**Master mode never happens here, and the human decision boundary above is untouched.**
+Approval is a human edit to the EDL — `approval.status` to `"approved"`, each segment's own
+`approval` to `"approved"` — followed by the existing `vcut render --edl <path> --mode master`.
+`commit` only ever drafts and previews; it does not write approval and it does not accept
+`--mode master`. If you find yourself wanting `commit` to finish a master, that want is the
+approval step arriving early, and the answer is still the same: hand the EDL to a human.
+
+**No lock, no gc, no rounds diff yet.** Two writers committing the same session concurrently,
+cleaning up old rounds, and comparing one round's transcript against the next are B-V4.
 
 ## edl build
 

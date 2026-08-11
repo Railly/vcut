@@ -28,6 +28,7 @@ import {
   createReadStream,
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   statSync,
   writeFileSync,
@@ -37,6 +38,7 @@ import { join } from 'node:path'
 
 import type { DetectReport } from './detect.ts'
 import { packageVersion } from './output.ts'
+import type { Proposal } from './semantic.ts'
 
 export const sessionRoot = (): string =>
   process.env.VCUT_SESSIONS_DIR ?? join(homedir(), '.vcut', 'sessions')
@@ -267,4 +269,94 @@ export const writeRefs = (sessionDir: string, preset: string, blocks: RefBlock[]
   const refs: RefsFile = { gen, preset, blocks }
   writeFileSync(refsPath(sessionDir), JSON.stringify(refs, null, 2))
   return refs
+}
+
+// --- Proposals -------------------------------------------------------------------------------
+//
+// `cut` (B-V3) accumulates proposals here instead of a caller hand-writing a semantic proposals
+// file, and `commit` reads them back to build the same EDL a standalone `vcut edl build
+// --semantic <path>` would from the equivalent file. Each entry carries `removedText` alongside
+// the bare `Proposal` fields, quoted from the session's cached transcript at propose time —
+// the "see it before you build it" answer B6 needs, not a value `edl build` itself computes
+// (that one derives `removedText` from the merged span at build time, which can differ slightly
+// once several proposals land in the same place; this is the caller-facing echo, not the
+// build's own accounting).
+//
+// No lockfile guards concurrent writers here. B7's advisory lock is B-V4's job; this slice
+// reads-modifies-writes proposals.json the way every other session file already does, which is
+// fine for one writer and is exactly the gap B-V4 closes for two.
+export type SessionProposal = Proposal & {
+  removedText: string
+  proposedAt: string
+}
+
+const proposalsPath = (sessionDir: string): string => join(sessionDir, 'proposals.json')
+
+export const readProposalsFile = (sessionDir: string): SessionProposal[] => {
+  const path = proposalsPath(sessionDir)
+  if (!existsSync(path)) {
+    return []
+  }
+  return JSON.parse(readFileSync(path, 'utf8')) as SessionProposal[]
+}
+
+const writeProposalsFile = (sessionDir: string, proposals: SessionProposal[]): void => {
+  mkdirSync(sessionDir, { recursive: true })
+  writeFileSync(proposalsPath(sessionDir), JSON.stringify(proposals, null, 2))
+}
+
+export const appendProposal = (
+  sessionDir: string,
+  proposal: SessionProposal,
+): SessionProposal[] => {
+  const proposals = [...readProposalsFile(sessionDir), proposal]
+  writeProposalsFile(sessionDir, proposals)
+  return proposals
+}
+
+/** Removes the proposal at `index` (0-based, insertion order) and returns what remains. */
+export const dropProposal = (sessionDir: string, index: number): SessionProposal[] => {
+  const proposals = readProposalsFile(sessionDir)
+  if (index < 0 || index >= proposals.length) {
+    throw new Error(
+      `no proposal at index ${index}; this session has ${proposals.length} (0..${Math.max(0, proposals.length - 1)})`,
+    )
+  }
+  const remaining = proposals.filter((_, position) => position !== index)
+  writeProposalsFile(sessionDir, remaining)
+  return remaining
+}
+
+// --- Rounds ------------------------------------------------------------------------------------
+//
+// `commit` (B-V3) records each build in `rounds/round-N/`: the EDL it wrote and the build
+// report, so a session carries its own history of what was proposed and what got built from it.
+// Renders and wavs stay out, matching B2-Q2's answer — they are cheap to regenerate and
+// expensive to store, and the session is disposable cache throughout.
+const roundsDir = (sessionDir: string): string => join(sessionDir, 'rounds')
+
+/** The next round directory to write into: `rounds/round-1`, `rounds/round-2`, ... */
+export const nextRoundDir = (sessionDir: string): string => {
+  const dir = roundsDir(sessionDir)
+  if (!existsSync(dir)) {
+    return join(dir, 'round-1')
+  }
+  const existing = readdirSync(dir, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && /^round-\d+$/.test(entry.name))
+    .map((entry) => Number(entry.name.slice('round-'.length)))
+  const next = existing.length === 0 ? 1 : Math.max(...existing) + 1
+  return join(dir, `round-${next}`)
+}
+
+export const writeRound = (
+  roundDir: string,
+  edl: unknown,
+  buildReport: unknown,
+): { edlPath: string; reportPath: string } => {
+  mkdirSync(roundDir, { recursive: true })
+  const edlPath = join(roundDir, 'edl.json')
+  const reportPath = join(roundDir, 'report.json')
+  writeFileSync(edlPath, `${JSON.stringify(edl, null, 2)}\n`)
+  writeFileSync(reportPath, `${JSON.stringify(buildReport, null, 2)}\n`)
+  return { edlPath, reportPath }
 }

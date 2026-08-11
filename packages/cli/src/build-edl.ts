@@ -567,6 +567,23 @@ type CliOptions = {
   syncOffsetMs: number
 }
 
+// What `runBuild` needs once the detect report is already in hand and proposals are already
+// validated objects rather than a path on disk. `commit` (B-V3) builds from a session's
+// accumulated proposals.json without ever writing them to a scratch file first, which is why
+// this is `Proposal[]` and not `semanticPath: string | null` the way CliOptions still is for
+// the CLI-facing parse step.
+export type BuildOptions = {
+  outputPath: string
+  edlPath: string
+  campaignId: string
+  width: number | null
+  height: number | null
+  fps: number | null
+  edgeFadeMs: number
+  crop: Crop | null
+  syncOffsetMs: number
+}
+
 // content-factory used 50ms per joint and Hunter approved masters cut with it, so this is
 // a measured inheritance rather than a guess. --edge-fade 0 restores the hard cut.
 const DEFAULT_EDGE_FADE_MS = 50
@@ -674,17 +691,17 @@ const collectCuts = (report: DetectReport): Cut[] =>
     reason: 'silence' as const,
   }))
 
-export const buildEdlCommand = async (argv: string[]): Promise<void> => {
-  if (argv.includes('--help') || argv.length === 0) {
-    console.log(HELP)
-    return
-  }
-  const mode: Mode = resolveMode(argv, Boolean(process.stdout.isTTY))
-  const options = parseCli(argv)
-  if (!existsSync(options.detectPath)) {
-    throw new Error(`detect report missing: ${options.detectPath}`)
-  }
-  const report = JSON.parse(readFileSync(options.detectPath, 'utf8')) as DetectReport
+// The callable seam `commit` (B-V3) uses: everything `buildEdlCommand` does once a detect
+// report and a set of already-validated proposals are in hand, minus reading either off disk
+// and minus printing. Pulled out with the same minimal-refactor discipline B-V1 applied to
+// `detect.ts` — the CLI path below calls straight through it, so command behaviour and every
+// existing test are unchanged; a pinned equivalence test in build-edl.test.ts is what proves
+// `commit`'s build matches `vcut edl build --semantic <path>` run by hand on the same inputs.
+export const runBuild = async (
+  report: DetectReport,
+  proposals: Proposal[],
+  options: BuildOptions,
+): Promise<{ edl: unknown; summary: BuildSummary }> => {
   if (!existsSync(report.input)) {
     throw new Error(`source missing: ${report.input}`)
   }
@@ -703,20 +720,7 @@ export const buildEdlCommand = async (argv: string[]): Promise<void> => {
           .map((cut) => clampToWords(cut, boundaries, report.minSilenceMs))
           .filter((cut): cut is Cut => cut !== null)
 
-  // Refused loudly rather than skipped: a proposal that disappears between check and build
-  // would look like the model chose not to cut there.
-  const semantic =
-    options.semanticPath === null
-      ? { proposals: [], issues: [] }
-      : readProposals(options.semanticPath, report.durationMs)
-  if (semantic.issues.length > 0) {
-    throw new UsageError(
-      `semantic proposals rejected:\n${semantic.issues
-        .map((issue) => `  [${issue.index}] ${issue.problem}`)
-        .join('\n')}`,
-    )
-  }
-  const semanticProposals = semantic.proposals
+  const semanticProposals = proposals
 
   const probe = await probeSource(report.input)
   const video = probe.streams.find((stream) => stream.codec_type === 'video')
@@ -823,8 +827,6 @@ export const buildEdlCommand = async (argv: string[]): Promise<void> => {
     },
   }
 
-  writeFileSync(options.edlPath, `${JSON.stringify(edl, null, 2)}\n`)
-
   const summary: BuildSummary = {
     status: 'drafted',
     edlPath: options.edlPath,
@@ -849,6 +851,50 @@ export const buildEdlCommand = async (argv: string[]): Promise<void> => {
       ...reasonWarnings,
     ],
   }
+
+  return { edl, summary }
+}
+
+export const buildEdlCommand = async (argv: string[]): Promise<void> => {
+  if (argv.includes('--help') || argv.length === 0) {
+    console.log(HELP)
+    return
+  }
+  const mode: Mode = resolveMode(argv, Boolean(process.stdout.isTTY))
+  const options = parseCli(argv)
+  if (!existsSync(options.detectPath)) {
+    throw new Error(`detect report missing: ${options.detectPath}`)
+  }
+  const report = JSON.parse(readFileSync(options.detectPath, 'utf8')) as DetectReport
+
+  // Refused loudly rather than skipped: a proposal that disappears between check and build
+  // would look like the model chose not to cut there.
+  const semantic =
+    options.semanticPath === null
+      ? { proposals: [], issues: [] }
+      : readProposals(options.semanticPath, report.durationMs)
+  if (semantic.issues.length > 0) {
+    throw new UsageError(
+      `semantic proposals rejected:\n${semantic.issues
+        .map((issue) => `  [${issue.index}] ${issue.problem}`)
+        .join('\n')}`,
+    )
+  }
+
+  const { edl, summary } = await runBuild(report, semantic.proposals, {
+    outputPath: options.outputPath,
+    edlPath: options.edlPath,
+    campaignId: options.campaignId,
+    width: options.width,
+    height: options.height,
+    fps: options.fps,
+    edgeFadeMs: options.edgeFadeMs,
+    crop: options.crop,
+    syncOffsetMs: options.syncOffsetMs,
+  })
+
+  writeFileSync(options.edlPath, `${JSON.stringify(edl, null, 2)}\n`)
+
   if (mode === 'json') {
     emitJson({ ...summary, next: buildEdlNext(summary.edlPath) })
     return

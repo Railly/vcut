@@ -21,6 +21,8 @@ vcut converge <media> [flags]      Find where a repeated phrase stops coming bac
 vcut nonspeech <render> [--verify] Find audible sound that is not language
 vcut open <media> [flags]          Open or resume a session, map its blocks with stable refs
 vcut peek <media> (--ref|--at)     The four views of a position, aligned, disagreement named
+vcut cut <media> --refs|--span     Propose a semantic cut against a session, see what it removes
+vcut commit <media> [flags]        Build + render a session's proposals into a draft EDL
 vcut schema [name]                 Print the JSON contract for a command
 vcut skills list|get [name]        Read the bundled agent manual
 vcut doctor                        Check external dependencies
@@ -180,6 +182,47 @@ The four views of one position, aligned in a single call: what the session's cac
 | `--lang <code>` | Language passed to the transcriber |
 
 `viewsDisagree` compares `transcript` against `heard` on carrying words (4+ letters, the same comparison `converge` uses) and names `transcript-claims-more`, `heard-more`, `aligned`, or `soft-speech-below-threshold` — the last one firing when the fine-resolution `blocks` read silence for the whole span but `heard` still carries words: speech under the level threshold that neither `silences` nor `detect` alone can see. A disagreement is a place to look, not a verdict — a short window transcribes noisily, the same caveat `say --transcribe` already carries.
+
+### vcut cut
+
+```bash
+vcut cut recording.mp4 --refs b202..b207 --kind tangent --reason "sneeze, speaker says cut it"
+vcut cut recording.mp4 --span 0..13.25 --kind tangent --reason "pre-roll before the take begins"
+vcut cut recording.mp4 --list
+vcut cut recording.mp4 --drop 0
+```
+
+Proposes a semantic cut against a session's own refs, and shows what it removes at propose time rather than after a build. `--refs` takes a single ref or an inclusive range (`b042..b044`, from the first ref's own start to the second's own end); `--span <startS>..<endS>` is the escape hatch for a raw span when no ref fits. Mutually exclusive.
+
+| Flag | What it does |
+| --- | --- |
+| `--refs <ref[..ref]>` | A block ref or an inclusive range from this session's `refs.json` |
+| `--span <s..s>` | A raw span in seconds when no ref fits |
+| `--kind <kind>` | Required: `false-start` \| `repetition` \| `tangent` \| `filler` |
+| `--reason <text>` | Required, non-empty. Read by a human deciding whether to approve |
+| `--list` | Print the session's accumulated proposals with their `removedText` |
+| `--drop <index>` | Remove the proposal at this 0-based index |
+
+The session must already exist — `cut` never creates one, and a ref from an earlier generation is a usage error naming the ref and the session's current `gen`, the same enforcement `peek` already applies. `removedText` is quoted from the session's cached transcript, not re-transcribed. Proposals accumulate in the session's `proposals.json`; `--list`/`--drop` read and edit that list without hand-editing JSON.
+
+### vcut commit
+
+```bash
+vcut commit recording.mp4 --output master.mp4 --campaign my-video
+```
+
+Builds the EDL from a session's cached detect report and its accumulated proposals, then renders it — byte-identical to running `vcut edl build --detect <cached> --semantic <path>` by hand, since `commit` calls the same build seam internally rather than a second implementation.
+
+| Flag | What it does |
+| --- | --- |
+| `--output <path>` | Where the eventual master will go (required) |
+| `--campaign <id>` | Campaign identifier, required |
+| `--edl <path>` | Where to write the EDL (default `./edl.json`, the current directory — the user's artefact, not the session) |
+| `--audio-only` | Render audio only, `.wav` beside the EDL (default) |
+| `--video` | Render the preview video instead |
+| `--fps`, `--width`, `--height`, `--edge-fade`, `--crop` | Passed through to the build, same as `edl build` |
+
+Records the round in the session (`rounds/round-N/`: the EDL copy and the build report); renders and wavs stay out of it. **Master mode never happens here.** Approval is a human edit to the EDL followed by the existing `vcut render --edl <path> --mode master` — this command only ever drafts and previews.
 
 ### vcut semantic
 

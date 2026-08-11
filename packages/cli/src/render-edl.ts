@@ -599,20 +599,42 @@ export const renderAudioOnlyNext = (outputPath: string) => [
   },
 ]
 
-export const renderCommand = async (argv: string[]): Promise<void> => {
-  if (argv.includes('--help') || argv.length === 0) {
-    console.log(HELP)
-    return
-  }
-  const options = parseCli(argv)
-  const edl = JSON.parse(readFileSync(options.edlPath, 'utf8')) as Edl
+export type RenderOptions = {
+  outputPath?: string
+  mode: Mode
+  dryRun: boolean
+  audioOnly: boolean
+}
+
+export type RenderResult = {
+  status: 'ready' | 'rendered'
+  audioOnly?: true
+  mode?: Mode
+  sources?: number
+  segments?: number
+  expectedDurationMs?: number
+  outputPath: string
+  command?: string[]
+  sha256?: string
+  duration?: string
+  frames?: string
+  next?: Array<{ question: string; verb: string }>
+}
+
+// The callable seam `commit` (B-V3) uses for its audio-only render step: everything
+// `renderCommand` does once an EDL object is already in hand, minus reading it off disk and
+// minus printing. `commit` builds the EDL in memory via `runBuild` and hands it straight here
+// rather than round-tripping through a temp file, but the render itself — ffmpeg args, the
+// partial-file rename, output validation — is unchanged. Shelling out to vcut's own CLI from
+// inside vcut was ruled out; this export is the minimal alternative.
+export const runRender = async (edl: Edl, options: RenderOptions): Promise<RenderResult> => {
   const errors = edlErrors(edl, options.mode)
   // The EDL's own output path names a video. Writing audio there would collide with the
   // render it is meant to precede, so audio-only lands beside it as a .wav unless asked
   // for somewhere else.
   const outputPath =
     options.outputPath ??
-    (options.audioOnly ? edl.output.path.replace(/\.[^./]+$/, '') + '.wav' : edl.output.path)
+    (options.audioOnly ? `${edl.output.path.replace(/\.[^./]+$/, '')}.wav` : edl.output.path)
 
   for (const source of edl.sources) {
     if (!existsSync(source.path)) {
@@ -641,7 +663,7 @@ export const renderCommand = async (argv: string[]): Promise<void> => {
     // Printed against the real destination: the temp file is this function's business, and a
     // command nobody can paste and run is not a useful thing to print.
     const shown = buildFfmpegArgs(edl, outputPath, { audioOnly: options.audioOnly })
-    emitJson({
+    return {
       status: 'ready',
       mode: options.mode,
       ...(options.audioOnly ? { audioOnly: true } : {}),
@@ -653,8 +675,7 @@ export const renderCommand = async (argv: string[]): Promise<void> => {
       ),
       outputPath,
       command: ['ffmpeg', ...shown],
-    })
-    return
+    }
   }
 
   const exitCode = await runInherit('ffmpeg', ['-v', 'error', ...args])
@@ -675,7 +696,7 @@ export const renderCommand = async (argv: string[]): Promise<void> => {
   }
   renameSync(pendingPath, outputPath)
   const next = options.audioOnly ? renderAudioOnlyNext(outputPath) : []
-  emitJson({
+  return {
     status: 'rendered',
     ...(options.audioOnly ? { audioOnly: true } : {}),
     outputPath,
@@ -687,5 +708,16 @@ export const renderCommand = async (argv: string[]): Promise<void> => {
           frames: probe.streams.find((stream) => stream.codec_type === 'video')?.nb_read_frames,
         }),
     ...(next.length === 0 ? {} : { next }),
-  })
+  }
+}
+
+export const renderCommand = async (argv: string[]): Promise<void> => {
+  if (argv.includes('--help') || argv.length === 0) {
+    console.log(HELP)
+    return
+  }
+  const options = parseCli(argv)
+  const edl = JSON.parse(readFileSync(options.edlPath, 'utf8')) as Edl
+  const result = await runRender(edl, options)
+  emitJson(result)
 }

@@ -3,7 +3,9 @@ import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { auditCommand } from './audit-command.ts'
 import { buildEdlCommand } from './build-edl.ts'
+import { commitCommand } from './commit.ts'
 import { convergeCommand } from './converge.ts'
+import { cutCommand } from './cut.ts'
 import { detectCommand, positional } from './detect.ts'
 import { run, runInherit } from './exec.ts'
 import { locateCommand } from './locate.ts'
@@ -50,6 +52,8 @@ Usage:
   vcut nonspeech <render> [--verify] Find audible sound that is not language
   vcut open <media> [flags]          Open or resume a session, map its blocks with stable refs
   vcut peek <media> (--ref|--at)     The four views of a position, aligned, disagreement named
+  vcut cut <media> --refs|--span     Propose a semantic cut against a session, see what it removes
+  vcut commit <media> [flags]        Build + render a session's proposals into a draft EDL
   vcut schema [name]                 Print the JSON contract for a command
   vcut skills list|get [name]        Read the bundled agent manual
   vcut doctor                        Check external dependencies
@@ -452,6 +456,46 @@ const CONTRACTS: Record<string, unknown> = {
       'A disagreement is a place to look, not a verdict. Short-window transcription is itself noisy; treat viewsDisagree as a pointer, confirm with a wider window before acting on it.',
     ],
   },
+  cut: {
+    version: SCHEMA_VERSION,
+    command: 'vcut cut',
+    output: {
+      default:
+        '{ version, input, sessionDir, refs: string[], accepted: Proposal & {removedText, proposedAt}, transcriptPresent, next }',
+      '--list':
+        '{ version, input, sessionDir, proposals: (Proposal & {removedText, proposedAt})[] }',
+      '--drop':
+        '{ version, input, sessionDir, dropped: number, proposals: (Proposal & {removedText, proposedAt})[] }',
+    },
+    notes: [
+      'The session must already exist: cut resolves refs against a session it does not create. Run vcut open first.',
+      "--refs takes a single ref or an inclusive range (b042..b044): the span runs from the first ref's start to the second's end. Resolution reuses peek's resolveRef, so an unknown or stale-gen ref is a usage error naming the ref and the session's current gen, not a guess.",
+      '--span <startS>..<endS> is the escape hatch for a raw span when no ref fits. Mutually exclusive with --refs.',
+      "removedText is quoted from the session's cached transcript at propose time, before any build runs — the corrective for a cut whose span drifted onto the wrong words unnoticed until a render.",
+      "Appends to the session's proposals.json (created on first cut). No lockfile: two writers on one session is B-V4.",
+    ],
+  },
+  commit: {
+    version: SCHEMA_VERSION,
+    command: 'vcut commit',
+    output: {
+      status: 'always "committed"',
+      edlPath: 'absolute path to the EDL written (default ./edl.json, the current directory)',
+      sessionDir: 'absolute path to the session this was built from',
+      roundDir:
+        'absolute path to rounds/round-N/ inside the session, where the EDL copy and build report were recorded',
+      build:
+        'the same BuildSummary shape edl build emits (segments, removalPercent, semanticCuts with removedText, warnings, ...)',
+      render: 'the same shape render emits (status, outputPath, sha256, duration, ...)',
+      next: '[{ question, verb }]',
+    },
+    notes: [
+      "Builds from the session's cached detect report and its accumulated proposals.json, through the same runBuild seam vcut edl build --semantic <path> uses — byte-identical output given the same inputs.",
+      'The EDL is written to the current directory by default, never only inside the session: it is the artefact a human approves.',
+      "--audio-only is the default render (matching the manual's per-round rule); --video renders the preview instead. Master mode never happens here.",
+      'Approval is a human edit to the EDL followed by vcut render --edl <path> --mode master. This command drafts and previews only; it never writes approval.status.',
+    ],
+  },
   say: {
     version: SCHEMA_VERSION,
     command: 'vcut say',
@@ -687,6 +731,12 @@ export const route = async (argv: string[]): Promise<void> => {
   }
   if (command === 'peek') {
     return peekCommand(rest)
+  }
+  if (command === 'cut') {
+    return cutCommand(rest)
+  }
+  if (command === 'commit') {
+    return commitCommand(rest)
   }
   if (command === 'schema') {
     return schemaCommand(rest)
