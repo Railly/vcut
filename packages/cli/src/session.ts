@@ -342,6 +342,13 @@ export const writeRefs = (sessionDir: string, preset: string, blocks: RefBlock[]
 export type SessionProposal = Proposal & {
   removedText: string
   proposedAt: string
+  // Present and true only, same convention as build-edl.ts's SemanticCutReport: absent (not
+  // false) means the proposal's own span reads clean against the session's cached silences.
+  // Derived, not persisted: computed fresh wherever a proposal is read back (cut --list,
+  // --drop, the accept response), from the same driftSuspectSpan build-edl.ts's describeSemanticCuts
+  // uses at commit time, so a stored value can never go stale relative to the cached detect
+  // report it is checked against.
+  driftSuspect?: true
 }
 
 const proposalsPath = (sessionDir: string): string => join(sessionDir, 'proposals.json')

@@ -1,5 +1,10 @@
-import { describe, expect, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import {
+  annotateDriftSuspect,
+  cutCommand,
   parseMsRangeArgs,
   parseSpanArg,
   quoteRemovedText,
@@ -8,8 +13,9 @@ import {
   validateReason,
   validateSpanBounds,
 } from '../src/cut.ts'
-import type { Word } from '../src/detect.ts'
+import type { DetectReport, SilenceCandidate, Word } from '../src/detect.ts'
 import { UsageError } from '../src/output.ts'
+import { openSession, writeCachedDetect } from '../src/session.ts'
 
 const refs = {
   gen: 3,
@@ -190,5 +196,259 @@ describe('quoteRemovedText', () => {
     const words = [word('hola', 0, 500)]
     expect(quoteRemovedText({ startMs: 10_000, endMs: 20_000 }, words)).toBe('')
     expect(quoteRemovedText({ startMs: 0, endMs: 500 }, [])).toBe('')
+  })
+})
+
+describe('annotateDriftSuspect', () => {
+  const word = (text: string, startMs: number, endMs: number): Word => ({ text, startMs, endMs })
+  const silence = (startMs: number, endMs: number): SilenceCandidate => ({
+    kind: 'silence',
+    startMs,
+    endMs,
+    durationMs: endMs - startMs,
+  })
+  const proposal = (startMs: number, endMs: number, removedText: string) => ({
+    startMs,
+    endMs,
+    kind: 'tangent' as const,
+    reason: 'sneeze aside',
+    removedText,
+    proposedAt: '2026-08-10T00:00:00.000Z',
+  })
+
+  test('flags a proposal whose own span contains a word claiming to start inside measured silence', () => {
+    // Reuses build-edl.ts's driftSuspectSpan, so this mirrors that helper's own fixture shape.
+    const words = [word('hola', 1000, 1600)]
+    const silences = [silence(800, 1400)]
+    const [annotated] = annotateDriftSuspect([proposal(900, 2000, 'hola')], words, silences)
+    expect(annotated.driftSuspect).toBe(true)
+  })
+
+  test('leaves driftSuspect absent (not false) on a clean span', () => {
+    const words = [word('hola', 1500, 1800)]
+    const silences = [silence(800, 1400)]
+    const [annotated] = annotateDriftSuspect([proposal(900, 2000, 'hola')], words, silences)
+    expect(annotated.driftSuspect).toBeUndefined()
+    expect('driftSuspect' in annotated).toBe(false)
+  })
+
+  test('no cached transcript or no cached silences: returns proposals unchanged', () => {
+    const proposals = [proposal(900, 2000, 'hola')]
+    expect(annotateDriftSuspect(proposals, [], [])).toEqual(proposals)
+    expect(annotateDriftSuspect(proposals, [word('hola', 1000, 1600)], [])).toEqual(proposals)
+  })
+
+  test('each proposal is checked against its own span independently', () => {
+    const words = [word('limpio', 100, 300), word('sospechoso', 1000, 1600)]
+    const silences = [silence(800, 1400)]
+    const annotated = annotateDriftSuspect(
+      [proposal(0, 500, 'limpio'), proposal(900, 2000, 'sospechoso')],
+      words,
+      silences,
+    )
+    expect(annotated[0]?.driftSuspect).toBeUndefined()
+    expect(annotated[1]?.driftSuspect).toBe(true)
+  })
+})
+
+describe('cut --list carries driftSuspect the same way commit computes it', () => {
+  let workDir: string
+  let mediaPath: string
+  let originalSessionsDir: string | undefined
+  let originalLog: typeof console.log
+  let logged: string
+
+  beforeEach(() => {
+    workDir = mkdtempSync(join(tmpdir(), 'vcut-cut-list-test-'))
+    mediaPath = join(workDir, 'source.mp4')
+    writeFileSync(mediaPath, 'fake media bytes')
+    originalSessionsDir = process.env.VCUT_SESSIONS_DIR
+    process.env.VCUT_SESSIONS_DIR = join(workDir, 'sessions')
+    originalLog = console.log
+    logged = ''
+    console.log = (...args: unknown[]) => {
+      logged += args.join(' ')
+    }
+  })
+
+  afterEach(() => {
+    console.log = originalLog
+    rmSync(workDir, { recursive: true, force: true })
+    if (originalSessionsDir === undefined) {
+      delete process.env.VCUT_SESSIONS_DIR
+    } else {
+      process.env.VCUT_SESSIONS_DIR = originalSessionsDir
+    }
+  })
+
+  // A word claiming to start at 900ms while detect measured silence through 1400ms — the same
+  // drift shape build-edl.test.ts's driftSuspectSpan fixtures use.
+  const srt = `1
+00:00:00,900 --> 00:00:01,600
+sospechoso
+
+2
+00:00:03,000 --> 00:00:03,500
+limpio
+`
+
+  const baseReport = (durationMs: number): DetectReport => ({
+    version: 1,
+    input: mediaPath,
+    durationMs,
+    preset: 'noisy',
+    thresholdDb: -20,
+    minSilenceMs: 300,
+    marginMs: 100,
+    lang: 'es',
+    transcript: { path: null, wordLevel: false, words: 0 },
+    audioPath: null,
+    silences: [{ kind: 'silence', startMs: 800, endMs: 1400, durationMs: 600 }],
+    review: [],
+    warnings: [],
+  })
+
+  const openWithCache = async () => {
+    const session = await openSession(mediaPath)
+    writeCachedDetect(session.dir, baseReport(10_000))
+    writeFileSync(join(session.dir, 'transcript.srt'), srt)
+    return session
+  }
+
+  test('a proposal whose removedText matches cleanly carries no driftSuspect through --list', async () => {
+    await openWithCache()
+    await cutCommand([
+      mediaPath,
+      '--start-ms',
+      '3000',
+      '--end-ms',
+      '3500',
+      '--kind',
+      'tangent',
+      '--reason',
+      'clean aside',
+      '--json',
+    ])
+    logged = ''
+    await cutCommand([mediaPath, '--list', '--json'])
+    const output = JSON.parse(logged) as { proposals: Array<Record<string, unknown>> }
+    expect(output.proposals).toHaveLength(1)
+    expect(output.proposals[0]?.removedText).toBe('limpio')
+    expect(output.proposals[0]?.driftSuspect).toBeUndefined()
+    expect('driftSuspect' in (output.proposals[0] ?? {})).toBe(false)
+  })
+
+  test('a proposal that drifts onto words claiming to start inside measured silence carries driftSuspect: true through --list', async () => {
+    await openWithCache()
+    await cutCommand([
+      mediaPath,
+      '--start-ms',
+      '900',
+      '--end-ms',
+      '2000',
+      '--kind',
+      'tangent',
+      '--reason',
+      'suspect aside',
+      '--json',
+    ])
+    logged = ''
+    await cutCommand([mediaPath, '--list', '--json'])
+    const output = JSON.parse(logged) as { proposals: Array<Record<string, unknown>> }
+    expect(output.proposals).toHaveLength(1)
+    expect(output.proposals[0]?.removedText).toBe('sospechoso')
+    expect(output.proposals[0]?.driftSuspect).toBe(true)
+  })
+
+  test('the accept response itself carries driftSuspect: true for a drifted proposal', async () => {
+    await openWithCache()
+    await cutCommand([
+      mediaPath,
+      '--start-ms',
+      '900',
+      '--end-ms',
+      '2000',
+      '--kind',
+      'tangent',
+      '--reason',
+      'suspect aside',
+      '--json',
+    ])
+    const output = JSON.parse(logged) as { accepted: Record<string, unknown> }
+    expect(output.accepted.driftSuspect).toBe(true)
+  })
+
+  test('driftSuspect is never persisted to proposals.json: it is derived fresh on each read', async () => {
+    const session = await openWithCache()
+    await cutCommand([
+      mediaPath,
+      '--start-ms',
+      '900',
+      '--end-ms',
+      '2000',
+      '--kind',
+      'tangent',
+      '--reason',
+      'suspect aside',
+      '--json',
+    ])
+    const raw = JSON.parse(readFileSync(join(session.dir, 'proposals.json'), 'utf8')) as Array<
+      Record<string, unknown>
+    >
+    expect('driftSuspect' in (raw[0] ?? {})).toBe(false)
+  })
+
+  test('--drop echoes driftSuspect on the remaining proposals the same way --list does', async () => {
+    await openWithCache()
+    await cutCommand([
+      mediaPath,
+      '--start-ms',
+      '3000',
+      '--end-ms',
+      '3500',
+      '--kind',
+      'tangent',
+      '--reason',
+      'clean aside',
+      '--json',
+    ])
+    await cutCommand([
+      mediaPath,
+      '--start-ms',
+      '900',
+      '--end-ms',
+      '2000',
+      '--kind',
+      'tangent',
+      '--reason',
+      'suspect aside',
+      '--json',
+    ])
+    logged = ''
+    await cutCommand([mediaPath, '--drop', '0', '--json'])
+    const output = JSON.parse(logged) as { proposals: Array<Record<string, unknown>> }
+    expect(output.proposals).toHaveLength(1)
+    expect(output.proposals[0]?.removedText).toBe('sospechoso')
+    expect(output.proposals[0]?.driftSuspect).toBe(true)
+  })
+
+  test('--human renders a warning line for a drifted proposal in --list', async () => {
+    await openWithCache()
+    await cutCommand([
+      mediaPath,
+      '--start-ms',
+      '900',
+      '--end-ms',
+      '2000',
+      '--kind',
+      'tangent',
+      '--reason',
+      'suspect aside',
+      '--human',
+    ])
+    logged = ''
+    await cutCommand([mediaPath, '--list', '--human'])
+    expect(logged).toContain('driftSuspect')
+    expect(logged).toContain('warning')
   })
 })
