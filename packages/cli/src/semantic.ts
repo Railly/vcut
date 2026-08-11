@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
 import type { DetectReport, Interval, Transcript, Word } from './detect.ts'
@@ -13,6 +13,7 @@ Usage:
   vcut semantic check --proposals <path> --detect <path> [--review <path>]
   vcut semantic review --edl <path> --detect <path> [--master <path>]
                        [--master-transcript <path>]
+  vcut semantic merge <a.json> <b.json> [more.json...] [--out <path>]
 
 Flags:
   --detect <path>       Report produced by detect (required)
@@ -23,11 +24,21 @@ Flags:
   --edl <path>          EDL to read back (review only)
   --master <path>       Rendered file to measure silence on (review only)
   --master-transcript <path>  Word-level SRT of the master; lines come from it (review only)
+  --out <path>           Write merge's result here instead of stdout (merge only)
   --terse               Omit the instructions block, which is identical every call and
                         was 72% of the payload on one measured run (export and review)
   --help                Show this message
 
-Both subcommands emit JSON: the reader is an agent, not a terminal.
+merge combines two or more rounds of proposals into one array: every proposal file has
+the same shape (startMs, endMs, kind, reason), so folding round 2's proposals in with
+round 1's is a structural operation, not a judgement call. Spans identical on all four
+fields collapse to one; everything else is kept and the result is re-sorted by startMs.
+Exits 1 with status "rejected" if any input file fails the same validation check runs,
+naming which file and which entry. A missing file or fewer than two files is a usage
+error (exit 2), same as every other malformed invocation in this CLI.
+
+export, check, and review emit JSON: the reader is an agent, not a terminal. merge does
+too, unless --out is given, in which case the file is written and a summary prints instead.
 
 vcut never calls a model. Export gives an agent numbered lines with timings; the
 agent writes proposals back as JSON, and 'vcut edl build --semantic <path>' folds
@@ -202,6 +213,34 @@ export const readProposals = (
     }
     throw new UsageError(`proposals file is not valid JSON: ${path}`)
   }
+}
+
+// Combining two rounds of proposals is structural, not a judgement: fold b's proposals in
+// with a's, drop the spans that are byte-identical between files, and hand back a single
+// timeline. Every multi-round edit needs exactly this, which is why the issue that asked for
+// --jq named it as the operation --jq alone could not remove: a caller reaching for
+// `python3 -c` to do this was reimplementing dedup-and-sort, not projecting a field.
+//
+// "Identical" is all four fields matching, not just an overlapping span: two proposals that
+// cover the same seconds for different reasons (a false-start a first round caught and a
+// filler a second round caught inside it) are two real findings, not a duplicate.
+export const mergeProposals = (
+  fileProposals: Proposal[][],
+): { merged: Proposal[]; duplicates: number } => {
+  const seen = new Map<string, Proposal>()
+  let duplicates = 0
+  for (const proposals of fileProposals) {
+    for (const proposal of proposals) {
+      const key = `${proposal.startMs}:${proposal.endMs}:${proposal.kind}:${proposal.reason}`
+      if (seen.has(key)) {
+        duplicates += 1
+        continue
+      }
+      seen.set(key, proposal)
+    }
+  }
+  const merged = [...seen.values()].sort((left, right) => left.startMs - right.startMs)
+  return { merged, duplicates }
 }
 
 // Between the median silence and the third quartile on the corpus this was built against:
@@ -669,6 +708,79 @@ export const semanticCommand = async (argv: string[]): Promise<void> => {
         : { instructions: INSTRUCTIONS }),
       lines,
     })
+    return
+  }
+
+  if (subcommand === 'merge') {
+    // Everything after `merge` that is not a flag is an input file, in the order given:
+    // unlike --refs or --detect there is no fixed arity here, so this reads argv as a small
+    // state machine rather than indexOf-ing one flag at a time. Global flags (--json, --human,
+    // --fields, --jq, --help) are not this command's business — emitJson reads them straight
+    // off process.argv the same way every other command lets it — so they are skipped rather
+    // than rejected, the same tolerance detect.ts's BOOLEAN_FLAGS gives positional().
+    const BOOLEAN_FLAGS = new Set(['--json', '--human', '--help'])
+    const paths: string[] = []
+    let outPath: string | undefined
+    for (let index = 1; index < argv.length; index += 1) {
+      const arg = argv[index]
+      if (arg === '--out') {
+        outPath = argv[index + 1]
+        index += 1
+        continue
+      }
+      if (arg.startsWith('--')) {
+        if (!BOOLEAN_FLAGS.has(arg) && !arg.includes('=')) {
+          index += 1
+        }
+        continue
+      }
+      paths.push(arg)
+    }
+    if (paths.length < 2) {
+      throw new UsageError(`merge needs at least two proposal files\n\n${HELP}`)
+    }
+
+    const perFile = paths.map((path) => {
+      if (!existsSync(path)) {
+        throw new UsageError(`proposals file missing: ${path}`)
+      }
+      let parsed: unknown
+      try {
+        parsed = JSON.parse(readFileSync(path, 'utf8'))
+      } catch {
+        throw new UsageError(`proposals file is not valid JSON: ${path}`)
+      }
+      // No durationMs bound here: merge is a structural fold over files that already passed
+      // (or will separately pass) `semantic check` against a detect report, and asking for
+      // one here would force a --detect flag onto an operation that has no other use for it.
+      const { proposals, issues } = validateProposals(parsed, Number.POSITIVE_INFINITY)
+      return { path, proposals, issues }
+    })
+
+    const allIssues = perFile.flatMap(({ path, issues }) =>
+      issues.map((issue) => ({ file: path, ...issue })),
+    )
+    if (allIssues.length > 0) {
+      emitJson({ status: 'rejected', issues: allIssues })
+      process.exitCode = 1
+      return
+    }
+
+    const { merged, duplicates } = mergeProposals(perFile.map(({ proposals }) => proposals))
+    const result = {
+      status: 'merged' as const,
+      files: paths,
+      inputCount: perFile.reduce((total, file) => total + file.proposals.length, 0),
+      duplicates,
+      proposals: merged,
+    }
+
+    if (outPath !== undefined) {
+      writeFileSync(outPath, `${JSON.stringify(merged, null, 2)}\n`)
+      emitJson({ ...result, outPath })
+      return
+    }
+    emitJson(result)
     return
   }
 

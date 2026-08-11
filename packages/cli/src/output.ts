@@ -1,11 +1,13 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { runJq } from './jq.ts'
 
 export type Mode = 'json' | 'human'
 
 // --fields asks for machine output by construction: a caller naming dot paths to extract wants
-// the extraction, not a human summary those paths do not exist in.
+// the extraction, not a human summary those paths do not exist in. --jq asks the same thing
+// for a filter or a merge, which is why it forces JSON the same way.
 export const resolveMode = (args: string[], isTty: boolean): Mode => {
   if (args.includes('--json')) {
     return 'json'
@@ -14,6 +16,9 @@ export const resolveMode = (args: string[], isTty: boolean): Mode => {
     return 'human'
   }
   if (args.some((arg) => arg === '--fields' || arg.startsWith('--fields='))) {
+    return 'json'
+  }
+  if (args.some((arg) => arg === '--jq' || arg.startsWith('--jq='))) {
     return 'json'
   }
   return isTty ? 'human' : 'json'
@@ -42,6 +47,26 @@ export const parseFields = (args: string[]): string[] | null => {
     .split(',')
     .map((path) => path.trim())
     .filter((path) => path.length > 0)
+}
+
+// --jq <expr> alongside --jq=<expr>, the same two forms --fields reads. Only the last flag
+// wins when repeated, matching how `value()` helpers across every command read a flag today.
+export const parseJqExpr = (args: string[]): string | null => {
+  const index = args.indexOf('--jq')
+  if (index !== -1) {
+    const raw = args[index + 1]
+    if (raw === undefined) {
+      throw new UsageError(
+        '--jq needs an expression, e.g. --jq ".[] | select(.kind == \\"filler\\")"',
+      )
+    }
+    return raw
+  }
+  const inline = args.find((arg) => arg.startsWith('--jq='))
+  if (inline === undefined) {
+    return null
+  }
+  return inline.slice('--jq='.length)
 }
 
 export const EXIT_USAGE = 2
@@ -142,7 +167,25 @@ export const projectFields = (
 // before the stamp is added, so vcutVersion always rides along regardless of what was
 // selected — it is the version stamp, not a field a caller could ask away.
 export const emitJson = (value: unknown, fields?: string[]): void => {
-  const requested = fields ?? parseFields(process.argv.slice(2)) ?? []
+  const argv = process.argv.slice(2)
+  const jqExpr = parseJqExpr(argv)
+  const requested = fields ?? parseFields(argv) ?? []
+  if (jqExpr !== null && requested.length > 0) {
+    throw new UsageError('--jq and --fields are mutually exclusive; pass one or the other')
+  }
+  // --jq runs against the value as vcutVersion-stamped output would already read (a caller
+  // piping `vcut detect | jq` today sees the stamp, so `--jq` sees it too, and `.vcutVersion`
+  // is a legal path in a filter). Past that, the filter's own result is printed as-is: jq
+  // itself does not append metadata to a filter's output, and doing so here would corrupt a
+  // result that is not shaped like this CLI's usual objects (an array, a number, a string).
+  if (jqExpr !== null) {
+    const stampable =
+      value !== null && typeof value === 'object' && !Array.isArray(value)
+        ? { ...(value as Record<string, unknown>), vcutVersion: VCUT_VERSION }
+        : value
+    console.log(JSON.stringify(runJq(jqExpr, stampable), null, 2))
+    return
+  }
   if (requested.length > 0 && value !== null && typeof value === 'object') {
     const { projected, fieldErrors } = projectFields(value, requested)
     const withErrors = fieldErrors.length > 0 ? { ...projected, fieldErrors } : projected
