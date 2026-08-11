@@ -1,4 +1,9 @@
-import { describe, expect, test } from 'bun:test'
+import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
+import { createHash } from 'node:crypto'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { run } from '../src/exec.ts'
 import {
   audioOnlyErrors,
   buildFfmpegArgs,
@@ -6,8 +11,12 @@ import {
   type Edl,
   edlErrors,
   expectedFramesForConcat,
+  type FfmpegProgress,
+  formatProgressLine,
+  makeProgressWatcher,
   outputErrors,
   renderAudioOnlyNext,
+  runRender,
 } from '../src/render-edl.ts'
 
 const edl = (
@@ -549,5 +558,219 @@ describe('buildFfmpegArgs graph shape by convertsFps', () => {
     expect(graph).toContain('[vcat]fps=30[v]')
     expect(graph).not.toContain(',fps=30,format=yuv420p')
     expect(graph).not.toContain('concat=n=1:v=1:a=1')
+  })
+})
+
+describe('formatProgressLine', () => {
+  const progress = (overrides: Partial<FfmpegProgress> = {}): FfmpegProgress => ({
+    outTimeMs: null,
+    speed: null,
+    frame: null,
+    done: false,
+    ...overrides,
+  })
+
+  test('reports time rendered against the EDL total and a percent', () => {
+    const line = formatProgressLine(progress({ outTimeMs: 2_500, speed: '1.02x' }), 5_000)
+    expect(line).toContain('50%')
+    expect(line).toContain('1.02x')
+  })
+
+  test('a block with no out_time_us yet is not a printable line', () => {
+    expect(formatProgressLine(progress(), 5_000)).toBeNull()
+  })
+
+  test('clamps at 100% when ffmpeg reports past the EDL total (loudnorm tail, encoder rounding)', () => {
+    const line = formatProgressLine(progress({ outTimeMs: 5_200 }), 5_000)
+    expect(line).toContain('100%')
+  })
+
+  test('a zero-duration EDL does not divide by zero', () => {
+    const line = formatProgressLine(progress({ outTimeMs: 0 }), 0)
+    expect(line).toContain('0%')
+  })
+})
+
+describe('makeProgressWatcher', () => {
+  test('turns one full ffmpeg progress block into one formatted line', () => {
+    const lines: string[] = []
+    const watch = makeProgressWatcher(5_000, (line) => lines.push(line))
+    for (const line of [
+      'frame=125',
+      'fps=25.00',
+      'out_time_us=2500000',
+      'out_time_ms=2500000',
+      'speed=1.01x',
+      'progress=continue',
+    ]) {
+      watch(line)
+    }
+    expect(lines).toHaveLength(1)
+    expect(lines[0]).toContain('50%')
+  })
+
+  test('a real ffmpeg error line (-v error, no "=") passes through untouched', () => {
+    const lines: string[] = []
+    const watch = makeProgressWatcher(5_000, (line) => lines.push(line))
+    watch('Error opening output files: Encoder not found')
+    expect(lines).toEqual(['Error opening output files: Encoder not found'])
+  })
+
+  test('several reports over one render each produce their own line', () => {
+    const lines: string[] = []
+    const watch = makeProgressWatcher(4_000, (line) => lines.push(line))
+    const block = (outTimeMs: number) => [
+      `out_time_us=${outTimeMs * 1000}`,
+      'speed=1.0x',
+      'progress=continue',
+    ]
+    for (const line of [...block(1_000), ...block(2_000), ...block(4_000)]) {
+      watch(line)
+    }
+    expect(lines).toEqual([
+      expect.stringContaining('25%'),
+      expect.stringContaining('50%'),
+      expect.stringContaining('100%'),
+    ])
+  })
+
+  // Regression: a real render (source.mp4 through vcut's own crop/scale/pad/fps graph, 6s at
+  // 640x480) produced exactly this block as its middle of three reports — out_time_us, speed
+  // and bitrate all N/A while frame and fps stayed numeric in the same block. Read straight
+  // through, Number('N/A') is NaN and the printed line read "NaN% (NaNs/6s) N/A" — worse than
+  // the silence this feature exists to fix. The report is skipped instead: a caller sees two
+  // good lines around the gap rather than one bad one between them.
+  test('an ffmpeg report marked N/A (a real occurrence, not a hypothetical) is skipped, not printed as NaN', () => {
+    const lines: string[] = []
+    const watch = makeProgressWatcher(6_000, (line) => lines.push(line))
+    for (const line of ['frame=67', 'out_time_us=2166667', 'speed=4.31x', 'progress=continue']) {
+      watch(line)
+    }
+    for (const line of [
+      'frame=142',
+      'bitrate=N/A',
+      'out_time_us=N/A',
+      'speed=N/A',
+      'progress=continue',
+    ]) {
+      watch(line)
+    }
+    for (const line of ['frame=180', 'out_time_us=5933333', 'speed=4.94x', 'progress=end']) {
+      watch(line)
+    }
+    expect(lines).toHaveLength(2)
+    expect(lines.some((line) => line.includes('NaN'))).toBe(false)
+    expect(lines[0]).toContain('36%')
+    expect(lines[1]).toContain('99%')
+  })
+})
+
+// runRender shells out to ffmpeg for the render itself, so this is the one test in the file
+// that pays for a real encode. Where ffmpeg is absent the behaviour under test cannot exist,
+// so it skips rather than fails, matching semantic.test.ts's renderedGaps convention.
+const hasFfmpeg = await run('ffmpeg', ['-version'])
+  .then((result) => result.exitCode === 0)
+  .catch(() => false)
+
+describe.if(hasFfmpeg)('runRender progress streaming', () => {
+  let workDir: string
+  let sourcePath: string
+  let sourceHash: string
+
+  beforeAll(async () => {
+    workDir = mkdtempSync(join(tmpdir(), 'vcut-render-wait-'))
+    sourcePath = join(workDir, 'source.mp4')
+    const built = await run('ffmpeg', [
+      '-y',
+      '-f',
+      'lavfi',
+      '-i',
+      'testsrc=duration=2:size=320x240:rate=10',
+      '-f',
+      'lavfi',
+      '-i',
+      'anullsrc=r=48000:cl=stereo',
+      '-t',
+      '2',
+      '-c:v',
+      'libx264',
+      '-pix_fmt',
+      'yuv420p',
+      '-c:a',
+      'aac',
+      sourcePath,
+    ])
+    if (built.exitCode !== 0) {
+      throw new Error(`fixture generation failed: ${built.stderr}`)
+    }
+    sourceHash = createHash('sha256').update(readFileSync(sourcePath)).digest('hex')
+  })
+
+  afterAll(() => {
+    rmSync(workDir, { recursive: true, force: true })
+  })
+
+  // --audio-only, not a video render: what this test exercises is the progress-streaming path
+  // shared by both (runRender's own non-dry-run branch), and audio-only reaches it in
+  // milliseconds instead of the seconds a video encode needs, which is what keeps this fixture
+  // fast enough to run on every `bun test`.
+  const fixtureEdl = (outputPath: string): Edl => ({
+    timebase: 'milliseconds',
+    sources: [
+      {
+        id: 'src-1',
+        path: sourcePath,
+        sha256: sourceHash,
+        durationMs: 2_000,
+        hasVideo: true,
+        hasAudio: true,
+      },
+    ],
+    segments: [{ id: 'seg-1', sourceId: 'src-1', inMs: 0, outMs: 2_000, approval: 'proposed' }],
+    audio: {
+      externalAudioSourceId: null,
+      syncOffsetMs: 0,
+      edgeFadeMs: 0,
+    },
+    output: {
+      path: outputPath,
+      width: 320,
+      height: 240,
+      fps: 10,
+      videoCodec: 'h264',
+      pixelFormat: 'yuv420p',
+      colorSpace: 'bt709',
+      audioTrackPolicy: 'required',
+      overwrite: false,
+    },
+    approval: { status: 'draft', approvedAt: null, approvedBy: null },
+  })
+
+  test('renders in the foreground and reports at least one progress line, stdout untouched', async () => {
+    const outputPath = join(workDir, 'default.mp4')
+    const lines: string[] = []
+    const result = await runRender(fixtureEdl(outputPath), {
+      mode: 'preview',
+      dryRun: false,
+      audioOnly: true,
+      onProgressLine: (line) => lines.push(line),
+    })
+    expect(result.status).toBe('rendered')
+    expect(lines.length).toBeGreaterThan(0)
+    expect(lines.every((line) => !line.startsWith('{'))).toBe(true)
+  })
+
+  test('--quiet renders the same file with no progress lines', async () => {
+    const outputPath = join(workDir, 'quiet.mp4')
+    const lines: string[] = []
+    const result = await runRender(fixtureEdl(outputPath), {
+      mode: 'preview',
+      dryRun: false,
+      audioOnly: true,
+      quiet: true,
+      onProgressLine: (line) => lines.push(line),
+    })
+    expect(result.status).toBe('rendered')
+    expect(lines).toHaveLength(0)
   })
 })

@@ -355,8 +355,11 @@ vcut render --edl edl.json --mode preview
 | `--mode <name>` | `preview` | `preview` or `master` |
 | `--audio-only` | off | Render the audio alone, for iterating |
 | `--dry-run` | off | Print the ffmpeg command without running it |
+| `--quiet` | off | Skip the progress lines on stderr |
 
 `preview` accepts proposed segments. `master` refuses unless the EDL is approved, every segment is approved, every source hash still matches, and the output path is free. It will not overwrite.
+
+**`render` blocks in the foreground until ffmpeg exits.** There is no background mode: the call you make is the render, start to finish. While it runs, one progress line lands on stderr per report from ffmpeg's own `-progress` output — time rendered, percent of the EDL's own duration, encode speed — so a render that takes tens of seconds to minutes never sits silent. stdout stays reserved for the result: nothing to poll a file for, nothing to grep a process table for. `--quiet` drops the progress lines and renders exactly the same file.
 
 After rendering, vcut probes the file it produced and validates it against the EDL. A mismatch fails the run instead of shipping a bad file.
 
