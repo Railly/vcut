@@ -99,6 +99,8 @@ Piped or captured, the same command emits JSON. No flag needed.
 | `vcut peek <media> (--ref \| --at)` | The four views of a position aligned in one call: cached transcript, re-transcribed audio, fine-resolution speech/silence blocks, level, and their disagreement named |
 | `vcut cut <media> --refs \| --span` | Proposes a semantic cut against a session's block refs, shows what it removes before any build |
 | `vcut commit <media> [flags]` | Builds and renders a session's accumulated proposals into a draft EDL, byte-identical to `edl build` run by hand |
+| `vcut rounds <media> [--diff N M]` | A session's committed rounds; `--diff` compares two build reports (removalPercent, segments, semantic cuts by span overlap) |
+| `vcut session list\|gc [flags]` | Lists sessions with size and lock state; `gc` clears disposable session cache (dry-run by default, `--apply` to delete) |
 | `vcut schema [name]` | The JSON contract per command, versioned |
 | `vcut skills get vcut` | The bundled agent manual, as markdown |
 | `vcut init` | Installs everything a first run needs, and reports what it could not |
@@ -198,6 +200,7 @@ JSON is emitted automatically when stdout is not a TTY, so an agent never needs 
 - **Nothing is approved automatically.** Segments are born `proposed`, the EDL `draft`. There is no `--yes`.
 - **Renders are reproducible.** The same EDL produces a byte-identical file, verified by the `sha256` in the output.
 - **The renderer checks its own work** against the EDL: dimensions, pixel format, colour metadata, frame count, audio contract. A mismatch fails the run rather than shipping a bad file.
+- **Session cache never eats an approved edit.** `commit` writes the EDL wherever `--output`/`--edl` pointed, never inside a session directory `session gc` can clear; gc is dry-run unless `--apply` is passed, and a session a live process is writing to is always protected from it.
 
 ## Limits
 

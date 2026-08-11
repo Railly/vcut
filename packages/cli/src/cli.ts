@@ -24,8 +24,11 @@ import {
 } from './output.ts'
 import { peekCommand } from './peek.ts'
 import { renderCommand } from './render-edl.ts'
+import { roundsCommand } from './rounds-command.ts'
 import { sayCommand } from './say.ts'
 import { semanticCommand } from './semantic.ts'
+import { listSessions } from './session.ts'
+import { sessionCommand } from './session-command.ts'
 import { silencesCommand } from './silences.ts'
 import { skillsDir } from './skills-dir.ts'
 import { suspectsCommand } from './suspects.ts'
@@ -54,6 +57,8 @@ Usage:
   vcut peek <media> (--ref|--at)     The four views of a position, aligned, disagreement named
   vcut cut <media> --refs|--span     Propose a semantic cut against a session, see what it removes
   vcut commit <media> [flags]        Build + render a session's proposals into a draft EDL
+  vcut rounds <media> [--diff N M]   A session's committed rounds, diffed between two
+  vcut session list|gc [flags]       See what a session store holds, and clear it explicitly
   vcut schema [name]                 Print the JSON contract for a command
   vcut skills list|get [name]        Read the bundled agent manual
   vcut doctor                        Check external dependencies
@@ -101,6 +106,35 @@ export const classifierStatus = (present: boolean[]): { ok: boolean; detail: str
   }
 }
 
+// The detector kai-doctor.sh's own audit named as missing before it existed: a cache directory
+// that grows without anything watching its size or its orphans (~/.kai/logs reaching 609MB
+// unnoticed is the precedent). Absent sessions dir reports zero across the board rather than
+// an error — a machine that has never run vcut open has nothing wrong with it.
+export type SessionsHealth = {
+  count: number
+  totalMb: number
+  orphanCount: number
+  oldestCreatedAt: string | null
+}
+
+export const sessionsHealth = (): SessionsHealth => {
+  const sessions = listSessions()
+  if (sessions.length === 0) {
+    return { count: 0, totalMb: 0, orphanCount: 0, oldestCreatedAt: null }
+  }
+  const totalBytes = sessions.reduce((total, session) => total + session.sizeBytes, 0)
+  const orphanCount = sessions.filter((session) => !session.sourceExists).length
+  const oldest = sessions.reduce((earliest, session) =>
+    session.createdAt < earliest.createdAt ? session : earliest,
+  )
+  return {
+    count: sessions.length,
+    totalMb: Number((totalBytes / (1024 * 1024)).toFixed(2)),
+    orphanCount,
+    oldestCreatedAt: oldest.createdAt,
+  }
+}
+
 const doctorCommand = async (argv: string[]): Promise<void> => {
   const mode: Mode = resolveMode(argv, Boolean(process.stdout.isTTY))
   const checks = await Promise.all(
@@ -122,15 +156,27 @@ const doctorCommand = async (argv: string[]): Promise<void> => {
   const classifier = classifierStatus(
     CLASSIFIER_FILES.map((file) => existsSync(join(CLASSIFIER_HOME, file.name))),
   )
+  const sessions = sessionsHealth()
 
   if (mode === 'json') {
-    emitJson({ ok: missing.length === 0, checks, classifier })
+    emitJson({ ok: missing.length === 0, checks, classifier, sessions })
   } else {
     const lines = [heading('dependencies')]
     for (const check of checks) {
       lines.push(line(check.name, check.ok ? check.version : `MISSING - needed for ${check.why}`))
     }
     lines.push(line('non-speech classifier', classifier.ok ? classifier.detail : classifier.detail))
+    lines.push(
+      line(
+        'sessions',
+        sessions.count === 0
+          ? 'none'
+          : `${sessions.count}, ${sessions.totalMb}MB, ${sessions.orphanCount} orphan(s), oldest ${sessions.oldestCreatedAt}`,
+      ),
+    )
+    if (sessions.orphanCount > 0) {
+      lines.push(nextStep('vcut session gc  # dry-run first, --apply to clear orphans'))
+    }
     if (missing.length > 0) {
       lines.push(nextStep(`brew install ${missing.map((check) => check.name).join(' ')}`))
     }
@@ -426,9 +472,10 @@ const CONTRACTS: Record<string, unknown> = {
     notes: [
       'Sessions are addressed by content: ~/.vcut/sessions/<first 16 hex chars of the sha256>/. The same bytes at two paths share a session; the same path with new content gets a new one.',
       "Refs (b001, b002, ...) are the speech blocks between the cached detect report's own silences, in time order. They derive from detect.silences, never from vcut silences, which answers a different, caller-chosen resolution question.",
-      'A re-open with a different --preset re-detects and bumps gen. Refs from an earlier gen describe a silence list this session no longer has; a later slice (cut) rejects them by name rather than silently reusing stale boundaries.',
+      "A re-open with a preset this session has never used re-detects and assigns it a new gen. Refs from an earlier gen describe a silence list this session no longer has; cut/peek reject them by name rather than silently reusing stale boundaries. Gen derives from the effective preset, not from whether the immediately previous open differed: returning to a preset this session has already used before returns to that preset's own original gen rather than minting a new one, so noisy -> clean -> noisy reads gen 1, 2, 1, never 1, 2, 3.",
       'This reports counts, not content: no spoken text appears anywhere in this output. Reading what is actually said at a position is a later verb (peek, not in this slice).',
       'video scan (black/frozen frame detection) is skipped: refs and the suspects ranking only need silences, and the scan is real ffmpeg time this command has no use for.',
+      "With --transcript, the cached detect report's transcript.path is rewritten to the session's own copy at cache time, so every later reader of the cached detect (commit, a hand-inspected detect.json) sees a path guaranteed to still resolve rather than whatever external path this call happened to be given.",
     ],
   },
   peek: {
@@ -474,7 +521,7 @@ const CONTRACTS: Record<string, unknown> = {
       "--refs takes a single ref or an inclusive range (b042..b044): the span runs from the first ref's start to the second's end. Resolution reuses peek's resolveRef, so an unknown or stale-gen ref is a usage error naming the ref and the session's current gen, not a guess.",
       '--span <startS>..<endS> is the escape hatch for a raw span when no ref fits. Mutually exclusive with --refs.',
       "removedText is quoted from the session's cached transcript at propose time, before any build runs — the corrective for a cut whose span drifted onto the wrong words unnoticed until a render.",
-      "Appends to the session's proposals.json (created on first cut). No lockfile: two writers on one session is B-V4.",
+      "Appends to the session's proposals.json (created on first cut). Proposing and --drop take the session's advisory lock for the write and release it after; --list never locks. A session already locked by a live process fails with an error naming its pid, verb, and age.",
     ],
   },
   commit: {
@@ -496,6 +543,35 @@ const CONTRACTS: Record<string, unknown> = {
       'The EDL is written to the current directory by default, never only inside the session: it is the artefact a human approves.',
       "--audio-only is the default render (matching the manual's per-round rule); --video renders the preview instead. Master mode never happens here.",
       'Approval is a human edit to the EDL followed by vcut render --edl <path> --mode master. This command drafts and previews only; it never writes approval.status.',
+      "Takes the session's advisory lock (pid+startedAt+verb in lock.json) for the build+render, released after. A second writer on a session already locked by a live process gets a non-usage error naming the holder's pid, verb, and age. On success the session is marked committed, which vcut session gc reads as a candidate — nothing is deleted here or automatically.",
+    ],
+  },
+  rounds: {
+    version: SCHEMA_VERSION,
+    command: 'vcut rounds',
+    output: {
+      default: '{ version, input, sessionDir, rounds: number[] }',
+      '--diff': '{ version, input, sessionDir, diff: RoundsDiff }',
+    },
+    notes: [
+      'Without --diff, lists every round number this session has committed, ascending. With --diff <N> <M>, compares round N against round M; omitting N and M diffs the latest two.',
+      'RoundsDiff: { fromRound, toRound, removalPercentDelta, segmentCountDelta, semanticCuts: [{status: "added"|"removed"|"changed"|"unchanged", from?, to?}] }. semanticCuts entries are matched between rounds by span overlap, not by array position, since a proposal\'s exact edges can shift slightly between rounds without being a different decision.',
+      "This diffs each round's build report (removalPercent, segments, semanticCuts — the same data vcut commit already writes to rounds/round-N/report.json), not either round's actual render: a text-level diff of what a render says needs a transcript of it, and vcut does not store renders or their transcripts in a session. Confirm a semantic diff with vcut peek or say --transcribe on the renders themselves.",
+      "The session must already exist with at least 2 committed rounds for --diff; like cut and commit, this reads a session's history rather than creating one.",
+    ],
+  },
+  session: {
+    version: SCHEMA_VERSION,
+    command: 'vcut session list | vcut session gc',
+    output: {
+      list: '{ version, sessions: SessionSummary[] }',
+      gc: '{ version, applied: boolean, olderThanDays: number|null, candidates: GcCandidate[], deleted: number }',
+    },
+    notes: [
+      'SessionSummary: { sessionDir, sourcePath, sourceExists, sizeBytes, createdAt, committedRounds, committedAt, locked }.',
+      'GcCandidate: { sessionDir, sourcePath, sizeBytes, reasons: ("orphan"|"committed"|"older-than"|"locked-protected")[], deletable }.',
+      'gc is dry-run by default: it classifies every session and reports what would go, deleting nothing until --apply is also passed. A session is a candidate when its source file no longer exists (orphan), it has committed at least one round (committed), or --older-than <days> was given and it qualifies (older-than). A session a live process currently holds the lock on is always locked-protected and never deletable regardless of any other reason.',
+      'Nothing here can reach an approved EDL: vcut commit writes it to --output/--edl, wherever the caller pointed, never inside a session directory. gc clearing a whole session only ever removes the disposable detect cache, transcript copy, refs, proposals, and round history behind it.',
     ],
   },
   say: {
@@ -739,6 +815,12 @@ export const route = async (argv: string[]): Promise<void> => {
   }
   if (command === 'commit') {
     return commitCommand(rest)
+  }
+  if (command === 'rounds') {
+    return roundsCommand(rest)
+  }
+  if (command === 'session') {
+    return sessionCommand(rest)
   }
   if (command === 'schema') {
     return schemaCommand(rest)

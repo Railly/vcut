@@ -45,6 +45,9 @@ ran.
 | What text is a semantic span about to remove, before I render anything? | `edl build` → read `semanticCuts[].removedText`, or `cut` (below) to see it before you even build |
 | Propose a cut against a session, by ref, and see what it removes before building? | `cut <media> --refs b042..b044 --kind <k> --reason "..."` |
 | Build and render everything a session has accumulated, in one call? | `commit <media> --output <path> --campaign <id>` |
+| What changed between two committed rounds? | `rounds <media> --diff` — removalPercent delta, segment count delta, semanticCuts added/removed/changed |
+| What sessions exist, how big are they, which are stale? | `session list` |
+| Clear disposable session cache without touching an approved EDL? | `session gc` (dry-run by default, `--apply` to delete) |
 | Did a proposed cut survive into the render? | `semantic review` (what remains), then `semantic check --review` (exit 2 if a named repeat is unanswered) |
 | Where in the master does a source position land, or the reverse? | `locate --master <s>` / `locate --source <s>` |
 | Did the render carry the wrong material at a join? | `audit --edl <path> --render <path>` |
@@ -64,6 +67,8 @@ ran.
 | checking whether four instruments agree about one position, instead of juggling them by hand | **peek** |
 | proposing a cut against a session instead of hand-typed milliseconds | **cut** |
 | building and rendering a session's accumulated proposals in one call | **commit** |
+| comparing what two committed rounds actually changed | **rounds** |
+| seeing what a session store holds, or clearing it | **session** |
 | checking a breath or a filler the transcript cannot see | **Non-verbal sound needs a classifier, not a statistic**, **The muletillas playbook** |
 | placing a boundary at sub-second resolution | **silences** |
 | deciding whether a cut is worth making | **semantic → How hard to cut** |
@@ -414,19 +419,33 @@ where they wrote it, not inside a session directory a future `session gc` can cl
 
 `open` runs `detect` once and caches the report. A second `open` on unchanged media at the
 same preset serves that cache instead of re-running ffmpeg: `cached: true` in the output, and
-the difference is not subtle — seconds against a fraction of one. A different `--preset`
-re-detects on purpose and bumps the session's `gen` counter, because a new threshold measures
+the difference is not subtle — seconds against a fraction of one. A `--preset` this session has
+never used re-detects on purpose and assigns it a new `gen`, because a new threshold measures
 different silences.
+
+**`gen` derives from the effective preset, not from "did the immediately previous open
+differ".** A session remembers every preset it has ever detected with and the `gen` each one
+was first assigned, so returning to a preset already used returns to that preset's own
+generation rather than minting a new one: `noisy` (gen 1) → `clean` (gen 2) → `noisy` again
+reads gen **1**, not gen 3. Before this, three opens in that sequence produced gen 1, 2, 3 even
+though the third open's blocks were byte-identical to the first's — same source, same
+threshold, same silences — and a caller holding a `b`-ref from the first open saw it rejected
+by name on the third despite nothing about the recording having changed.
 
 Those silences are what `open` turns into **refs**: the speech blocks between them, numbered
 `b001`, `b002`, ... in time order. A ref names a block the way a browser snapshot names an
 element — something later verbs point at instead of a raw millisecond pair. Refs derive from
 `detect`'s silence list, never from `vcut silences` (a different, caller-chosen resolution), and
-a ref from an old `gen` describes boundaries the session no longer has.
+a ref from a `gen` the session is not currently at describes boundaries the session no longer
+resolves against — even if that same `gen` was correct a moment ago and will be correct again
+after another `open`.
 
-`--transcript` caches a copy of the SRT into the session; without it, `open` still works — refs
-come from silences, not words — and the output says a semantic pass will need one before it can
-run.
+`--transcript` caches a copy of the SRT into the session and points the cached detect report's
+own `transcript.path` at that session copy, so every later reader of `cachedDetect` — `commit`,
+a hand-inspected `detect.json` — gets a path guaranteed to still resolve rather than whatever
+external path this call happened to be given (which can move or be deleted after `open`
+returns). Without `--transcript`, `open` still works — refs come from silences, not words —
+and the output says a semantic pass will need one before it can run.
 
 **This is the map, not the read.** `open`'s output reports counts: duration, preset, gen,
 silence count, block count, whether a transcript is cached, and the top 10 suspects (same
@@ -540,10 +559,12 @@ removes one by its 0-based position — a human changing their mind about a prop
 normal step, and editing that JSON by hand is exactly the friction this arc exists to remove.
 Re-adding after a drop appends at the end, not back at the dropped slot.
 
-No lockfile guards two writers on the same session here — that is `session gc`'s neighbour in
-B-V4. `cut` and `commit` both read-modify-write `proposals.json` the way every other session
-file already does, which is correct for one writer and is exactly the gap the later lock
-closes for two.
+Proposing (and `--drop`) take the session's advisory lock for the duration of the write and
+release it after; `--list` never locks, since it only reads. A second writer on a session
+already locked by a live process gets an error naming the holder's pid, verb, and how long ago
+it started — a lock held by a dead pid (a crashed process, a killed agent) clears itself
+automatically on the next attempt by anyone, rather than needing a human to notice and delete
+`lock.json` by hand. See **session** below for the full lock and gc story.
 
 ## commit
 
@@ -601,6 +622,140 @@ Approval is a human edit to the EDL — `approval.status` to `"approved"`, each 
 `commit` only ever drafts and previews; it does not write approval and it does not accept
 `--mode master`. If you find yourself wanting `commit` to finish a master, that want is the
 approval step arriving early, and the answer is still the same: hand the EDL to a human.
+
+**Takes the session's advisory lock for the whole build+render**, released after (or on error —
+a `finally`, not a happy-path-only release). A session already locked by another live process
+refuses with the same holder-naming error `cut` gives. **On success, the session is marked
+`committed`** — the spike's B7-Q2 rule: a successful commit is the signal `session gc` reads as
+a candidate to clear, never a signal that triggers deletion by itself.
+
+## rounds
+
+```bash
+vcut rounds recording.mp4
+vcut rounds recording.mp4 --diff 1 2
+vcut rounds recording.mp4 --diff
+```
+
+A session's own history of what got built. Without `--diff`, lists every round number this
+session has committed, ascending. With `--diff <N> <M>`, compares round `N`'s build report
+against round `M`'s; omitting the two numbers diffs the latest two rounds — the common case of
+"what did the last commit change".
+
+```
+round 1 -> round 2
+  removalPercent          +13.33%
+  segments                +1
+  added                   3.00-4.00s  tangent: "..."
+```
+
+`removalPercentDelta` and `segmentCountDelta` are arithmetic on the two rounds' own build
+summaries. `semanticCuts` is the more useful part: each round's semantic cuts are matched
+against the other's **by span overlap**, not by array position, so a proposal whose exact edges
+shifted slightly between rounds (a neighbouring cut absorbed it, or a re-clamp moved an edge a
+few milliseconds) still reads as the same cut rather than one removed and one added. An entry
+reports `added` (only in the later round), `removed` (only in the earlier one), `changed`
+(matched, but kind/reason/removedText differ), or `unchanged` (matched and identical) — and a
+session with nothing semantically different between two rounds says so explicitly rather than
+printing an empty list a reader has to interpret.
+
+**This diffs what each round's build asked for, not what either round's render actually
+says.** The build report `rounds/round-N/report.json` already carries — `removalPercent`,
+`segments`, `semanticCuts` with their `removedText` — is what gets compared. A text-level diff
+of what a render's own transcript changed needs a transcript of that render, and a session
+never stores one: renders and their transcripts stay out of the session on purpose (B2-Q2,
+same reasoning `commit`'s own manual entry gives — cheap to regenerate, expensive to keep).
+Confirm a semantic diff against what a render actually sounds like with `peek` or
+`say --transcribe` on the renders themselves before trusting it alone.
+
+**The session must already exist, with at least two committed rounds for `--diff`.** Like `cut`
+and `commit`, `rounds` reads a session's history rather than creating one; the error for a
+missing session or a session with fewer than two rounds names exactly what to run first.
+
+## session
+
+```bash
+vcut session list
+vcut session gc
+vcut session gc --apply
+vcut session gc --older-than 14 --apply
+```
+
+`list` shows every session under `~/.vcut/sessions/`: its source path and whether that source
+file still exists, size on disk, when it was created, how many rounds it has committed, and
+whether a live process currently holds its advisory lock right now.
+
+```
+sessions  1
+  3598be07ca334db2       source ok  0.25MB  2 round(s)
+                         /Users/name/Documents/recording.mp4
+```
+
+`gc` classifies every session against the reasons it could be cleared, **without deleting
+anything unless `--apply` is also given** — dry-run is the default behaviour, not a flag you
+have to remember to add. A session is a candidate when:
+
+- **`orphan`** — its source file no longer exists (moved, renamed, deleted).
+- **`committed`** — at least one `commit` ran successfully against it. The spike's B7-Q2 rule
+  in one sentence: a successful commit is what marks a session disposable, and nothing marks it
+  automatically before that.
+- **`older-than`** — only when `--older-than <days>` is passed; omitted, age alone never
+  qualifies a session. There is no default threshold to guess at here.
+
+A session a live process currently holds the **lock** on is always `locked-protected` and
+**never deletable**, whatever else is true of it — `gc` racing a `cut` or `commit` in progress
+would delete state out from under a real write, which is exactly the failure mode the lock
+exists to prevent.
+
+```
+gc dry-run  1 of 3 session(s) would go
+  a1b2c3d4e5f60718        orphan  0.31MB  would delete
+  3598be07ca334db2        (none)  0.25MB  protected
+
+  Next:
+    vcut session gc --apply
+```
+
+**The EDL a human approved is never at risk.** `commit` writes it wherever `--output`/`--edl`
+pointed — the current directory by default, never inside a session directory `gc` manages — so
+clearing a whole session directory can only ever remove the disposable detect cache, transcript
+copy, refs, proposals, and round history behind it. This is the same guarantee `session.ts`'s
+own header comment states from the writer's side, restated here from the reader's: `session gc`
+cannot eat an approved edit by construction, not by care taken at call time.
+
+### Advisory lock
+
+`cut`'s mutating paths (propose, `--drop`) and `commit` take the session's advisory lock before
+writing and release it in a `finally`, so it clears even when the write itself fails. Readers —
+`open`, `peek`, `cut --list`, `rounds` — never lock, per the spike's B7-Q1 resolution: locking a
+read would block a second agent from merely looking at a session another agent is actively
+writing to, which is a cost this arc has no reason to pay.
+
+The lock lives at `lock.json` inside the session: `{ pid, startedAt, verb }`. A second writer
+finding a lock whose pid is still alive gets refused with an error naming that pid, the verb it
+is running, and how long ago it started — enough for a human or another agent to decide whether
+to wait or investigate. A lock whose pid is no longer alive (the process that held it crashed,
+was killed, or the machine restarted) is stale, and clears itself automatically the next time
+anyone attempts to acquire it — nobody has to notice a stale lock and delete `lock.json` by
+hand for the session to become writable again.
+
+This is deliberately not a kernel-level lock (`flock`/`fcntl`). It is a courtesy between
+cooperating writers — two agents, or an agent and a human, sharing one session — and honest
+about the gap that leaves: two writers racing the exact same instant could both pass the check
+before either writes `lock.json`. That gap is not the failure mode B7-Q1 was written against
+(the real case is one writer actively working a session while a second one starts later), and
+closing it would need a kernel primitive this store does not use.
+
+`open` writing `--transcript` and `open`'s own re-detect on a new preset never lock: they are
+read/derive operations from the session's own model (B7-Q1 says readers never lock), even
+though `open` does write `detect.json` and `refs.json`. Those writes are idempotent derivations
+of the source file's own bytes — running `open` twice with the same preset produces byte-identical
+detect and refs output, so two concurrent `open` calls racing each other converge on the same
+answer rather than corrupting anything, which is a different guarantee than "two proposals
+racing each other must not interleave into `proposals.json`". If a real corruption path from a
+concurrent `open` ever surfaces (a partial write of `detect.json` observed mid-write by a second
+reader, say), that would be the trigger to lock it too — none has been found, so it stays
+lockless per B7-Q1's letter and its actual reasoning.
 
 **No lock, no gc, no rounds diff yet.** Two writers committing the same session concurrently,
 cleaning up old rounds, and comparing one round's transcript against the next are B-V4.
@@ -1014,7 +1169,7 @@ vcut proposes. The human decides.
 | crop options | acceptable jump cuts |
 | | which mistakes stay human |
 
-Never mark segments approved on the human's behalf. Never render a master without explicit approval. Never overwrite source media.
+Never mark segments approved on the human's behalf. Never render a master without explicit approval. Never overwrite source media. `session gc` never runs on its own — clearing session cache is always a command a human or agent chooses to run, and `--apply` is required even then; dry-run is the default so nothing is ever deleted by accident.
 
 ## Workflow for an agent
 
@@ -1022,7 +1177,10 @@ Never mark segments approved on the human's behalf. Never render a master withou
    that is missing, the transcriber, the transcription model and the skills, and reports
    anything it could not do. The model is the piece worth naming: without a large one the
    semantic pass reads a transcript split mid-token, so its absence produces a worse cut rather
-   than an error. `vcut doctor` any time something looks wrong afterwards.
+   than an error. `vcut doctor` any time something looks wrong afterwards — it also reports
+   session count, total size, and orphans (source file gone), the detector class that was
+   missing when a different cache directory grew to 609MB unnoticed. `vcut session gc` clears
+   what it finds.
 2. Transcribe the source word-level with a large model.
 3. `vcut detect <input>` with the preset that matches the recording condition.
 4. Read the warnings. If the transcript is not word-level, say so: clamping is off and cuts can land inside a word.
@@ -1109,6 +1267,16 @@ nothing malformed passes: an inverted span, a span past the end of the source, a
 kind, or an empty `reason` is refused by index and aborts the build. A proposal that vanished
 between check and build would read as you choosing not to cut there, which is worse than a
 refusal.
+
+`semanticRisk: material` is measured against each proposal's **merged** span, not the raw span
+you proposed. A proposal that sits close enough to a neighbouring silence cut (or another
+proposal) absorbs into a wider cut before segments are inverted — the pipeline's own
+merge/absorb step, the same one `edl build`'s `removedText` and `boundariesInSilence` already
+read from. A ~9.4s proposal that absorbed a neighbour into a ~10s merged cut used to be
+compared against its own raw 9.4s edges, so the segments touching the merged cut's real,
+slightly wider boundary read `semanticRisk: none` — exactly the segments a reviewer approving
+"what did the model choose to remove" needs flagged, since the render carries the full merged
+span regardless of which raw proposal edge produced it.
 
 `reason` is read by a human deciding whether to approve. Say what is lost, not what rule
 matched. Proposing nothing is a valid answer.
@@ -1712,3 +1880,5 @@ less than an issue.
   Loudness normalisation is the part that is safe to automate, and that is on by default.
 - No face tracking or automatic zoom.
 - A silence detector decides by level, so a soft consonant under the threshold is cut like a pause. If a word loses its opening sound, the fix is the recording or a lower threshold, not a larger margin.
+- The advisory lock (`cut`, `commit`) is a courtesy, not a kernel-level guarantee. Two writers racing the exact same instant could both pass the check before either writes `lock.json`; it protects against the real case (one writer actively working a session while a second starts later), not an adversarial simultaneous write.
+- `rounds --diff` compares build reports, not renders. It cannot tell you whether a render's actual audio changed between two rounds — only what the build asked for. Confirm with `peek` or `say --transcribe` on the renders themselves.

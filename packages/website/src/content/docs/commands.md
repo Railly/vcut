@@ -23,6 +23,8 @@ vcut open <media> [flags]          Open or resume a session, map its blocks with
 vcut peek <media> (--ref|--at)     The four views of a position, aligned, disagreement named
 vcut cut <media> --refs|--span     Propose a semantic cut against a session, see what it removes
 vcut commit <media> [flags]        Build + render a session's proposals into a draft EDL
+vcut rounds <media> [--diff N M]   A session's committed rounds, diffed between two
+vcut session list|gc [flags]       See what a session store holds, and clear it explicitly
 vcut schema [name]                 Print the JSON contract for a command
 vcut skills list|get [name]        Read the bundled agent manual
 vcut doctor                        Check external dependencies
@@ -166,7 +168,9 @@ vcut open recording.mp4 --preset clean --lang es --transcript words.srt
 
 Opens or resumes a session keyed by the content of the source, not its path: `~/.vcut/sessions/<sha256-16>/`. The same bytes at two paths share a session; the same path with new content gets one of its own. Everything inside is disposable cache, not an artifact — the EDL a human approves still lives where they wrote it.
 
-`open` runs `detect` once and caches the report. A second `open` on unchanged media at the same preset reuses that cache instead of re-running ffmpeg (`cached: true` in the output); a different `--preset` re-detects and bumps the session's `gen` counter.
+`open` runs `detect` once and caches the report. A second `open` on unchanged media at the same preset reuses that cache instead of re-running ffmpeg (`cached: true` in the output); a preset this session has never used re-detects and assigns it a new `gen`.
+
+`gen` derives from the **effective preset**, not from whether the immediately previous open differed: a session remembers every preset it has ever used and the `gen` each was first assigned, so returning to a preset already used returns to that preset's own generation rather than minting a new one. `noisy` → `clean` → `noisy` reads gen 1, 2, 1 — never 1, 2, 3.
 
 Those silences become **refs**: the speech blocks between them, numbered `b001`, `b002`, ... in time order — something a later verb can point at instead of a raw millisecond pair. Refs derive from `detect`'s own silence list, never from `vcut silences`.
 
@@ -174,7 +178,7 @@ Those silences become **refs**: the speech blocks between them, numbered `b001`,
 | --- | --- |
 | `--preset <name>` | `noisy` (-20 dB, default) \| `clean` (-30 dB) \| `podcast` (-35 dB) |
 | `--lang <code>` | Recording language, free-form (default `es`) |
-| `--transcript <path>` | Caches an SRT into the session. Without it, `open` still works — refs come from silences, not words |
+| `--transcript <path>` | Caches an SRT into the session and points the cached detect report's own `transcript.path` at that copy, so every later reader gets a path guaranteed to still resolve. Without it, `open` still works — refs come from silences, not words |
 
 `open`'s output is counts, not content: duration, preset, gen, silence and block counts, whether a transcript is cached, and the top 10 suspects (same ranking as `suspects`, each with the nearest block ref). No spoken text appears anywhere in it. Reading what a ref actually says, and cutting against refs, are later verbs.
 
@@ -218,6 +222,8 @@ Proposes a semantic cut against a session's own refs, and shows what it removes 
 
 The session must already exist — `cut` never creates one, and a ref from an earlier generation is a usage error naming the ref and the session's current `gen`, the same enforcement `peek` already applies. `removedText` is quoted from the session's cached transcript, not re-transcribed. Proposals accumulate in the session's `proposals.json`; `--list`/`--drop` read and edit that list without hand-editing JSON.
 
+Proposing and `--drop` take the session's advisory lock for the write and release it after; `--list` never locks. A session already locked by a live process fails naming the holder's pid, verb, and age — see **vcut session** below for the full lock story.
+
 ### vcut commit
 
 ```bash
@@ -236,6 +242,59 @@ Builds the EDL from a session's cached detect report and its accumulated proposa
 | `--fps`, `--width`, `--height`, `--edge-fade`, `--crop` | Passed through to the build, same as `edl build` |
 
 Records the round in the session (`rounds/round-N/`: the EDL copy and the build report); renders and wavs stay out of it. **Master mode never happens here.** Approval is a human edit to the EDL followed by the existing `vcut render --edl <path> --mode master` — this command only ever drafts and previews.
+
+Takes the session's advisory lock for the whole build+render, released in a `finally`. **On success, marks the session `committed`** — the signal `vcut session gc` reads as a candidate to clear, never a trigger that deletes anything itself.
+
+### vcut rounds
+
+```bash
+vcut rounds recording.mp4
+vcut rounds recording.mp4 --diff 1 2
+vcut rounds recording.mp4 --diff
+```
+
+A session's own history of what got built. Without `--diff`, lists every committed round number, ascending. With `--diff <N> <M>`, compares round `N`'s build report against round `M`'s; omitted, diffs the latest two.
+
+| Flag | What it does |
+| --- | --- |
+| `--diff [N M]` | Compare two rounds' build reports. Omit N and M to diff the latest two |
+
+Reports `removalPercentDelta`, `segmentCountDelta`, and `semanticCuts` matched between rounds **by span overlap**, not array position — a proposal whose edges shifted slightly between rounds (absorbed by a neighbouring cut, re-clamped) still reads as the same cut. Each entry is `added`, `removed`, `changed`, or `unchanged`.
+
+This diffs what each round's **build** asked for (`rounds/round-N/report.json`, the same data `commit` writes), not what either round's **render** actually says: a text-level diff needs a transcript of each render, and a session never stores renders or their transcripts (cheap to regenerate, expensive to keep). Confirm a semantic diff against the actual renders with `peek` or `say --transcribe` before trusting it alone.
+
+The session must already exist with at least two committed rounds for `--diff` — like `cut` and `commit`, this reads a session's history rather than creating one.
+
+### vcut session
+
+```bash
+vcut session list
+vcut session gc
+vcut session gc --apply
+vcut session gc --older-than 14 --apply
+```
+
+`list` shows every session under `~/.vcut/sessions/`: source path and whether it still exists, size on disk, creation time, committed round count, and whether a live process currently holds its lock.
+
+`gc` classifies every session against the reasons it could be cleared, **without deleting anything unless `--apply` is given** — dry-run is the default, not a flag to remember.
+
+| Flag | What it does |
+| --- | --- |
+| `--apply` | Actually delete what was classified deletable. Without it, gc only reports |
+| `--older-than <days>` | Also classify sessions older than this many days. Omitted, age alone never qualifies a session |
+
+A session is a gc candidate when:
+
+| Reason | Condition |
+| --- | --- |
+| `orphan` | Its source file no longer exists |
+| `committed` | At least one `commit` ran successfully against it |
+| `older-than` | Only with `--older-than <days>`, and it qualifies |
+| `locked-protected` | A live process currently holds its lock — **always wins**, never deletable regardless of any other reason |
+
+**The EDL a human approved is never at risk.** `commit` writes it wherever `--output`/`--edl` pointed, never inside a session directory `gc` manages, so clearing a whole session directory can only ever remove the disposable detect cache, transcript copy, refs, proposals, and round history behind it.
+
+**Advisory lock.** `cut`'s mutating paths and `commit` take a lock (`lock.json`: `{ pid, startedAt, verb }`) before writing and release it after, even on error. Readers (`open`, `peek`, `cut --list`, `rounds`) never lock. A second writer finding a live pid's lock is refused with an error naming that pid, its verb, and how long ago it started; a lock whose pid is no longer alive clears itself automatically on the next attempt, with no need for a human to delete `lock.json` by hand. This is a courtesy between cooperating writers, not a kernel-level guarantee — two writers racing the exact same instant could both pass the check before either writes the file.
 
 ### vcut semantic
 
@@ -256,7 +315,7 @@ vcut edl build --detect detect.json --semantic proposals.json ...
 | `review --edl <path> --detect <path>` | Reads an EDL back: what survives, and where nobody looked |
 | `--terse` (export, review) | Omits the instructions block, identical every call and 72% of one measured payload |
 
-A proposal is `{startMs, endMs, kind, reason}` where `kind` is `false-start`, `repetition`, `tangent`, `filler`, or `non-speech`. Every semantic cut lands as `semanticRisk: material` on the segments around it, so a reviewer can find them without reading all of them.
+A proposal is `{startMs, endMs, kind, reason}` where `kind` is `false-start`, `repetition`, `tangent`, `filler`, or `non-speech`. Every semantic cut lands as `semanticRisk: material` on the segments around it, so a reviewer can find them without reading all of them. Measured against each proposal's **merged** span (after it absorbs a neighbouring silence cut or another proposal), not the raw span proposed — a segment touching the wider, real cut boundary reads `material` even when its edge sits past where the raw proposal ended.
 
 Nothing malformed passes: an inverted span, a span past the end of the source, an unknown kind, or an empty `reason` is refused by index and aborts the build. A proposal that vanished between check and build would read as the model choosing not to cut there, which is worse than a refusal.
 
@@ -451,6 +510,8 @@ The guide ships inside the npm package and is served by the CLI itself, so it al
 Checks that `ffmpeg` and `ffprobe` are reachable and reports their versions. Exits non-zero when either is missing.
 
 It also reports the optional non-speech classifier, which is a supported absence rather than a failure: without it the check it performs falls back to a human ear.
+
+And it reports sessions: how many exist, their total size, how many are orphans (source file gone), and the oldest one's creation date — one line in human mode, a `sessions` object in JSON. An absent sessions directory reports zero across the board rather than an error: a machine that has never run `vcut open` has nothing wrong with it. This is the detector class that was missing when a different cache directory grew to 609MB unnoticed — `vcut session gc` is the fix once `doctor` reports something to clear.
 
 ### Exit codes
 

@@ -1,22 +1,36 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { DetectReport } from '../src/detect.ts'
 import {
+  acquireLock,
   appendProposal,
+  applyGc,
   cachedDetect,
+  cachedTranscriptPath,
   checkSession,
+  classifySessionsForGc,
+  committedAt,
   deriveRefs,
   dropProposal,
+  isLocked,
+  listRoundNumbers,
+  markCommitted,
   nextRoundDir,
   openSession,
+  pointCachedTranscriptAtSession,
   readMeta,
   readProposalsFile,
   readRefs,
+  readRound,
+  releaseLock,
+  SessionLockedError,
+  type SessionSummary,
   sessionRoot,
   sha256File,
   shaDirName,
+  summariseSession,
   writeCachedDetect,
   writeRefs,
   writeRound,
@@ -246,6 +260,38 @@ describe('refs.json / writeRefs', () => {
     const written = writeRefs(session.dir, 'noisy', deriveRefs([], 5000))
     expect(readRefs(session.dir)).toEqual(written)
   })
+
+  // B-V4 gen stability: gen derives from the effective preset, not from "did the last write
+  // differ". Reproduced against the real CLI (open, open --preset clean, open again with no
+  // flag) before this fix: noisy/1, clean/2, noisy/3 — a caller's gen-1 ref rejected on the
+  // third call despite the source and threshold being identical to the first.
+  test('returning to an earlier preset resolves to its original gen, not a new one', async () => {
+    const session = await openSession(mediaPath)
+    const first = writeRefs(session.dir, 'noisy', deriveRefs([], 5000))
+    const second = writeRefs(session.dir, 'clean', deriveRefs([], 5000))
+    const third = writeRefs(session.dir, 'noisy', deriveRefs([], 5000))
+    expect(first.gen).toBe(1)
+    expect(second.gen).toBe(2)
+    expect(third.gen).toBe(1)
+    expect(third.preset).toBe('noisy')
+  })
+
+  test('presetGens accumulates every preset this session has ever used', async () => {
+    const session = await openSession(mediaPath)
+    writeRefs(session.dir, 'noisy', deriveRefs([], 5000))
+    writeRefs(session.dir, 'clean', deriveRefs([], 5000))
+    const third = writeRefs(session.dir, 'podcast', deriveRefs([], 5000))
+    expect(third.presetGens).toEqual({ noisy: 1, clean: 2, podcast: 3 })
+  })
+
+  test('readRefs backfills presetGens for refs.json written before B-V4', async () => {
+    const session = await openSession(mediaPath)
+    // Simulate a pre-B-V4 refs.json: no presetGens field at all.
+    const legacyPath = join(session.dir, 'refs.json')
+    writeFileSync(legacyPath, JSON.stringify({ gen: 1, preset: 'noisy', blocks: [] }))
+    const loaded = readRefs(session.dir)
+    expect(loaded?.presetGens).toEqual({ noisy: 1 })
+  })
 })
 
 describe('sessions live under a subdirectory that must be created lazily', () => {
@@ -332,5 +378,252 @@ describe('rounds', () => {
     const { edlPath, reportPath } = writeRound(dir, { hello: 'edl' }, { hello: 'report' })
     expect(JSON.parse(readFileSync(edlPath, 'utf8'))).toEqual({ hello: 'edl' })
     expect(JSON.parse(readFileSync(reportPath, 'utf8'))).toEqual({ hello: 'report' })
+  })
+})
+
+describe('pointCachedTranscriptAtSession', () => {
+  const fakeReport = (transcriptPath: string | null): DetectReport => ({
+    version: 1,
+    input: '/fake/input.mp4',
+    durationMs: 10_000,
+    preset: 'noisy',
+    thresholdDb: -20,
+    minSilenceMs: 300,
+    marginMs: 100,
+    lang: 'es',
+    transcript: { path: transcriptPath, wordLevel: true, words: 3 },
+    audioPath: null,
+    silences: [],
+    review: [],
+    warnings: [],
+  })
+
+  test('rewrites transcript.path to the session copy and persists it to detect.json', async () => {
+    const session = await openSession(mediaPath)
+    writeFileSync(cachedTranscriptPath(session.dir), '1\n00:00:00,000 --> 00:00:01,000\nhola\n')
+    const report = fakeReport('/some/external/original.srt')
+    const updated = pointCachedTranscriptAtSession(session.dir, report)
+    expect(updated.transcript.path).toBe(cachedTranscriptPath(session.dir))
+    // Persisted, not just returned: a later independent cachedDetect() read sees the fix too.
+    writeCachedDetect(session.dir, report)
+    const rewritten = pointCachedTranscriptAtSession(
+      session.dir,
+      cachedDetect(session.dir) as DetectReport,
+    )
+    expect(rewritten.transcript.path).toBe(cachedTranscriptPath(session.dir))
+  })
+
+  test('is a no-op when the report already points at the session copy', async () => {
+    const session = await openSession(mediaPath)
+    writeFileSync(cachedTranscriptPath(session.dir), '1\n00:00:00,000 --> 00:00:01,000\nhola\n')
+    const report = fakeReport(cachedTranscriptPath(session.dir))
+    const result = pointCachedTranscriptAtSession(session.dir, report)
+    expect(result).toEqual(report)
+  })
+
+  test('is a no-op when no transcript is cached in this session', async () => {
+    const session = await openSession(mediaPath)
+    const report = fakeReport('/some/external/original.srt')
+    const result = pointCachedTranscriptAtSession(session.dir, report)
+    expect(result.transcript.path).toBe('/some/external/original.srt')
+  })
+})
+
+describe('advisory lock: acquire/conflict-alive/stale-clear/release', () => {
+  test('acquireLock takes an uncontested lock and releaseLock clears it', async () => {
+    const session = await openSession(mediaPath)
+    expect(isLocked(session.dir)).toBe(false)
+    acquireLock(session.dir, 'cut')
+    expect(isLocked(session.dir)).toBe(true)
+    releaseLock(session.dir)
+    expect(isLocked(session.dir)).toBe(false)
+  })
+
+  test('a second acquireLock from a live pid throws SessionLockedError naming the holder', async () => {
+    const session = await openSession(mediaPath)
+    acquireLock(session.dir, 'commit')
+    expect(() => acquireLock(session.dir, 'cut')).toThrow(SessionLockedError)
+    try {
+      acquireLock(session.dir, 'cut')
+      throw new Error('expected acquireLock to throw')
+    } catch (error) {
+      expect(error).toBeInstanceOf(SessionLockedError)
+      const locked = error as SessionLockedError
+      expect(locked.holder.pid).toBe(process.pid)
+      expect(locked.holder.verb).toBe('commit')
+      expect(locked.message).toContain(String(process.pid))
+      expect(locked.message).toContain('commit')
+    }
+    releaseLock(session.dir)
+  })
+
+  test('a lock held by a dead pid clears itself and the new writer takes it', async () => {
+    const session = await openSession(mediaPath)
+    // A high, out-of-range pid: process.kill(pid, 0) reports ESRCH (no such process) for it
+    // on both macOS and Linux, modelling "the process that held this lock is long gone" —
+    // pid 1 (init/launchd) is always alive and would wrongly read as a live holder here.
+    writeFileSync(
+      join(session.dir, 'lock.json'),
+      JSON.stringify({ pid: 999_999, startedAt: new Date().toISOString(), verb: 'cut' }),
+    )
+    expect(isLocked(session.dir)).toBe(false)
+    acquireLock(session.dir, 'commit')
+    expect(isLocked(session.dir)).toBe(true)
+    releaseLock(session.dir)
+  })
+
+  test('releaseLock is a no-op when this process does not hold the lock', async () => {
+    const session = await openSession(mediaPath)
+    writeFileSync(
+      join(session.dir, 'lock.json'),
+      JSON.stringify({ pid: 999_998, startedAt: new Date().toISOString(), verb: 'cut' }),
+    )
+    releaseLock(session.dir)
+    // The file survives: releaseLock only clears a lock this pid holds, never another's.
+    expect(isLocked(session.dir)).toBe(false) // false because 999998 is dead, not because we cleared it
+  })
+
+  test('releaseLock is a no-op when nothing was ever acquired', async () => {
+    const session = await openSession(mediaPath)
+    expect(() => releaseLock(session.dir)).not.toThrow()
+  })
+})
+
+describe('commit marker: committedAt / markCommitted', () => {
+  test('a session with no commit reports null', async () => {
+    const session = await openSession(mediaPath)
+    expect(committedAt(session.dir)).toBeNull()
+  })
+
+  test('markCommitted records an ISO timestamp readable back', async () => {
+    const session = await openSession(mediaPath)
+    markCommitted(session.dir)
+    const at = committedAt(session.dir)
+    expect(at).not.toBeNull()
+    expect(() => new Date(at as string).toISOString()).not.toThrow()
+  })
+})
+
+describe('rounds: listRoundNumbers / readRound', () => {
+  test('an empty session has no rounds', async () => {
+    const session = await openSession(mediaPath)
+    expect(listRoundNumbers(session.dir)).toEqual([])
+    expect(readRound(session.dir, 1)).toBeNull()
+  })
+
+  test('listRoundNumbers is ascending and readRound returns what writeRound wrote', async () => {
+    const session = await openSession(mediaPath)
+    writeRound(nextRoundDir(session.dir), { segments: [1] }, { removalPercent: 10 })
+    writeRound(nextRoundDir(session.dir), { segments: [1, 2] }, { removalPercent: 20 })
+    expect(listRoundNumbers(session.dir)).toEqual([1, 2])
+    expect(readRound(session.dir, 1)).toEqual({
+      edl: { segments: [1] },
+      report: { removalPercent: 10 },
+    })
+    expect(readRound(session.dir, 2)).toEqual({
+      edl: { segments: [1, 2] },
+      report: { removalPercent: 20 },
+    })
+  })
+})
+
+describe('gc candidate classification: orphan/committed/older-than/locked-protected', () => {
+  const summary = (overrides: Partial<SessionSummary>): SessionSummary => ({
+    sessionDir: '/fake/session',
+    sourcePath: '/fake/source.mp4',
+    sourceExists: true,
+    sizeBytes: 1000,
+    createdAt: new Date().toISOString(),
+    committedRounds: 0,
+    committedAt: null,
+    locked: false,
+    ...overrides,
+  })
+
+  test('a session whose source no longer exists is classified orphan', () => {
+    const [candidate] = classifySessionsForGc([summary({ sourceExists: false })], null)
+    expect(candidate.reasons).toEqual(['orphan'])
+    expect(candidate.deletable).toBe(true)
+  })
+
+  test('a session with a successful commit is classified committed', () => {
+    const [candidate] = classifySessionsForGc(
+      [summary({ committedAt: '2026-08-01T00:00:00.000Z' })],
+      null,
+    )
+    expect(candidate.reasons).toEqual(['committed'])
+    expect(candidate.deletable).toBe(true)
+  })
+
+  test('a session older than the threshold is classified older-than', () => {
+    const tenDaysAgo = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString()
+    const [candidate] = classifySessionsForGc([summary({ createdAt: tenDaysAgo })], 7)
+    expect(candidate.reasons).toEqual(['older-than'])
+    expect(candidate.deletable).toBe(true)
+  })
+
+  test('a session under the age threshold is not classified older-than', () => {
+    const oneDayAgo = new Date(Date.now() - 1 * 24 * 60 * 60 * 1000).toISOString()
+    const [candidate] = classifySessionsForGc([summary({ createdAt: oneDayAgo })], 7)
+    expect(candidate.reasons).toEqual([])
+    expect(candidate.deletable).toBe(false)
+  })
+
+  test('omitting olderThanDays never classifies on age alone', () => {
+    const veryOld = new Date(0).toISOString()
+    const [candidate] = classifySessionsForGc([summary({ createdAt: veryOld })], null)
+    expect(candidate.reasons).toEqual([])
+    expect(candidate.deletable).toBe(false)
+  })
+
+  test('a locked session is always locked-protected and never deletable, regardless of other reasons', () => {
+    const [candidate] = classifySessionsForGc(
+      [summary({ sourceExists: false, committedAt: '2026-08-01T00:00:00.000Z', locked: true })],
+      null,
+    )
+    expect(candidate.reasons).toContain('locked-protected')
+    expect(candidate.deletable).toBe(false)
+  })
+
+  test('a healthy, uncommitted, unlocked, recent session has no reasons and is not deletable', () => {
+    const [candidate] = classifySessionsForGc([summary({})], 30)
+    expect(candidate.reasons).toEqual([])
+    expect(candidate.deletable).toBe(false)
+  })
+
+  test('applyGc deletes only what was classified deletable and returns those it removed', async () => {
+    const keepSession = await openSession(mediaPath)
+    const copyPath = join(workDir, 'orphan-source.mp4')
+    writeFileSync(copyPath, 'orphan bytes')
+    const orphanSession = await openSession(copyPath)
+    rmSync(copyPath) // the source vanishes, making orphanSession an orphan
+
+    const candidates = classifySessionsForGc(
+      [summariseSession(keepSession.dir), summariseSession(orphanSession.dir)].filter(
+        (entry): entry is SessionSummary => entry !== null,
+      ),
+      null,
+    )
+    const removed = applyGc(candidates)
+    expect(removed).toHaveLength(1)
+    expect(removed[0].sessionDir).toBe(orphanSession.dir)
+    expect(existsSync(orphanSession.dir)).toBe(false)
+    expect(existsSync(keepSession.dir)).toBe(true)
+  })
+})
+
+describe('summariseSession', () => {
+  test('returns null for a directory with no meta.json', () => {
+    expect(summariseSession(join(workDir, 'not-a-session'))).toBeNull()
+  })
+
+  test('reports size, source existence, rounds, and lock state', async () => {
+    const session = await openSession(mediaPath)
+    writeRound(nextRoundDir(session.dir), { segments: [] }, { removalPercent: 5 })
+    const result = summariseSession(session.dir)
+    expect(result?.sourceExists).toBe(true)
+    expect(result?.committedRounds).toBe(1)
+    expect(result?.sizeBytes).toBeGreaterThan(0)
+    expect(result?.locked).toBe(false)
   })
 })

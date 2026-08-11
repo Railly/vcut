@@ -42,7 +42,7 @@ Flags:
 
 Every segment is written as proposed and the EDL as draft. Nothing is approved here.`
 
-type BuildSummary = {
+export type BuildSummary = {
   status: 'drafted'
   edlPath: string
   segments: number
@@ -165,17 +165,32 @@ export type Cut = Interval & {
 // A segment touching a model-proposed cut carries the risk of that proposal: approving it
 // means agreeing that what was removed next to it was safe to remove. Marking the neighbours
 // is what lets a reviewer find them without reading all 70.
+//
+// `proposals` (raw, unmerged) resolve against `merged` through `clampedSpanFor` before their
+// edges are compared to segments — not the raw proposal edges directly. A proposal absorbs
+// into a wider merged span whenever a silence cut or another proposal sits close enough
+// (`absorbSlivers`/`mergeIntervals`, both already applied to `merged` by the caller), and a
+// real span measured this way ran about 10s from a 9.4s proposal. Comparing against the raw
+// 9.4s edges left the segments touching the absorbed 600ms tail reading `semanticRisk: 'none'`
+// — exactly the segments a reviewer approving "what did the model choose to remove" needs
+// flagged, since the render carries the full merged cut regardless of which raw proposal edge
+// produced it. Deliberately not `cuts.filter(reason === 'semantic')` on the merged list: a
+// merged interval reports `reason: 'silence'` the moment it absorbs even one differently-typed
+// cut (`mergeIntervals`'s own rule), so filtering the merged list by reason would drop exactly
+// the absorbed spans this fix exists to catch.
 export const markSemanticRisk = (
   segments: KeptSegment[],
-  cuts: Cut[],
+  proposals: Interval[],
+  merged: Cut[],
   toleranceMs: number,
 ): KeptSegment[] => {
-  const edges = cuts
-    .filter((cut) => cut.reason === 'semantic')
-    .flatMap((cut) => [cut.startMs, cut.endMs])
-  if (edges.length === 0) {
+  if (proposals.length === 0) {
     return segments
   }
+  const edges = proposals.flatMap((proposal) => {
+    const span = clampedSpanFor(proposal, merged)
+    return [span.startMs, span.endMs]
+  })
   return segments.map((segment) => {
     const touches = edges.some(
       (edge) =>
@@ -809,6 +824,7 @@ export const runBuild = async (
       options.crop,
     ),
     semanticCuts,
+    mergedCuts,
     report.marginMs + Math.ceil(1000 / outputFps),
   )
   assertSegmentCount(segments.length)

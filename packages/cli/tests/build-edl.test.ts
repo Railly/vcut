@@ -15,6 +15,8 @@ import {
   describeSemanticCuts,
   driftSuspectSpan,
   invertToSegments,
+  type KeptSegment,
+  markSemanticRisk,
   matchTarget,
   mergeIntervals,
   parseCrop,
@@ -334,6 +336,67 @@ describe('invertToSegments with a crop', () => {
   test('leaves crop null when none was asked for, so old EDLs render unchanged', () => {
     const segments = invertToSegments([silence(2000, 3000)], 10_000, 'src', 100, 60)
     expect(segments.every((segment) => segment.crop === null)).toBe(true)
+  })
+})
+
+describe('markSemanticRisk', () => {
+  const seg = (id: string, inMs: number, outMs: number): KeptSegment => ({
+    id,
+    sourceId: 'src',
+    inMs,
+    outMs,
+    reason: 'approved-line',
+    handlesMs: { before: 0, after: 0 },
+    approval: 'proposed',
+    semanticRisk: 'none',
+    crop: null,
+  })
+
+  test('flags a segment touching the raw proposal edge when nothing merged', () => {
+    const segments = [seg('segment-001', 0, 5000), seg('segment-002', 5000, 10_000)]
+    const proposal = { startMs: 5000, endMs: 6000 }
+    const merged: Cut[] = [semantic(5000, 6000)]
+    const flagged = markSemanticRisk(segments, [proposal], merged, 50)
+    expect(flagged[0].semanticRisk).toBe('material')
+    expect(flagged[1].semanticRisk).toBe('material')
+  })
+
+  // The absorbed-span case: a 9.4s proposal (5000-14400) sits close enough to a neighbouring
+  // silence cut that mergeIntervals/absorbSlivers fuse them into one ~10s span (4900-15200).
+  // Comparing segment edges against the raw 5000/14400 proposal edges misses the segments
+  // that touch the merged span's actual 4900/15200 boundaries, which is what the render
+  // carries regardless of which raw edge produced it — they read `semanticRisk: 'none'`
+  // before this fix, exactly the gap the real recording surfaced.
+  test('flags a segment touching the merged (absorbed) span, not the raw proposal edge', () => {
+    const segments = [seg('segment-001', 0, 4900), seg('segment-002', 15_200, 20_000)]
+    const proposal = { startMs: 5000, endMs: 14_400 }
+    const merged: Cut[] = [semantic(4900, 15_200)]
+    const flagged = markSemanticRisk(segments, [proposal], merged, 50)
+    expect(flagged[0].semanticRisk).toBe('material')
+    expect(flagged[1].semanticRisk).toBe('material')
+  })
+
+  test('does not flag a segment that touches only the raw edge once merging moved the real edge away', () => {
+    // A segment sitting exactly at the raw proposal's 5000ms edge is not where the render's
+    // cut actually starts once merging pulled the boundary back to 4900ms; flagging it would
+    // point a reviewer at a boundary the render does not have.
+    const segments = [seg('segment-001', 0, 5000)]
+    const proposal = { startMs: 5000, endMs: 14_400 }
+    const merged: Cut[] = [semantic(4900, 15_200)]
+    const flagged = markSemanticRisk(segments, [proposal], merged, 0)
+    expect(flagged[0].semanticRisk).toBe('none')
+  })
+
+  test('no proposals means no flags, even with segments and a tolerance', () => {
+    const segments = [seg('segment-001', 0, 5000)]
+    expect(markSemanticRisk(segments, [], [], 50)).toEqual(segments)
+  })
+
+  test('a proposal with nothing merged containing it falls back to its own raw edges', () => {
+    const segments = [seg('segment-001', 0, 5000)]
+    const proposal = { startMs: 5000, endMs: 6000 }
+    const flagged = markSemanticRisk(segments, [proposal], [], 50)
+    expect(flagged[0].semanticRisk).toBe('material')
   })
 })
 

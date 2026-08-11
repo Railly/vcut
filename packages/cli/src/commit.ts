@@ -23,7 +23,10 @@
  * carries its own history of what was proposed and what was built from it. Renders and wavs
  * stay out of the session (B2-Q2: cheap to regenerate, expensive to store).
  *
- * No lockfile and no gc here: B-V4.
+ * Takes the session's advisory lock (B-V4, B7-Q1) for the whole build+write+render, released
+ * in a finally. A successful commit also marks the session `committed`, the spike's B7-Q2
+ * signal that `session gc` may now consider this session a candidate — never that anything
+ * deletes it automatically.
  */
 
 import { existsSync, writeFileSync } from 'node:fs'
@@ -35,12 +38,15 @@ import { runDetect } from './detect.ts'
 import { emitJson, heading, line, type Mode, nextStep, resolveMode, UsageError } from './output.ts'
 import { type Edl, type RenderOptions, runRender } from './render-edl.ts'
 import {
+  acquireLock,
   cachedDetect,
-  cachedTranscriptPath,
   checkSession,
+  markCommitted,
   nextRoundDir,
   openSession,
+  pointCachedTranscriptAtSession,
   readProposalsFile,
+  releaseLock,
   writeCachedDetect,
   writeRound,
 } from './session.ts'
@@ -73,7 +79,12 @@ the build report) but never stores the render itself there.
 
 Master mode never happens here. Approving the EDL is a human edit — set approval.status and
 each segment's approval to "approved" — followed by the existing
-'vcut render --edl <path> --mode master'. This command only ever drafts and previews.`
+'vcut render --edl <path> --mode master'. This command only ever drafts and previews.
+
+Takes the session's advisory lock for the build+render, released after. A session already
+locked by another live process fails with an error naming its pid, verb, and age. On success
+the session is marked committed, which is what 'vcut session gc' reads as a candidate to
+clear — never something this command deletes itself.`
 
 const BOOLEAN_FLAGS = new Set(['--json', '--human', '--help', '--audio-only', '--video'])
 
@@ -219,84 +230,89 @@ export const commitCommand = async (argv: string[]): Promise<void> => {
     )
   }
 
-  let report = cachedDetect(session.dir)
-  if (report === null) {
-    // A session always has a detect report once open has run; this only fires if the cache
-    // file itself went missing underneath the session (hand-deleted, corrupted). Re-running
-    // with the session's own recorded settings is cheaper than refusing outright.
-    const detectOptions: DetectOptions = {
-      input: args.media,
-      preset: 'noisy' as Preset,
-      minSilenceMs: 300,
-      marginMs: 100,
-      lang: 'es',
-      transcriptPath: null,
-      audioPath: null,
-      skipVideoScan: true,
+  acquireLock(session.dir, 'commit')
+  try {
+    let report = cachedDetect(session.dir)
+    if (report === null) {
+      // A session always has a detect report once open has run; this only fires if the cache
+      // file itself went missing underneath the session (hand-deleted, corrupted). Re-running
+      // with the session's own recorded settings is cheaper than refusing outright.
+      const detectOptions: DetectOptions = {
+        input: args.media,
+        preset: 'noisy' as Preset,
+        minSilenceMs: 300,
+        marginMs: 100,
+        lang: 'es',
+        transcriptPath: null,
+        audioPath: null,
+        skipVideoScan: true,
+      }
+      report = await runDetect(detectOptions)
+      writeCachedDetect(session.dir, report)
+      // No open call ran to point this fresh report's transcript.path at the session's own
+      // copy (open.ts does that once, at cache-write time, since B-V4) — this fallback recovers
+      // a cache file that went missing underneath an otherwise-normal session, so it repeats
+      // that same write-back through the same helper rather than leaving a stale or null path
+      // for the build below.
+      report = pointCachedTranscriptAtSession(session.dir, report)
     }
-    report = await runDetect(detectOptions)
-    writeCachedDetect(session.dir, report)
-  }
 
-  // The cached detect report's own transcript.path is whatever external path the caller gave
-  // `open --transcript` at the time (or null); the session's own copy of that file lives at a
-  // fixed path inside the session regardless. `peek` already reads from the session copy
-  // directly rather than trusting the embedded path, for the same reason: the external path
-  // can move or vanish, and the session's own copy is the one guaranteed to still be there.
-  const transcriptPath = cachedTranscriptPath(session.dir)
-  if (existsSync(transcriptPath)) {
-    report = { ...report, transcript: { ...report.transcript, path: transcriptPath } }
-  }
+    const proposals = readProposalsFile(session.dir)
 
-  const proposals = readProposalsFile(session.dir)
-
-  const buildOptions: BuildOptions = {
-    outputPath: args.outputPath,
-    edlPath: args.edlPath,
-    campaignId: args.campaignId,
-    width: args.width,
-    height: args.height,
-    fps: args.fps,
-    edgeFadeMs: args.edgeFadeMs,
-    crop: args.crop,
-    syncOffsetMs: 0,
-  }
-  const { edl, summary } = await runBuild(report, proposals, buildOptions)
-
-  writeFileSync(args.edlPath, `${JSON.stringify(edl, null, 2)}\n`)
-
-  const roundDir = nextRoundDir(session.dir)
-  writeRound(roundDir, edl, summary)
-
-  // Audio-only lands beside the EDL as a .wav unless --output already names one, matching
-  // render's own rule so a caller reading the EDL's own output path is never surprised by
-  // where the sound landed.
-  const renderOutputPath = args.audioOnly
-    ? extname(args.outputPath) === '.wav'
-      ? args.outputPath
-      : join(dirname(args.edlPath), `${basename(args.outputPath).replace(/\.[^./]+$/, '')}.wav`)
-    : undefined
-
-  const renderOptions: RenderOptions = {
-    outputPath: renderOutputPath,
-    mode: 'preview',
-    dryRun: false,
-    audioOnly: args.audioOnly,
-  }
-  const render = await runRender(edl as Edl, renderOptions)
-
-  const hints = commitNext(args.edlPath, render.outputPath)
-  if (mode === 'json') {
-    emitJson({
-      status: 'committed',
+    const buildOptions: BuildOptions = {
+      outputPath: args.outputPath,
       edlPath: args.edlPath,
-      sessionDir: session.dir,
-      roundDir,
-      build: summary,
-      render,
-      next: hints,
-    })
-    return
+      campaignId: args.campaignId,
+      width: args.width,
+      height: args.height,
+      fps: args.fps,
+      edgeFadeMs: args.edgeFadeMs,
+      crop: args.crop,
+      syncOffsetMs: 0,
+    }
+    const { edl, summary } = await runBuild(report, proposals, buildOptions)
+
+    writeFileSync(args.edlPath, `${JSON.stringify(edl, null, 2)}\n`)
+
+    const roundDir = nextRoundDir(session.dir)
+    writeRound(roundDir, edl, summary)
+
+    // Audio-only lands beside the EDL as a .wav unless --output already names one, matching
+    // render's own rule so a caller reading the EDL's own output path is never surprised by
+    // where the sound landed.
+    const renderOutputPath = args.audioOnly
+      ? extname(args.outputPath) === '.wav'
+        ? args.outputPath
+        : join(dirname(args.edlPath), `${basename(args.outputPath).replace(/\.[^./]+$/, '')}.wav`)
+      : undefined
+
+    const renderOptions: RenderOptions = {
+      outputPath: renderOutputPath,
+      mode: 'preview',
+      dryRun: false,
+      audioOnly: args.audioOnly,
+    }
+    const render = await runRender(edl as Edl, renderOptions)
+
+    // A successful commit marks the session as a gc candidate (B7-Q2): the round it just wrote
+    // is state `session gc` may now consider clearing, never state it deletes on its own.
+    markCommitted(session.dir)
+
+    const hints = commitNext(args.edlPath, render.outputPath)
+    if (mode === 'json') {
+      emitJson({
+        status: 'committed',
+        edlPath: args.edlPath,
+        sessionDir: session.dir,
+        roundDir,
+        build: summary,
+        render,
+        next: hints,
+      })
+      return
+    }
+    console.log(humanReport(args.edlPath, summary.removalPercent, summary.semanticCuts, render))
+  } finally {
+    releaseLock(session.dir)
   }
-  console.log(humanReport(args.edlPath, summary.removalPercent, summary.semanticCuts, render))
 }

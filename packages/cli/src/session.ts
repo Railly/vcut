@@ -30,7 +30,9 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  rmSync,
   statSync,
+  unlinkSync,
   writeFileSync,
 } from 'node:fs'
 import { homedir } from 'node:os'
@@ -189,6 +191,37 @@ export const writeCachedDetect = (sessionDir: string, report: DetectReport): voi
 export const cachedTranscriptPath = (sessionDir: string): string =>
   join(sessionDir, 'transcript.srt')
 
+/**
+ * Points a cached detect report's `transcript.path` at the session's own transcript copy,
+ * writing the change back to detect.json when it does not already agree.
+ *
+ * `open` is the only place a transcript enters a session (`--transcript`), so it is the only
+ * place this needs to run: once, at cache time, rather than on every later read. Before B-V4,
+ * `commit` compared `report.transcript.path` against `cachedTranscriptPath` and patched a local
+ * copy on every call, because the cached detect report could carry whatever external path the
+ * original `open --transcript` call was given — a path that can move or vanish after that call
+ * returns. Fixing the cache once here means every later reader of `cachedDetect` gets a path
+ * guaranteed to still resolve, with nothing left for a caller to patch.
+ *
+ * Returns the (possibly unchanged) report, so a caller can keep using its own in-memory copy
+ * rather than re-reading the file it just wrote.
+ */
+export const pointCachedTranscriptAtSession = (
+  sessionDir: string,
+  report: DetectReport,
+): DetectReport => {
+  const transcriptPath = cachedTranscriptPath(sessionDir)
+  if (!existsSync(transcriptPath) || report.transcript.path === transcriptPath) {
+    return report
+  }
+  const updated: DetectReport = {
+    ...report,
+    transcript: { ...report.transcript, path: transcriptPath },
+  }
+  writeCachedDetect(sessionDir, updated)
+  return updated
+}
+
 // --- Refs ----------------------------------------------------------------------------------
 
 export type RefBlock = {
@@ -202,6 +235,10 @@ export type RefsFile = {
   gen: number
   preset: string
   blocks: RefBlock[]
+  // Every preset this session has ever detected with, mapped to the gen it was first assigned.
+  // Absent on refs.json written before B-V4; readRefs backfills it from `preset`/`gen` alone so
+  // an old session still resolves through the same lookup instead of a separate code path.
+  presetGens: Record<string, number>
 }
 
 const refWidth = (count: number): number => String(Math.max(count, 1)).length
@@ -252,21 +289,38 @@ export const readRefs = (sessionDir: string): RefsFile | null => {
   if (!existsSync(path)) {
     return null
   }
-  return JSON.parse(readFileSync(path, 'utf8')) as RefsFile
+  const parsed = JSON.parse(readFileSync(path, 'utf8')) as RefsFile
+  // Backfill for refs.json written before presetGens existed: the only preset on record is
+  // the current one, at the current gen, which is exactly what a single-write history implies.
+  if (parsed.presetGens === undefined) {
+    return { ...parsed, presetGens: { [parsed.preset]: parsed.gen } }
+  }
+  return parsed
 }
 
 /**
- * Writes refs.json, bumping `gen` when the preset changed since the last write. A re-open
- * with a different preset re-detects (the caller's job, not this function's) and the refs it
- * derives from that new detect are a new generation: the old gen's block boundaries no longer
- * describe this source at this threshold, and B-V3 is where that gets enforced against `cut`.
- * This slice only stores the counter.
+ * Writes refs.json, deriving `gen` from the EFFECTIVE preset rather than from whether the
+ * previous write's preset differs.
+ *
+ * The distinction: bumping on every change means a session that opens noisy, re-opens clean,
+ * then re-opens noisy again lands on gen 3, even though gen 3's blocks are byte-identical to
+ * gen 1's — the same silences, from the same detect threshold, on unchanged source bytes. A
+ * caller holding a b-ref from gen 1 sees it rejected by name on the third open despite nothing
+ * about the source or the threshold having changed since the first. `presetGens` remembers the
+ * gen each preset was first assigned, so returning to a preset returns to its own generation
+ * instead of minting a new one: noisy/1, clean/2, noisy/1 again, never a noisy/3.
+ *
+ * A genuinely new preset (one this session has never detected with) still gets a new gen, same
+ * as before: the old gen's boundaries describe a different threshold and `cut`/`peek` reject
+ * them by name (B-V3's resolveRef), which is the whole point of gen enforcement.
  */
 export const writeRefs = (sessionDir: string, preset: string, blocks: RefBlock[]): RefsFile => {
   const previous = readRefs(sessionDir)
-  const gen =
-    previous === null || previous.preset !== preset ? (previous?.gen ?? 0) + 1 : previous.gen
-  const refs: RefsFile = { gen, preset, blocks }
+  const presetGens = { ...(previous?.presetGens ?? {}) }
+  const knownGen = presetGens[preset]
+  const gen = knownGen ?? Object.keys(presetGens).length + 1
+  presetGens[preset] = gen
+  const refs: RefsFile = { gen, preset, blocks, presetGens }
   writeFileSync(refsPath(sessionDir), JSON.stringify(refs, null, 2))
   return refs
 }
@@ -359,4 +413,277 @@ export const writeRound = (
   writeFileSync(edlPath, `${JSON.stringify(edl, null, 2)}\n`)
   writeFileSync(reportPath, `${JSON.stringify(buildReport, null, 2)}\n`)
   return { edlPath, reportPath }
+}
+
+/** Every round number this session has recorded, ascending. Empty when rounds/ does not exist. */
+export const listRoundNumbers = (sessionDir: string): number[] => {
+  const dir = roundsDir(sessionDir)
+  if (!existsSync(dir)) {
+    return []
+  }
+  return readdirSync(dir, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && /^round-\d+$/.test(entry.name))
+    .map((entry) => Number(entry.name.slice('round-'.length)))
+    .sort((left, right) => left - right)
+}
+
+/** A round's own EDL and build report, read back for `vcut rounds --diff`. Null if absent. */
+export const readRound = (
+  sessionDir: string,
+  roundNumber: number,
+): { edl: unknown; report: unknown } | null => {
+  const dir = join(roundsDir(sessionDir), `round-${roundNumber}`)
+  const edlPath = join(dir, 'edl.json')
+  const reportPath = join(dir, 'report.json')
+  if (!existsSync(edlPath) || !existsSync(reportPath)) {
+    return null
+  }
+  return {
+    edl: JSON.parse(readFileSync(edlPath, 'utf8')),
+    report: JSON.parse(readFileSync(reportPath, 'utf8')),
+  }
+}
+
+// --- Commit marker -------------------------------------------------------------------------
+//
+// A successful commit marks the session as a gc candidate (spike's B7-Q2: "commit exitoso
+// marca la sesion como candidata"). This is a marker file rather than a field folded into
+// meta.json so gc's read stays a single existsSync rather than a JSON parse of a file gc has
+// no other reason to touch, and so a session with zero commits (still being worked) is
+// trivially distinguishable from one that finished at least one round.
+const committedMarkerPath = (sessionDir: string): string => join(sessionDir, 'committed-at')
+
+export const markCommitted = (sessionDir: string): void => {
+  writeFileSync(committedMarkerPath(sessionDir), new Date().toISOString())
+}
+
+/** ISO timestamp of the first successful commit, or null if this session never committed. */
+export const committedAt = (sessionDir: string): string | null => {
+  const path = committedMarkerPath(sessionDir)
+  if (!existsSync(path)) {
+    return null
+  }
+  return readFileSync(path, 'utf8').trim()
+}
+
+// --- Advisory lock ---------------------------------------------------------------------------
+//
+// B7-Q1's resolution: only the writing verbs (cut's propose/drop, commit) take a lock; readers
+// (open, peek) never do. lock.json holds { pid, startedAt, verb }. A live pid blocks a second
+// writer with an error naming the holder; a dead pid is stale and gets cleared automatically
+// rather than requiring a human to notice and delete the file by hand — a lock nobody can ever
+// clear is worse than no lock, since it survives past the crash that left it behind.
+const lockPath = (sessionDir: string): string => join(sessionDir, 'lock.json')
+
+export type SessionLock = {
+  pid: number
+  startedAt: string
+  verb: string
+}
+
+/** True when a pid still names a live process. Cross-platform via signal 0: no kill, just a check. */
+const pidIsAlive = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    // ESRCH: no such process, the pid is dead. EPERM: a live process this user cannot signal,
+    // which still means it is alive and the lock is real — treated as alive rather than dead,
+    // since clearing a lock held by a process we merely lack permission to signal would be the
+    // wrong direction to guess wrong in.
+    return (error as NodeJS.ErrnoException).code === 'EPERM'
+  }
+}
+
+const readLock = (sessionDir: string): SessionLock | null => {
+  const path = lockPath(sessionDir)
+  if (!existsSync(path)) {
+    return null
+  }
+  return JSON.parse(readFileSync(path, 'utf8')) as SessionLock
+}
+
+export class SessionLockedError extends Error {
+  readonly holder: SessionLock
+  constructor(holder: SessionLock) {
+    const ageMs = Date.now() - new Date(holder.startedAt).getTime()
+    const ageS = Math.max(0, Math.round(ageMs / 1000))
+    super(
+      `session is locked by pid ${holder.pid} running '${holder.verb}', started ${ageS}s ago. ` +
+        `If that process is gone, this lock would have cleared itself on the next attempt; ` +
+        `if it is still running, wait for it to finish.`,
+    )
+    this.holder = holder
+  }
+}
+
+/**
+ * Takes the advisory lock for a writing verb, clearing a stale one (dead pid) automatically
+ * first. Throws `SessionLockedError` naming the holder when a live process already holds it.
+ *
+ * Not a filesystem lock in the fcntl/flock sense — two processes racing the same instant could
+ * both pass this check before either writes lock.json, the same TOCTOU gap every advisory lock
+ * in a scripting language has without a kernel primitive underneath it. It is honest as a
+ * courtesy between cooperating callers (two agents, or an agent and a human, sharing one
+ * session), which is the actual failure mode B7-Q1 was written against, not a guarantee against
+ * an adversarial writer.
+ */
+export const acquireLock = (sessionDir: string, verb: string): void => {
+  const existing = readLock(sessionDir)
+  if (existing !== null) {
+    if (pidIsAlive(existing.pid)) {
+      throw new SessionLockedError(existing)
+    }
+    // Stale: the holder's pid is dead. Clear and fall through to taking it ourselves.
+  }
+  mkdirSync(sessionDir, { recursive: true })
+  const lock: SessionLock = { pid: process.pid, startedAt: new Date().toISOString(), verb }
+  writeFileSync(lockPath(sessionDir), JSON.stringify(lock, null, 2))
+}
+
+/** Releases the lock if this process holds it. Never throws: a finally block calls this
+ * unconditionally, including on a path that never got as far as acquiring one. */
+export const releaseLock = (sessionDir: string): void => {
+  const existing = readLock(sessionDir)
+  if (existing === null || existing.pid !== process.pid) {
+    return
+  }
+  unlinkSync(lockPath(sessionDir))
+}
+
+/** Whether a session is currently locked by a live process, for gc and `session list` to report. */
+export const isLocked = (sessionDir: string): boolean => {
+  const existing = readLock(sessionDir)
+  return existing !== null && pidIsAlive(existing.pid)
+}
+
+// --- gc ----------------------------------------------------------------------------------
+//
+// B7-Q2's resolution: gc is explicit only (never runs itself), dry-run by default, and a
+// successful commit marks a session as a candidate rather than triggering deletion. Nothing
+// here ever touches the EDL a human approved — that artefact lives wherever the user's
+// `--edl`/`--output` pointed, outside every session directory this module manages, so gc
+// clearing a whole session directory can never reach it.
+export type SessionSummary = {
+  sessionDir: string
+  sourcePath: string
+  sourceExists: boolean
+  sizeBytes: number
+  createdAt: string
+  committedRounds: number
+  committedAt: string | null
+  locked: boolean
+}
+
+/** Every session on disk, newest meta.json first isn't guaranteed — callers sort as needed. */
+export const listSessions = (): SessionSummary[] => {
+  const root = sessionRoot()
+  if (!existsSync(root)) {
+    return []
+  }
+  return readdirSync(root, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => join(root, entry.name))
+    .map((dir) => summariseSession(dir))
+    .filter((summary): summary is SessionSummary => summary !== null)
+}
+
+const dirSizeBytes = (dir: string): number => {
+  let total = 0
+  const stack = [dir]
+  while (stack.length > 0) {
+    const current = stack.pop() as string
+    const entries = readdirSync(current, { withFileTypes: true })
+    for (const entry of entries) {
+      const full = join(current, entry.name)
+      if (entry.isDirectory()) {
+        stack.push(full)
+      } else if (entry.isFile()) {
+        total += statSync(full).size
+      }
+    }
+  }
+  return total
+}
+
+export const summariseSession = (sessionDir: string): SessionSummary | null => {
+  const meta = readMeta(sessionDir)
+  if (meta === null) {
+    return null
+  }
+  return {
+    sessionDir,
+    sourcePath: meta.sourcePath,
+    sourceExists: existsSync(meta.sourcePath),
+    sizeBytes: dirSizeBytes(sessionDir),
+    createdAt: meta.createdAt,
+    committedRounds: listRoundNumbers(sessionDir).length,
+    committedAt: committedAt(sessionDir),
+    locked: isLocked(sessionDir),
+  }
+}
+
+export type GcReason = 'orphan' | 'committed' | 'older-than' | 'locked-protected'
+
+export type GcCandidate = {
+  sessionDir: string
+  sourcePath: string
+  sizeBytes: number
+  reasons: GcReason[]
+  deletable: boolean
+}
+
+/**
+ * Classifies every session against the reasons gc would remove it, without deleting anything.
+ * `olderThanDays` is optional: omitted, age alone never qualifies a session, matching "gc is
+ * explicit only" — a caller who wants an age-based sweep asks for one by name.
+ *
+ * A locked session always reports `locked-protected` and `deletable: false` regardless of how
+ * many other reasons apply, since a live writer's lock is exactly the case B7-Q1 exists to
+ * protect: gc racing a `cut` or `commit` in progress would delete state out from under it.
+ */
+export const classifySessionsForGc = (
+  sessions: SessionSummary[],
+  olderThanDays: number | null,
+  now: number = Date.now(),
+): GcCandidate[] => {
+  const DAY_MS = 24 * 60 * 60 * 1000
+  return sessions.map((session) => {
+    const reasons: GcReason[] = []
+    if (!session.sourceExists) {
+      reasons.push('orphan')
+    }
+    if (session.committedAt !== null) {
+      reasons.push('committed')
+    }
+    if (olderThanDays !== null) {
+      const ageMs = now - new Date(session.createdAt).getTime()
+      if (ageMs >= olderThanDays * DAY_MS) {
+        reasons.push('older-than')
+      }
+    }
+    if (session.locked) {
+      reasons.push('locked-protected')
+    }
+    return {
+      sessionDir: session.sessionDir,
+      sourcePath: session.sourcePath,
+      sizeBytes: session.sizeBytes,
+      reasons,
+      deletable: !session.locked && reasons.some((reason) => reason !== 'locked-protected'),
+    }
+  })
+}
+
+/** Deletes every candidate gc marked deletable. Returns the ones actually removed. */
+export const applyGc = (candidates: GcCandidate[]): GcCandidate[] => {
+  const removed: GcCandidate[] = []
+  for (const candidate of candidates) {
+    if (!candidate.deletable) {
+      continue
+    }
+    rmSync(candidate.sessionDir, { recursive: true, force: true })
+    removed.push(candidate)
+  }
+  return removed
 }
