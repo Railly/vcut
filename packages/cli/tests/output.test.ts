@@ -10,6 +10,7 @@ import {
   emitJson,
   packageVersion,
   parseFields,
+  parseJqExpr,
   projectFields,
   resolveMode,
 } from '../src/output.ts'
@@ -42,6 +43,14 @@ describe('resolveMode', () => {
   test('--fields=<paths> also implies JSON', () => {
     expect(resolveMode(['--fields=removalPercent'], true)).toBe('json')
   })
+
+  test('--jq implies JSON even on a TTY', () => {
+    expect(resolveMode(['--jq', '.a'], true)).toBe('json')
+  })
+
+  test('--jq=<expr> also implies JSON', () => {
+    expect(resolveMode(['--jq=.a'], true)).toBe('json')
+  })
 })
 
 describe('parseFields', () => {
@@ -63,6 +72,24 @@ describe('parseFields', () => {
 
   test('returns an empty array when --fields was passed with no value', () => {
     expect(parseFields(['--fields'])).toEqual([])
+  })
+})
+
+describe('parseJqExpr', () => {
+  test('reads the --jq <expr> form', () => {
+    expect(parseJqExpr(['--jq', '.a'])).toBe('.a')
+  })
+
+  test('reads the --jq=<expr> inline form', () => {
+    expect(parseJqExpr(['--jq=.a'])).toBe('.a')
+  })
+
+  test('returns null when --jq was not passed', () => {
+    expect(parseJqExpr(['--json'])).toBeNull()
+  })
+
+  test('throws when --jq was passed with no expression', () => {
+    expect(() => parseJqExpr(['--jq'])).toThrow(/needs an expression/)
   })
 })
 
@@ -246,6 +273,72 @@ describe('emitJson', () => {
     const output = captured({ status: 'ok' }, []) as { status: string; vcutVersion: string }
     expect(output.status).toBe('ok')
     expect(output.vcutVersion).toBe(packageVersion())
+  })
+})
+
+// emitJson's `fields` parameter bypasses process.argv for --fields, but there is no equivalent
+// second argument for --jq: every call site reaches it the same way, by argv, so these tests
+// drive it the same way a real invocation does rather than adding a test-only seam.
+describe('emitJson with --jq', () => {
+  const capturedWithArgv = (value: unknown, argv: string[]): unknown => {
+    const originalLog = console.log
+    const originalArgv = process.argv
+    let printed = ''
+    console.log = (text: string) => {
+      printed = text
+    }
+    process.argv = ['bun', 'vcut', ...argv]
+    try {
+      emitJson(value)
+    } finally {
+      console.log = originalLog
+      process.argv = originalArgv
+    }
+    return JSON.parse(printed)
+  }
+
+  test('projects a field through --jq', () => {
+    const output = capturedWithArgv({ removalPercent: 22.5, segments: 4 }, [
+      '--jq',
+      '.removalPercent',
+    ])
+    expect(output).toBe(22.5)
+  })
+
+  test('filters an array with select()', () => {
+    const output = capturedWithArgv(
+      [
+        { kind: 'filler', reason: 'a' },
+        { kind: 'repetition', reason: 'b' },
+      ],
+      ['--jq', '.[] | select(.kind == "filler")'],
+    )
+    expect(output).toEqual({ kind: 'filler', reason: 'a' })
+  })
+
+  test('sees the vcutVersion stamp, since --jq runs after stamping', () => {
+    const output = capturedWithArgv({ status: 'ok' }, ['--jq', '.vcutVersion'])
+    expect(output).toBe(packageVersion())
+  })
+
+  test('does not itself add a vcutVersion to a result --jq reshaped', () => {
+    const output = capturedWithArgv({ status: 'ok', segments: 4 }, ['--jq', '.segments'])
+    expect(output).toBe(4)
+  })
+
+  test('reads the --jq=<expr> inline form the same way', () => {
+    const output = capturedWithArgv({ a: 1 }, ['--jq=.a'])
+    expect(output).toBe(1)
+  })
+
+  test('--jq together with --fields throws, naming both flags as exclusive', () => {
+    expect(() => capturedWithArgv({ a: 1 }, ['--jq', '.a', '--fields', 'a'])).toThrow(
+      /mutually exclusive/,
+    )
+  })
+
+  test('an invalid --jq expression throws with the offending expression named', () => {
+    expect(() => capturedWithArgv({ a: 1 }, ['--jq', 'not valid jq'])).toThrow()
   })
 })
 

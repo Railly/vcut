@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
-import { rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { parseSrt } from '../src/detect.ts'
@@ -9,10 +9,12 @@ import {
   foldDiacritics,
   gapsBetween,
   joinWords,
+  mergeProposals,
   quietSegments,
   REVIEW_INSTRUCTIONS,
   renderedGaps,
   repeatedPhrases,
+  semanticCommand,
   semanticReviewNext,
   silentSegments,
   survivingLines,
@@ -693,5 +695,197 @@ describe('semanticReviewNext', () => {
     const hints = semanticReviewNext('/tmp/detect.json', undefined)
     const nonspeechHint = hints.find((hint) => hint.verb.includes('vcut nonspeech'))
     expect(nonspeechHint?.verb.length).toBeGreaterThan(0)
+  })
+})
+
+const proposal = (
+  startMs: number,
+  endMs: number,
+  kind: 'false-start' | 'repetition' | 'tangent' | 'filler' | 'non-speech' = 'filler',
+  reason = 'test',
+) => ({ startMs, endMs, kind, reason })
+
+describe('mergeProposals', () => {
+  test('concatenates and sorts proposals from every file by startMs', () => {
+    const a = [proposal(3000, 3500), proposal(1000, 1200)]
+    const b = [proposal(2000, 2200)]
+    const { merged, duplicates } = mergeProposals([a, b])
+    expect(merged.map((p) => p.startMs)).toEqual([1000, 2000, 3000])
+    expect(duplicates).toBe(0)
+  })
+
+  test('drops a span identical on all four fields between two files', () => {
+    const shared = proposal(1000, 1500, 'filler', 'same reason')
+    const a = [shared]
+    const b = [shared, proposal(2000, 2500)]
+    const { merged, duplicates } = mergeProposals([a, b])
+    expect(merged).toHaveLength(2)
+    expect(duplicates).toBe(1)
+  })
+
+  test('keeps two proposals covering the same span with different reasons or kinds', () => {
+    const a = [proposal(1000, 1500, 'filler', 'reason A')]
+    const b = [proposal(1000, 1500, 'repetition', 'reason B')]
+    const { merged, duplicates } = mergeProposals([a, b])
+    expect(merged).toHaveLength(2)
+    expect(duplicates).toBe(0)
+  })
+
+  test('merges more than two files', () => {
+    const { merged } = mergeProposals([
+      [proposal(3000, 3200)],
+      [proposal(1000, 1200)],
+      [proposal(2000, 2200)],
+    ])
+    expect(merged.map((p) => p.startMs)).toEqual([1000, 2000, 3000])
+  })
+
+  test('an empty set of files merges to an empty array', () => {
+    expect(mergeProposals([])).toEqual({ merged: [], duplicates: 0 })
+  })
+
+  test('a duplicate spanning three files is only counted for the repeats, not the first', () => {
+    const shared = proposal(500, 900)
+    const { merged, duplicates } = mergeProposals([[shared], [shared], [shared]])
+    expect(merged).toHaveLength(1)
+    expect(duplicates).toBe(2)
+  })
+})
+
+describe('semanticCommand merge', () => {
+  let workDir: string
+
+  beforeAll(() => {
+    workDir = mkdtempSync(join(tmpdir(), 'vcut-semantic-merge-'))
+  })
+
+  afterAll(() => {
+    rmSync(workDir, { recursive: true, force: true })
+  })
+
+  const capture = async (
+    argv: string[],
+  ): Promise<{ output: unknown; exitCode: number | undefined }> => {
+    const originalLog = console.log
+    const originalExitCode = process.exitCode
+    process.exitCode = undefined
+    let printed = ''
+    console.log = (text: string) => {
+      printed = text
+    }
+    try {
+      await semanticCommand(argv)
+    } finally {
+      console.log = originalLog
+    }
+    const exitCode = process.exitCode
+    process.exitCode = originalExitCode
+    return { output: JSON.parse(printed), exitCode }
+  }
+
+  test('merges two round files given positionally and prints the merged result', async () => {
+    const roundOne = join(workDir, 'round1.json')
+    const roundTwo = join(workDir, 'round2.json')
+    writeFileSync(roundOne, JSON.stringify([proposal(1000, 1500)]))
+    writeFileSync(roundTwo, JSON.stringify([proposal(500, 800)]))
+
+    const { output } = (await capture(['merge', roundOne, roundTwo])) as {
+      output: {
+        status: string
+        proposals: Array<{ startMs: number }>
+        inputCount: number
+        duplicates: number
+      }
+    }
+    expect(output.status).toBe('merged')
+    expect(output.proposals.map((p) => p.startMs)).toEqual([500, 1000])
+    expect(output.inputCount).toBe(2)
+    expect(output.duplicates).toBe(0)
+  })
+
+  test('merges three or more files', async () => {
+    const files = [join(workDir, 'r1.json'), join(workDir, 'r2.json'), join(workDir, 'r3.json')]
+    writeFileSync(files[0], JSON.stringify([proposal(3000, 3200)]))
+    writeFileSync(files[1], JSON.stringify([proposal(1000, 1200)]))
+    writeFileSync(files[2], JSON.stringify([proposal(2000, 2200)]))
+
+    const { output } = (await capture(['merge', ...files])) as {
+      output: { proposals: Array<{ startMs: number }> }
+    }
+    expect(output.proposals.map((p) => p.startMs)).toEqual([1000, 2000, 3000])
+  })
+
+  test('--out writes the merged array to a file, same shape as an input file', async () => {
+    const roundOne = join(workDir, 'out-a.json')
+    const roundTwo = join(workDir, 'out-b.json')
+    const outPath = join(workDir, 'merged.json')
+    writeFileSync(roundOne, JSON.stringify([proposal(1000, 1500)]))
+    writeFileSync(roundTwo, JSON.stringify([proposal(2000, 2500)]))
+
+    const { output } = (await capture(['merge', roundOne, roundTwo, '--out', outPath])) as {
+      output: { outPath: string }
+    }
+    expect(output.outPath).toBe(outPath)
+
+    const written = JSON.parse(readFileSync(outPath, 'utf8'))
+    expect(Array.isArray(written)).toBe(true)
+    expect(written).toEqual([proposal(1000, 1500), proposal(2000, 2500)])
+  })
+
+  test('rejects with status "rejected" and exit code 1 when a file has malformed entries', async () => {
+    const good = join(workDir, 'good.json')
+    const bad = join(workDir, 'bad.json')
+    writeFileSync(good, JSON.stringify([proposal(1000, 1500)]))
+    writeFileSync(bad, JSON.stringify([{ startMs: 1000 }]))
+
+    const { output, exitCode } = (await capture(['merge', good, bad])) as {
+      output: { status: string; issues: Array<{ file: string }> }
+      exitCode: number | undefined
+    }
+    expect(output.status).toBe('rejected')
+    expect(output.issues.some((issue) => issue.file === bad)).toBe(true)
+    expect(exitCode).toBe(1)
+  })
+
+  test('throws a usage error naming the missing file', async () => {
+    const good = join(workDir, 'usage-good.json')
+    writeFileSync(good, JSON.stringify([proposal(1000, 1500)]))
+    await expect(semanticCommand(['merge', good, join(workDir, 'nope.json')])).rejects.toThrow(
+      /proposals file missing/,
+    )
+  })
+
+  test('throws a usage error when fewer than two files are given', async () => {
+    const good = join(workDir, 'usage-one.json')
+    writeFileSync(good, JSON.stringify([proposal(1000, 1500)]))
+    await expect(semanticCommand(['merge', good])).rejects.toThrow(/at least two/)
+  })
+
+  test('a value-taking global flag and its value are not mistaken for input files', async () => {
+    // Global flags (--json, --human, --fields, --jq, --help) are emitJson's business, read
+    // straight off process.argv, not this command's own argv: merge has to skip both the
+    // flag and its value the same way detect.ts's positional() does via BOOLEAN_FLAGS, or a
+    // trailing `--fields duplicates` would be read as two more file paths.
+    const a = join(workDir, 'global-flag-a.json')
+    const b = join(workDir, 'global-flag-b.json')
+    writeFileSync(a, JSON.stringify([proposal(1000, 1500)]))
+    writeFileSync(b, JSON.stringify([proposal(2000, 2500)]))
+    const { output } = (await capture(['merge', a, b, '--fields', 'duplicates'])) as {
+      output: { status: string; files: string[] }
+    }
+    expect(output.status).toBe('merged')
+    expect(output.files).toEqual([a, b])
+  })
+
+  test('an unrecognized boolean-shaped flag does not crash the parse, just is not treated as a file', async () => {
+    const a = join(workDir, 'flag-a.json')
+    const b = join(workDir, 'flag-b.json')
+    writeFileSync(a, JSON.stringify([proposal(1000, 1500)]))
+    writeFileSync(b, JSON.stringify([proposal(2000, 2500)]))
+    const { output } = (await capture(['merge', a, b, '--human'])) as {
+      output: { status: string; files: string[] }
+    }
+    expect(output.status).toBe('merged')
+    expect(output.files).toEqual([a, b])
   })
 })

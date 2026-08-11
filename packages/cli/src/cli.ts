@@ -9,6 +9,7 @@ import { cutCommand } from './cut.ts'
 import { detectCommand, positional } from './detect.ts'
 import { run, runInherit } from './exec.ts'
 import { joinsCommand } from './joins.ts'
+import { JQ_HELP } from './jq.ts'
 import { locateCommand } from './locate.ts'
 import { nonspeechCommand } from './nonspeech.ts'
 import { openCommand } from './open.ts'
@@ -46,7 +47,7 @@ Usage:
   vcut detect <input> [flags]        Find silences and review candidates
   vcut suspects --detect <path>      Where to look first, ranked, without reading the file
   vcut edl build [flags]             Turn a detect report into a draft EDL
-  vcut semantic export|check|review  Hand the transcript to a model, take proposals back
+  vcut semantic export|check|review|merge  Hand the transcript to a model, take proposals back
   vcut render --edl <path> [flags]   Render an EDL to video
   vcut locate --edl <path> [flags]   Translate between master time and source time
   vcut audit --edl <path> --render <path>  Check a render against the EDL it came from
@@ -72,7 +73,11 @@ Global flags:
   --json             Force JSON output (the default when stdout is not a TTY)
   --human            Force the human summary
   --fields <paths>   Project JSON output to these dot paths, comma separated. Implies --json.
+  --jq <expr>        Filter or reshape JSON output with a jq expression (see below). Implies
+                     --json. Mutually exclusive with --fields.
   --help             Show help for a command
+
+${JQ_HELP}
 
 Every command writes data to stdout and diagnostics to stderr. Exit code 2 means
 the invocation was wrong, 1 means the run failed.`
@@ -416,11 +421,13 @@ const CONTRACTS: Record<string, unknown> = {
   },
   semantic: {
     version: SCHEMA_VERSION,
-    command: 'vcut semantic export | vcut semantic check',
+    command: 'vcut semantic export | vcut semantic check | vcut semantic merge',
     output: {
       export:
         '{ status: "exported", input, durationMs, lang, instructions: string[], lines: [{ index, startMs, endMs, text, nearestRef }] }',
       check: '{ status: "valid"|"rejected", accepted: integer, issues: [{ index, problem }] }',
+      merge:
+        '{ status: "merged"|"rejected", files: string[], inputCount: integer, duplicates: integer, proposals: Proposal[] }',
     },
     notes: [
       'vcut never calls a model. Export hands over the lines; you write the proposals back.',
@@ -429,6 +436,7 @@ const CONTRACTS: Record<string, unknown> = {
       "Each exported line carries nearestRef, the session's block ref closest to that line's own startMs, derived the same way vcut open attaches nearestRef to suspects. A proposal can carry that ref straight into vcut cut --refs instead of retyping the line's raw milliseconds.",
       'Feed accepted proposals to vcut edl build --semantic <path>. Each lands as semanticRisk material.',
       'check exits 1 when anything is malformed, and edl build refuses the whole file rather than skipping entries.',
+      'merge folds two or more proposal files into one, dropping spans identical on all four fields and re-sorting by startMs. --out <path> writes the merged array there (the same shape as an input file) instead of printing the summary object to stdout.',
     ],
   },
   silences: {
