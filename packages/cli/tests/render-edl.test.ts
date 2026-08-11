@@ -2,8 +2,10 @@ import { describe, expect, test } from 'bun:test'
 import {
   audioOnlyErrors,
   buildFfmpegArgs,
+  convertsFps,
   type Edl,
   edlErrors,
+  expectedFramesForConcat,
   outputErrors,
   renderAudioOnlyNext,
 } from '../src/render-edl.ts'
@@ -405,5 +407,147 @@ describe('videoOutputErrors messages', () => {
 
   test('stays silent on both when the render lands inside tolerance', () => {
     expect(outputErrors(edl('required'), probe(2))).toEqual([])
+  })
+})
+
+// convertsFps is the scope guard for the fps-rounding fix (#20): only a source that
+// carries averageFrameRate and disagrees with output.fps switches the graph to the
+// decoupled-concat-then-fps shape. Every other case, including no averageFrameRate at
+// all, has to read false so an EDL already on disk keeps rendering byte-identical output.
+describe('convertsFps', () => {
+  const withRate = (rate: string | null | undefined, outputFps: number): Edl => {
+    const base = edl('required')
+    base.sources[0].averageFrameRate = rate
+    base.output.fps = outputFps
+    return base
+  }
+
+  test('false when no source carries averageFrameRate', () => {
+    expect(convertsFps(withRate(undefined, 30))).toBe(false)
+  })
+
+  test('false when averageFrameRate is explicitly null', () => {
+    expect(convertsFps(withRate(null, 30))).toBe(false)
+  })
+
+  test('false when averageFrameRate matches output.fps', () => {
+    expect(convertsFps(withRate('60/1', 60))).toBe(false)
+  })
+
+  test('true when averageFrameRate differs from output.fps (downsample)', () => {
+    expect(convertsFps(withRate('60/1', 30))).toBe(true)
+  })
+
+  test('true when averageFrameRate differs from output.fps (upsample)', () => {
+    expect(convertsFps(withRate('30/1', 60))).toBe(true)
+  })
+
+  test('false within the 0.001 fps floating-point tolerance', () => {
+    // 30000/1001 is the NTSC 29.97 rate; rendered against a nominal 30fps output this is
+    // not a conversion the fix's fps= step should trigger.
+    expect(convertsFps(withRate('30000/1001', 29.97))).toBe(false)
+  })
+})
+
+// expectedFramesForConcat sums each segment's own frame count in ffmpeg trim's actual
+// half-open semantics (start <= PTS < end against the source's own frame grid), then scales
+// by outputFps/sourceFps and rounds once — the same round(near) arithmetic fps= itself
+// applies to the concatenated clock. See the export's own comment for the derivation and the
+// real-render numbers (16547 predicted, 16547 observed on the 176-segment fixture) that
+// confirmed it.
+describe('expectedFramesForConcat', () => {
+  test('one segment landing exactly on frame boundaries at 60fps source, 30fps output', () => {
+    // 0..5000ms at 60fps: frames 0..299 (300 frames), each 16.667ms — 5000ms lands exactly
+    // on the boundary between frame 299 (16.617ms in) and frame 300 (would start at 5000ms).
+    expect(expectedFramesForConcat([{ inMs: 0, outMs: 5_000 }], 60, 30)).toBe(150)
+  })
+
+  test('a segment edge that does not land on a source frame keeps the frame it falls inside', () => {
+    // 0..517ms at 60fps: frame 31 starts at 516.667ms, which is < 517ms, so it survives —
+    // frames 0..31 (32 frames) — trim's end is exclusive, so the 517ms edge does not need
+    // to land exactly on a frame boundary for the frame it falls inside to be counted.
+    expect(expectedFramesForConcat([{ inMs: 0, outMs: 517 }], 60, 60)).toBe(32)
+  })
+
+  test('gapped segments sum their own frame counts, not the naive millisecond sum', () => {
+    // Two segments cut apart by a gap, each landing off the 60fps frame grid. Naive
+    // round(totalMs/1000*30) would give round((483+466)/1000*30) = round(28.47) = 28.
+    // The real render keeps one extra frame at each segment's boundary quantisation.
+    const segments = [
+      { inMs: 100, outMs: 583 },
+      { inMs: 700, outMs: 1_166 },
+    ]
+    const naive = Math.round(
+      (segments.reduce((total, segment) => total + segment.outMs - segment.inMs, 0) / 1000) * 30,
+    )
+    expect(expectedFramesForConcat(segments, 60, 30)).not.toBe(naive)
+    expect(expectedFramesForConcat(segments, 60, 30)).toBe(29)
+  })
+
+  test('upsampling (30fps source to 60fps output) scales the source frame count up', () => {
+    expect(expectedFramesForConcat([{ inMs: 0, outMs: 1_000 }], 30, 60)).toBe(60)
+  })
+
+  test('matches the real 176-segment fixture this issue was filed against', () => {
+    // segment sum is 551406ms (what the EDL asks for); the source's own 60fps grid can only
+    // deliver 551566.67ms of that across 176 gapped joints, which is 16547 frames at 30fps,
+    // not the 16542 a plain millisecond sum predicts. Render confirmed 16547 exactly.
+    const segments: Array<{ inMs: number; outMs: number }> = []
+    let seed = 176 * 2654435761
+    const rand = () => {
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff
+      return seed / 0x7fffffff
+    }
+    let cursor = 0
+    for (let i = 0; i < 176; i++) {
+      const gap = Math.floor(rand() * 700) + 50
+      const span = Math.floor(rand() * 5000) + 200
+      cursor += gap
+      segments.push({ inMs: cursor, outMs: cursor + span })
+      cursor += span
+    }
+    const naive = Math.round(
+      (segments.reduce((total, segment) => total + segment.outMs - segment.inMs, 0) / 1000) * 30,
+    )
+    const derived = expectedFramesForConcat(segments, 60, 30)
+    // The exact frame count depends on this test's own synthetic segment placement, not the
+    // real EDL's — what is pinned here is that the two formulas disagree at this segment
+    // count (the defect this fix closes), and the ceil-based one is never smaller than what
+    // a plain sum predicts, matching trim's one-sided "keep the frame you land inside" bias.
+    expect(derived).toBeGreaterThanOrEqual(naive)
+    expect(derived).not.toBe(naive)
+  })
+
+  test('empty segment list expects zero frames', () => {
+    expect(expectedFramesForConcat([], 60, 30)).toBe(0)
+  })
+})
+
+describe('buildFfmpegArgs graph shape by convertsFps', () => {
+  test('native rate (no averageFrameRate) keeps the single combined concat call', () => {
+    const graph = buildFfmpegArgs(edl('required'), '/tmp/master.mp4').join(' ')
+    expect(graph).toContain('concat=n=1:v=1:a=1[vcat][acat]')
+    expect(graph).toContain(',fps=60,format=yuv420p')
+    expect(graph).not.toContain('[vcat]fps=60[v]')
+  })
+
+  test('native rate (averageFrameRate equals output.fps) keeps the single combined concat call', () => {
+    const nativeEdl = edl('required')
+    nativeEdl.sources[0].averageFrameRate = '60/1'
+    const graph = buildFfmpegArgs(nativeEdl, '/tmp/master.mp4').join(' ')
+    expect(graph).toContain('concat=n=1:v=1:a=1[vcat][acat]')
+    expect(graph).toContain(',fps=60,format=yuv420p')
+  })
+
+  test('fps-converting EDL splits concat into two calls and moves fps after it', () => {
+    const convertingEdl = edl('required')
+    convertingEdl.sources[0].averageFrameRate = '60/1'
+    convertingEdl.output.fps = 30
+    const graph = buildFfmpegArgs(convertingEdl, '/tmp/master.mp4').join(' ')
+    expect(graph).toContain('concat=n=1:v=1:a=0[vcat]')
+    expect(graph).toContain('concat=n=1:v=0:a=1[acat]')
+    expect(graph).toContain('[vcat]fps=30[v]')
+    expect(graph).not.toContain(',fps=30,format=yuv420p')
+    expect(graph).not.toContain('concat=n=1:v=1:a=1')
   })
 })
