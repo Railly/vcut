@@ -223,6 +223,8 @@ Proposes a semantic cut against a session's own refs, and shows what it removes 
 
 The session must already exist — `cut` never creates one, and a ref from an earlier generation is a usage error naming the ref and the session's current `gen`, the same enforcement `peek` already applies. `removedText` is quoted from the session's cached transcript, not re-transcribed. Proposals accumulate in the session's `proposals.json`; `--list`/`--drop` read and edit that list without hand-editing JSON.
 
+**This `removedText` carries no `driftSuspect` flag.** It reads straight from the cached transcript at propose time, before `edl build`'s drift check runs — that check happens later, on the merged span `commit` produces. A proposal can read clean here and still come back `driftSuspect: true` once committed. Treat `cut --list`'s `removedText` as a preview, not a drift-checked read; confirm a specific span with `peek` first if `detect`'s drift warning fired on this recording.
+
 Proposing and `--drop` take the session's advisory lock for the write and release it after; `--list` never locks. A session already locked by a live process fails naming the holder's pid, verb, and age — see **vcut session** below for the full lock story.
 
 ### vcut commit
@@ -245,6 +247,11 @@ Builds the EDL from a session's cached detect report and its accumulated proposa
 Records the round in the session (`rounds/round-N/`: the EDL copy and the build report); renders and wavs stay out of it. **Master mode never happens here.** Approval is a human edit to the EDL followed by the existing `vcut render --edl <path> --mode master` — this command only ever drafts and previews.
 
 Takes the session's advisory lock for the whole build+render, released in a `finally`. **On success, marks the session `committed`** — the signal `vcut session gc` reads as a candidate to clear, never a trigger that deletes anything itself.
+
+```bash
+vcut commit recording.mp4 --output master.mp4 --campaign my-video \
+  --fields build.removalPercent,build.semanticCuts.removedText
+```
 
 ### vcut rounds
 
@@ -421,6 +428,11 @@ joins  cut.mp4
 **`removed-text-leaked` is a place to look, not a verdict.** On the run above, that reading was a false positive: the cut's removed text was the speaker stumbling on the same phrase three times before landing it, and the surviving sentence legitimately reused that phrase as its real content. A wider `vcut say --transcribe --window 8` confirmed the join read clean — `joins` names that exact command in `next`.
 
 `--report <path>` (a build report from `edl build`, `commit`, or the `report.json` `commit` writes into `rounds/round-N/`, the default lookup beside `--edl`) adds `removedText`, `reason`, and `driftSuspect` to each join. Its absence is a supported state: `joins` still runs, with those three fields `null`.
+
+```bash
+vcut joins --edl edl.json --render cut.mp4 --report report.json \
+  --fields joins.reading,joins.joinMasterMs,joins.removedText
+```
 
 ### vcut say
 

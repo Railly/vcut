@@ -551,6 +551,16 @@ testing-10m.mp4  proposed
 class comes from the classifier, not a ref). `reason` is required and non-empty, read by a
 human deciding whether to approve, same as everywhere else in this manual.
 
+**This `removedText` carries no `driftSuspect` flag, unlike `edl build`'s.** It is read straight
+from the session's cached transcript at propose time, with no check against `detect`'s drift
+warning — `edl build`'s own `driftSuspect` computation runs later, at build time, on the merged
+span `commit` produces, not on what `cut` echoes here. On a recording with drifted cues, a
+proposal's `removedText` at propose time can read clean here and still turn out to sit on
+drifted words once `commit` builds it and reports `driftSuspect: true`. Trust the echoed text as
+a preview, not as the drift-checked final read; if `detect`'s own drift warning fired on this
+recording, confirm a specific span with `peek` before treating what `cut --list` shows as
+settled.
+
 **The session must already exist.** Unlike `open` and `peek`, `cut` never creates one: cutting
 against a session nobody opened is a caller mistake, not a flow this command smooths over. The
 error names the exact `vcut open` call to run first.
@@ -612,6 +622,13 @@ committed  ./edl.json
 `semanticCuts` with `removedText`, `boundariesInSilence`, warnings, all of it. `render` is the
 same shape `render` emits. Nothing about reading either output changes because it came from
 `commit` instead of the two commands run by hand.
+
+Pulling only what a round needs to check, from the same call that already built and rendered:
+
+```bash
+vcut commit recording.mp4 --output master.mp4 --campaign my-video \
+  --fields build.removalPercent,build.semanticCuts.removedText
+```
 
 **Records the round in the session** (`rounds/round-N/`: the EDL copy and the build report),
 so a session carries its own history of what was proposed and what got built from it. Renders
@@ -758,9 +775,6 @@ racing each other must not interleave into `proposals.json`". If a real corrupti
 concurrent `open` ever surfaces (a partial write of `detect.json` observed mid-write by a second
 reader, say), that would be the trigger to lock it too — none has been found, so it stays
 lockless per B7-Q1's letter and its actual reasoning.
-
-**No lock, no gc, no rounds diff yet.** Two writers committing the same session concurrently,
-cleaning up old rounds, and comparing one round's transcript against the next are B-V4.
 
 ## edl build
 
@@ -1032,6 +1046,13 @@ names that exact call in `next` on a leaked or check-by-ear reading.
 `removedText`/`reason`/`driftSuspect` on each join. Its absence is a supported state: `joins`
 still runs and reports `reading` from the window alone, with those three fields `null`.
 
+Checking only the readings worth a second look, not the whole payload:
+
+```bash
+vcut joins --edl edl.json --render cut.mp4 --report report.json \
+  --fields joins.reading,joins.joinMasterMs,joins.removedText
+```
+
 ## say
 
 ```bash
@@ -1230,17 +1251,36 @@ Never mark segments approved on the human's behalf. Never render a master withou
 2. Transcribe the source word-level with a large model.
 3. `vcut detect <input>` with the preset that matches the recording condition.
 4. Read the warnings. If the transcript is not word-level, say so: clamping is off and cuts can land inside a word.
-5. `vcut suspects --detect detect.json` for where to look, then `vcut semantic export --terse`
-   for the lines. On a short take, read every line. On anything long, the suspects list is the
-   order to read in: it costs one call and turns a file you have to read into a list you have
-   to check. Neither replaces the other — a repetition with no hesitation around it has no
-   rhythm signal at all and only the prose shows it.
-6. **Loop**: build, render, transcribe the render, review, fold findings back in. Repeat
+5. `vcut open <input> --preset ... --lang ... --transcript words.srt` instead of a bare
+   `detect` when the edit is going to run several rounds — the common case. This caches the
+   same detect report `detect` alone would produce and turns its silences into `b`-refs a later
+   round points at by name. `vcut suspects --detect detect.json` for where to look still works
+   the same either way (`open`'s own output already carries the top 10 with their refs), then
+   `vcut semantic export --terse` for the lines. On a short take, read every line. On anything
+   long, the suspects list is the order to read in: it costs one call and turns a file you have
+   to read into a list you have to check. Neither replaces the other — a repetition with no
+   hesitation around it has no rhythm signal at all and only the prose shows it.
+6. **Loop**: propose, build, render, transcribe the render, review, propose again. Repeat
    until a round proposes nothing and every invariant holds, and **never stop at one round** —
    the empty round has to come after a round that found something, because it reads a text the
    previous one produced. Runs that stopped at one shipped a repetition and cut less than the
    ones that kept going. This is where most of the work is. The full procedure is under
    `semantic` below.
+
+   With a session open, `cut`/`commit` are the round:
+
+   ```bash
+   vcut peek recording.mp4 --ref b042              # what is actually at a suspect position
+   vcut cut recording.mp4 --refs b042..b044 --kind repetition --reason "..." # per finding
+   vcut commit recording.mp4 --output master.mp4 --campaign x  # builds + renders, audio-only by default
+   trx transcribe master.wav --words --language <lang>         # what survived
+   vcut semantic review --edl edl.json --detect detect.json --terse \
+     --master master.wav --master-transcript <the .srt trx wrote> > review.json
+   vcut rounds recording.mp4 --diff                            # what changed since the last round
+   ```
+
+   Without a session — a one-off cut, or a script with no long-lived working directory — the
+   same round is the stateless pipeline this replaces, calling the identical build seam by hand:
 
    ```bash
    vcut edl build --detect detect.json --semantic proposals.json --output master.mp4 --campaign x
@@ -1392,6 +1432,35 @@ order is fixed and why stopping early leaves work that looks like polish and is 
 Run every step every round. Skipping one is how a defect survives several of them, and the way
 it fails is quiet: the round still produces a shorter file, so it looks like it worked.
 
+**With a session open, this is where `cut` and `commit` replace hand-writing
+`proposals.json`.** `vcut open <media>` once, at the start; every round after that is
+`vcut cut <media> --refs <ref[..ref]> --kind <kind> --reason "..."` per finding, then
+`vcut commit <media> --output <path> --campaign <id>` to build and render the round in one
+call. The step most often skipped below is 3 — reading the result — and the session flow does
+not remove that step, it removes the ceremony around steps 1 and 4: no proposals file to open
+and hand-edit, no re-typed `--detect`/`--semantic` paths per round, and `removedText` is quoted
+back at propose time instead of only appearing after a build.
+
+```bash
+vcut open recording.mp4 --preset clean --lang es --transcript words.srt   # once
+vcut cut recording.mp4 --refs b042..b044 --kind repetition --reason "..."  # per finding
+vcut commit recording.mp4 --output master.mp4 --campaign my-video          # builds + renders the round
+trx transcribe master.wav --words --language es -m large-v3-turbo          # step 2, same as always
+vcut semantic review --edl edl.json --detect detect.json \
+  --master master.wav --master-transcript <the .srt trx wrote>             # step 3, same as always
+```
+
+`commit` defaults to `--audio-only`, so this is still the cheap audio path every round, not a
+video render. `vcut rounds recording.mp4 --diff` after a second `commit` answers "what changed
+since the last round" — `removalPercentDelta`, `segmentCountDelta`, and each semantic cut as
+`added`/`removed`/`changed`/`unchanged` — in one call instead of eyeballing two transcripts
+against each other.
+
+The stateless pipeline below is still correct and still the right tool when no session fits —
+a one-off cut, a script driving vcut without a long-lived working directory, or a recording
+where refs do not carry a real advantage. It is the layer underneath the session verbs, not a
+separate procedure: `cut`/`commit` call the exact same build seam this pipeline calls directly.
+
 The step most often skipped is 3, because step 2 already produced a transcript and reading it
 feels like reviewing. It is not. The transcript says what was said; `review` says where nobody
 looked. A round that transcribed but did not run `review` has checked only one of the eight
@@ -1406,7 +1475,9 @@ Give each round its own output path, or delete the previous one first. The rende
 to overwrite, so a second round pointed at the same file fails with `output already exists`
 before it renders anything. Numbering them also leaves the earlier cuts on disk to compare
 against, which is the only way to tell whether a round improved the edit or just shortened
-it.
+it. A session's own `rounds/round-N/` does this numbering for you when `commit` is driving the
+loop; numbering `edl-$N.json`/`cut-$N.wav` by hand is what the stateless pipeline below still
+needs.
 
 ```bash
 N=1   # bump every round: the renderer refuses to overwrite
@@ -1872,7 +1943,11 @@ around the span, which is where the cleaning has not happened yet.
    minimum, which is why `detect`'s silence list cannot place this boundary on its own.
 4. Propose the cut with `kind: "filler"`, quoting the recovered text from `text` in the `reason`
    so whoever approves the EDL can read what is being removed rather than trust a classifier
-   score.
+   score. With a session open, `vcut cut <media> --span <startS>..<endS> --kind filler --reason
+   "..."` does this directly — a filler's boundaries almost never line up with a session's own
+   refs (they sit inside a block `open` measured as one span), so `--span` is the one the
+   playbook reaches for, not `--refs`. Without a session, fold it into `proposals.json` by hand
+   the same as any other finding.
 
 This is where the playbook sits in the round: "The round, in order" already runs the non-speech
 pass once, on the final preview, after the audio-only loop reads clean. With `--verify` that
