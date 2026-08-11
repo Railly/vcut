@@ -450,6 +450,9 @@ limpio
     await cutCommand([mediaPath, '--list', '--human'])
     expect(logged).toContain('driftSuspect')
     expect(logged).toContain('warning')
+  })
+})
+
 // Issue #31: --human --jq used to be a silent no-op on any command that prints human output
 // without ever reaching emitJson. cutCommand resolves mode before it ever touches a session on
 // disk, so this fails fast on the flag conflict rather than needing a real session fixture.
