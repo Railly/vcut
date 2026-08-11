@@ -10,6 +10,7 @@ import {
   gapsBetween,
   joinWords,
   mergeProposals,
+  metaSpeech,
   quietSegments,
   REVIEW_INSTRUCTIONS,
   renderedGaps,
@@ -600,6 +601,129 @@ describe('repeatedPhrases: stopword-dominated phrases are discounted, not gated'
   })
 })
 
+// #37: the run-3 miss. The recording carried five spoken self-directed edit markers; the agent
+// cut four and read straight past "ah, ok, otra, rebobinando" because its candidate search was
+// a grep over markers it had already seen and this one chained grammatically into the next
+// clause. metaSpeech is the structural fix: every line is checked against the whole lexicon,
+// not recalled from what a pass already looked at.
+describe('metaSpeech', () => {
+  const line = (index: number, text: string, startMs = index * 1000) => ({
+    index,
+    startMs,
+    endMs: startMs + 900,
+    text,
+  })
+
+  test('surfaces the exact run-3 miss: "ah, ok, otra, rebobinando"', () => {
+    const spans = metaSpeech(
+      [line(0, 'ah, ok, otra, rebobinando completamente diferente esta parte')],
+      [],
+      [],
+      'es',
+    )
+    expect(spans).toHaveLength(1)
+    expect(spans[0].text).toContain('rebobinando')
+  })
+
+  test('a span already covered by a cut is not surfaced', () => {
+    const marker = line(0, 'ah, ok, otra, rebobinando completamente diferente esta parte')
+    const spans = metaSpeech([marker], [{ startMs: 0, endMs: 900 }], [], 'es')
+    expect(spans).toEqual([])
+  })
+
+  test('a span outside every cut is surfaced even when other cuts exist elsewhere', () => {
+    const marker = line(1, 'corta todo eso, no sirve para nada', 5_000)
+    const spans = metaSpeech(
+      [line(0, 'un intro normal sin marcadores', 0), marker],
+      [{ startMs: 0, endMs: 900 }],
+      [],
+      'es',
+    )
+    expect(spans).toHaveLength(1)
+    expect(spans[0].startMs).toBe(5_000)
+  })
+
+  test('one line firing on several lexicon entries still produces one span', () => {
+    const spans = metaSpeech([line(0, 'no, borra eso, mejor dicho empiezo de nuevo')], [], [], 'es')
+    expect(spans).toHaveLength(1)
+  })
+
+  test('attaches nearestRef the same way export does', () => {
+    const marker = line(0, 'rebobinando desde el principio', 5_000)
+    const spans = metaSpeech(
+      [marker],
+      [],
+      [
+        { ref: 'b001', startMs: 0, endMs: 4_000 },
+        { ref: 'b002', startMs: 4_000, endMs: 10_000 },
+      ],
+      'es',
+    )
+    expect(spans[0].nearestRef).toBe('b002')
+  })
+
+  test('a line with no marker produces nothing', () => {
+    expect(
+      metaSpeech([line(0, 'seguimos construyendo la comunidad este año')], [], [], 'es'),
+    ).toEqual([])
+  })
+
+  // "corta" is deliberately a stem of "cortar" even though it is also a Spanish adjective.
+  // metaSpeech is a candidate list, not a verdict: it fires on the adjective too, and the
+  // disambiguation is documented (REVIEW_INSTRUCTIONS, skills/core/sections/semantic.md) rather
+  // than parsed here. This test pins that documented tradeoff rather than hiding it.
+  test('"una versión corta" fires as a documented false positive, not a silent miss', () => {
+    const spans = metaSpeech([line(0, 'preferimos una versión corta del video')], [], [], 'es')
+    expect(spans).toHaveLength(1)
+  })
+
+  test('the four other run-3 markers still surface: corta, perdón/olvida-class, borra', () => {
+    const lines = [
+      line(0, 'corta todo eso por favor', 0),
+      line(1, 'ay perdon, olvidalo, seguimos', 1_000),
+      line(2, 'borra la profa de esta parte', 2_000),
+    ]
+    const spans = metaSpeech(lines, [], [], 'es')
+    expect(spans).toHaveLength(3)
+  })
+
+  describe('English lexicon', () => {
+    test('matches "scratch that"', () => {
+      expect(
+        metaSpeech([line(0, 'wait, scratch that, let me redo it')], [], [], 'en'),
+      ).toHaveLength(1)
+    })
+
+    test('matches "rewind" and "take two"', () => {
+      const lines = [line(0, 'let me rewind for a second', 0), line(1, 'ok take two', 2_000)]
+      expect(metaSpeech(lines, [], [], 'en')).toHaveLength(2)
+    })
+
+    test('a lang tag other than the bare "en" code still reads as English', () => {
+      expect(metaSpeech([line(0, 'cut that, forget that part')], [], [], 'en-US')).toHaveLength(1)
+    })
+
+    test('an English line produces nothing against the Spanish lexicon and vice versa', () => {
+      expect(metaSpeech([line(0, 'scratch that entirely')], [], [], 'es')).toEqual([])
+      expect(metaSpeech([line(0, 'rebobinando desde el inicio')], [], [], 'en')).toEqual([])
+    })
+  })
+
+  describe('diacritic folding', () => {
+    test('matches "córtalo" against the "corta" stem', () => {
+      expect(metaSpeech([line(0, 'córtalo, no sirve esa parte')], [], [], 'es')).toHaveLength(1)
+    })
+
+    test('matches "bórralo" against the "borra" stem', () => {
+      expect(metaSpeech([line(0, 'bórralo por completo')], [], [], 'es')).toHaveLength(1)
+    })
+
+    test('matches "olvídalo" against the "olvid" stem', () => {
+      expect(metaSpeech([line(0, 'mejor olvídalo, seguimos')], [], [], 'es')).toHaveLength(1)
+    })
+  })
+})
+
 // A field nothing points at is a field a reader skips. The list of repeated phrases only
 // binds because the instructions say to answer every entry before reporting nothing, so the
 // wording that makes it a requirement is part of the contract rather than a nicety.
@@ -616,6 +740,14 @@ describe('review instructions', () => {
     expect(text).toContain('otra vez')
     expect(text).toContain('A speaker judging their own take is a cut')
     expect(text).toContain('a callback, and cutting it flattens the writing')
+  })
+
+  test('require every metaSpeech entry to be answered the same way repeated is', () => {
+    const text = REVIEW_INSTRUCTIONS.join('\n')
+    expect(text).toContain('metaSpeech lists spans')
+    expect(text).toContain(
+      'Every entry in metaSpeech must be answered the same way every entry in repeated is: propose a cut, or say in your answer why it stays.',
+    )
   })
 })
 

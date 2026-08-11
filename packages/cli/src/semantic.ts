@@ -783,6 +783,146 @@ export const repeatedPhrases = (
 export const foldDiacritics = (text: string): string =>
   text.normalize('NFD').replace(/\p{Mn}/gu, '')
 
+// A speaker who names their own edit ("rebobinando", "corta eso", "scratch that") is giving
+// the tool a structural signal filler's deletion test cannot see: these words describe an act
+// on the recording, not a thing the recording is about, and that is true whatever clause they
+// land in. #37 is the reason this exists: a run's candidate search was a grep over markers it
+// had already seen, and "ah, ok, otra, rebobinando" chained into the next clause and read past
+// it. A curated lexicon, checked structurally against every line rather than recalled by an
+// agent mid-pass, is the fix — the same reasoning repeatedPhrases already applies to retakes.
+//
+// Two shapes, because the lexicon mixes single words that inflect (a speaker says "corté",
+// "cortando", "córtalo", never just the infinitive) and fixed phrases that do not ("otra vez",
+// "eso no"). A stem is matched as a prefix of the folded, lowercased word, long enough that it
+// only matches real inflections of the verb it names: "corta" (5 letters) as a stem of "cortar"
+// would also prefix "cortar-related" nouns beyond what this list needs, so each stem is the
+// shared root of the forms actually listed in the issue, not the shortest string that works.
+// A phrase is matched as a run of exact words, the same shape RUN_LENGTH already scans lines
+// with, since "otra" alone is ordinary and only "otra vez" is a self-directed cue.
+type MetaSpeechEntry = { stem: string } | { phrase: string[] }
+
+const stemEntry = (stem: string): MetaSpeechEntry => ({ stem: foldDiacritics(stem.toLowerCase()) })
+const phraseEntry = (phrase: string): MetaSpeechEntry => ({
+  phrase: phrase
+    .toLowerCase()
+    .split(' ')
+    .map((word) => foldDiacritics(word)),
+})
+
+// Seeded from the issue's list, one entry per verb family plus the fixed phrases. "corta" is
+// deliberately included as a stem of "cortar" even though it is also a Spanish adjective ("una
+// versión corta"): the false positive is documented in metaSpeech rather than special-cased
+// here, since telling the adjective from the imperative needs the surrounding grammar this
+// lexicon does not parse. See metaSpeech's own comment for the tradeoff.
+const META_SPEECH_ES: MetaSpeechEntry[] = [
+  stemEntry('rebobin'), // rebobinar, rebobinando, rebobiné, rebobina
+  stemEntry('corta'), // corta, cortar, córtalo, cortando — also "una versión corta" (adjective)
+  stemEntry('borra'), // borra, borrar, bórralo, borrando
+  stemEntry('olvid'), // olvida, olvídalo, olvides, olvidemos
+  stemEntry('repit'), // repite, repito, repitiendo
+  stemEntry('repetir'),
+  phraseEntry('eso no'),
+  phraseEntry('otra vez'),
+  phraseEntry('de nuevo'),
+  phraseEntry('mejor dicho'),
+  phraseEntry('no sirve'),
+]
+
+const META_SPEECH_EN: MetaSpeechEntry[] = [
+  stemEntry('rewind'), // rewind, rewinding, rewound
+  phraseEntry('cut that'),
+  phraseEntry('delete that'),
+  phraseEntry('scratch that'),
+  phraseEntry('forget that'),
+  stemEntry('again'),
+  phraseEntry('take two'),
+  stemEntry('redo'),
+]
+
+const metaSpeechLexiconFor = (lang: string | undefined): MetaSpeechEntry[] =>
+  lang !== undefined && foldDiacritics(lang).toLowerCase().startsWith('en')
+    ? META_SPEECH_EN
+    : META_SPEECH_ES
+
+export type MetaSpeechSpan = {
+  text: string
+  startMs: number
+  endMs: number
+  nearestRef: string | null
+}
+
+// Cheap containment, not overlap: a span's own words already ran through Whisper's stretch (a
+// cue reaches to the start of the next word), so a marker sitting a beat inside an already-cut
+// span still has a startMs a strict overlap check would flag as "outside" by a few hundred ms.
+// Containment asks the sharper question this field exists to answer: did any round already
+// remove this word, not merely cut near it.
+const isInsideACut = (
+  startMs: number,
+  endMs: number,
+  cuts: Array<{ startMs: number; endMs: number }>,
+): boolean => cuts.some((cut) => startMs >= cut.startMs && endMs <= cut.endMs)
+
+// Structural, not a grep an agent runs mid-pass: every line is checked against the whole
+// lexicon regardless of what a round already looked at, so a marker chained into the next
+// clause ("ah, ok, otra, rebobinando") is found the same way a marker sitting alone is.
+//
+// cuts is gapsBetween(segments): the spans every prior proposal (semantic or silence) already
+// removed from this EDL, the same value unreviewedStretches already takes as its own second
+// argument. A marker whose line sits inside one of those gaps was already acted on by a round
+// that came before this one; metaSpeech names what nobody has cut yet, not everything that ever
+// matched the lexicon.
+//
+// A candidate list, not a verdict: "corta" fires on "una versión corta" the same as it fires on
+// "corta eso" because word-level stem matching cannot see that one is an adjective and the
+// other an imperative — that needs parsing this lexicon does not do. Building a parser for one
+// ambiguous stem inside a two-language list is not proportionate (MSW): the cheaper fix is
+// documented instead of built, in REVIEW_INSTRUCTIONS and the skill docs, both of which call
+// metaSpeech candidates to read rather than cuts to make. The human answering each entry is the
+// disambiguation step.
+export const metaSpeech = (
+  lines: Line[],
+  cuts: Array<{ startMs: number; endMs: number }>,
+  blocks: Array<{ ref: string; startMs: number; endMs: number }>,
+  lang: string | undefined,
+): MetaSpeechSpan[] => {
+  const lexicon = metaSpeechLexiconFor(lang)
+  const spans: MetaSpeechSpan[] = []
+
+  const matchesEntry = (folded: string[], entry: MetaSpeechEntry): boolean => {
+    if ('stem' in entry) {
+      return folded.some((word) => word.startsWith(entry.stem))
+    }
+    for (let start = 0; start + entry.phrase.length <= folded.length; start += 1) {
+      if (entry.phrase.every((word, offset) => folded[start + offset] === word)) {
+        return true
+      }
+    }
+    return false
+  }
+
+  for (const line of lines) {
+    const folded = line.text
+      .split(/\s+/)
+      .filter((word) => word.length > 0)
+      .map((word) => foldDiacritics(word.replace(/[^\p{L}\p{N}]/gu, '').toLowerCase()))
+
+    // One line can carry several markers ("no, borra eso, mejor dicho empiezo de nuevo") and
+    // still needs only one span: a reader answers the line, not the count of words that fired.
+    const hit = lexicon.some((entry) => matchesEntry(folded, entry))
+    if (!hit || isInsideACut(line.startMs, line.endMs, cuts)) {
+      continue
+    }
+    spans.push({
+      text: line.text,
+      startMs: line.startMs,
+      endMs: line.endMs,
+      nearestRef: nearestRef(line.startMs, blocks),
+    })
+  }
+
+  return spans
+}
+
 // A repeated phrase nobody wrote about is a round that is not finished. Listing them in review
 // was not enough on its own: a run read its own list, decided one entry was a deliberate turn,
 // wrote no proposal, and shipped the repetition — the same failure as before the field existed,
@@ -917,6 +1057,7 @@ export const REVIEW_INSTRUCTIONS = [
   'When a listener reports something this text does not show, transcribe that stretch on its own before deciding the text is right: a model reading the whole file collapses three attempts at one line into one, and the same audio cut to a few seconds returns all three.',
   'A converted timestamp looks as confident as a measured one. When a finding contradicts your mapping between the source and the master, check the mapping first, since it is the newer claim.',
   'unreviewed lists the stretches between two cuts that no proposal ever touched. They look reviewed because their neighbours were cut, and that is where a marker survives round after round. Read those first and apply the deletion test to every span in them.',
+  'metaSpeech lists spans that matched a curated lexicon of first-person editing verbs and self-directed commands ("rebobinando", "corta eso", "otra vez", "scratch that") and still sit outside every cut this EDL already made. It is a candidate list, not a verdict: a stem like "corta" also matches an ordinary adjective ("una versión corta"), so read the line before deciding. Every entry in metaSpeech must be answered the same way every entry in repeated is: propose a cut, or say in your answer why it stays.',
   'repeated lists wording that occurs more than once in the text above, with the lines it occurs in. It is not a verdict: a name, a term the subject is about, and a deliberate echo all repeat legitimately. It is the list of places where "I read this and it is fine" has to be a decision about a specific phrase rather than an impression of the whole.',
   'discountedRepeats lists wording that also repeated but read as connective tissue rather than a candidate retake ("que la gente", "va a ser"): too few content words in the run for a repeat to mean anything on its own. Nothing here needs a proposal or a reason. It is shown so a repeat that was filtered is visible, not silently dropped, in case one reads wrong for a recording this list was not built against.',
   'Answer every entry in repeated before reporting nothing. Say which telling you are keeping and why the others are not tellings of the same thing. A retake reads as a coherent scene, which is why a comprehension check clears it and a deletion test does not: delete each occurrence in turn and see whether the passage still says everything it said.',
@@ -1131,6 +1272,14 @@ export const semanticCommand = async (argv: string[]): Promise<void> => {
             LINE_BREAK_MS,
           )
     const { repeated, discounted } = repeatedPhrases(lines, report.lang)
+    const cuts = gapsBetween(segments)
+    // nearestRef's blocks are the source-timeline refs deriveRefs already builds from
+    // report.silences (the same source `export` reads its own blocks from). When linesFrom is
+    // 'master', line timings are the master's own timeline instead — a different coordinate
+    // space refs.json does not describe — so an empty block list here is honest rather than
+    // mapping a master-space startMs onto a source-space ref and naming the wrong neighbour.
+    const blocks =
+      masterTranscript === undefined ? deriveRefs(report.silences, report.durationMs) : []
     emitJson({
       status: 'exported',
       input: report.input,
@@ -1144,7 +1293,13 @@ export const semanticCommand = async (argv: string[]): Promise<void> => {
         : { instructions: REVIEW_INSTRUCTIONS }),
       masterMeasured: masterPath !== undefined,
       linesFrom: masterTranscript === undefined ? 'source' : 'master',
-      unreviewed: unreviewedStretches(lines, gapsBetween(segments), UNREVIEWED_MS),
+      unreviewed: unreviewedStretches(lines, cuts, UNREVIEWED_MS),
+      // Spans of first-person editing verbs and self-directed commands ("rebobinando", "corta
+      // eso", "scratch that") that sit outside every span already cut in this EDL. #37: a run's
+      // candidate search was a grep over markers it had already seen, and one that chained into
+      // the next clause read past it. This is the structural check that does not depend on an
+      // agent's own memory of what it looked at.
+      metaSpeech: metaSpeech(lines, cuts, blocks, report.lang),
       repeated,
       // Not gated on and not part of what a round has to answer: these are stopword-dominated
       // runs (below MIN_CONTENT_WORDS) that repeatedPhrases already decided read as connective
