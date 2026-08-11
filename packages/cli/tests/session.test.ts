@@ -1,20 +1,25 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { DetectReport } from '../src/detect.ts'
 import {
+  appendProposal,
   cachedDetect,
   checkSession,
   deriveRefs,
+  dropProposal,
+  nextRoundDir,
   openSession,
   readMeta,
+  readProposalsFile,
   readRefs,
   sessionRoot,
   sha256File,
   shaDirName,
   writeCachedDetect,
   writeRefs,
+  writeRound,
 } from '../src/session.ts'
 
 let workDir: string
@@ -248,5 +253,84 @@ describe('sessions live under a subdirectory that must be created lazily', () =>
     mkdirSync(workDir, { recursive: true })
     const session = await openSession(mediaPath)
     expect(session.dir.startsWith(sessionRoot())).toBe(true)
+  })
+})
+
+describe('proposals: append/list/drop roundtrip', () => {
+  const proposal = (startMs: number, endMs: number, removedText: string) => ({
+    startMs,
+    endMs,
+    kind: 'tangent' as const,
+    reason: 'sneeze and aside',
+    removedText,
+    proposedAt: '2026-08-10T00:00:00.000Z',
+  })
+
+  test('an empty session has no proposals', async () => {
+    const session = await openSession(mediaPath)
+    expect(readProposalsFile(session.dir)).toEqual([])
+  })
+
+  test('appendProposal creates proposals.json on first call and accumulates after', async () => {
+    const session = await openSession(mediaPath)
+    const first = appendProposal(session.dir, proposal(0, 1000, 'uno'))
+    expect(first).toHaveLength(1)
+    const second = appendProposal(session.dir, proposal(2000, 3000, 'dos'))
+    expect(second).toHaveLength(2)
+    expect(readProposalsFile(session.dir)).toEqual(second)
+  })
+
+  test('dropProposal removes by 0-based index and returns what remains', async () => {
+    const session = await openSession(mediaPath)
+    appendProposal(session.dir, proposal(0, 1000, 'uno'))
+    appendProposal(session.dir, proposal(2000, 3000, 'dos'))
+    appendProposal(session.dir, proposal(4000, 5000, 'tres'))
+    const remaining = dropProposal(session.dir, 1)
+    expect(remaining.map((entry) => entry.removedText)).toEqual(['uno', 'tres'])
+    expect(readProposalsFile(session.dir).map((entry) => entry.removedText)).toEqual([
+      'uno',
+      'tres',
+    ])
+  })
+
+  test('re-adding after a drop appends at the end, not back at the dropped index', async () => {
+    const session = await openSession(mediaPath)
+    appendProposal(session.dir, proposal(0, 1000, 'uno'))
+    appendProposal(session.dir, proposal(2000, 3000, 'dos'))
+    dropProposal(session.dir, 0)
+    appendProposal(session.dir, proposal(0, 1000, 'uno-otra-vez'))
+    expect(readProposalsFile(session.dir).map((entry) => entry.removedText)).toEqual([
+      'dos',
+      'uno-otra-vez',
+    ])
+  })
+
+  test('dropProposal on an out-of-range index throws rather than silently no-op', async () => {
+    const session = await openSession(mediaPath)
+    appendProposal(session.dir, proposal(0, 1000, 'uno'))
+    expect(() => dropProposal(session.dir, 5)).toThrow()
+    expect(() => dropProposal(session.dir, -1)).toThrow()
+  })
+})
+
+describe('rounds', () => {
+  test('nextRoundDir starts at round-1 for a fresh session', async () => {
+    const session = await openSession(mediaPath)
+    expect(nextRoundDir(session.dir)).toBe(join(session.dir, 'rounds', 'round-1'))
+  })
+
+  test('writeRound then nextRoundDir advances to round-2', async () => {
+    const session = await openSession(mediaPath)
+    const first = nextRoundDir(session.dir)
+    writeRound(first, { segments: [] }, { removalPercent: 12.5 })
+    expect(nextRoundDir(session.dir)).toBe(join(session.dir, 'rounds', 'round-2'))
+  })
+
+  test('writeRound writes edl.json and report.json with the given content', async () => {
+    const session = await openSession(mediaPath)
+    const dir = nextRoundDir(session.dir)
+    const { edlPath, reportPath } = writeRound(dir, { hello: 'edl' }, { hello: 'report' })
+    expect(JSON.parse(readFileSync(edlPath, 'utf8'))).toEqual({ hello: 'edl' })
+    expect(JSON.parse(readFileSync(reportPath, 'utf8'))).toEqual({ hello: 'report' })
   })
 })

@@ -1,8 +1,13 @@
-import { describe, expect, test } from 'bun:test'
+import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import {
   absorbSlivers,
+  type BuildOptions,
   boundariesAfterSpeech,
   boundariesInSilence,
+  buildEdlCommand,
   buildEdlNext,
   type Cut,
   clampedSpanFor,
@@ -14,10 +19,12 @@ import {
   parseCrop,
   reasonMismatch,
   removedText,
+  runBuild,
   snapToFrame,
   wordBoundaries,
 } from '../src/build-edl.ts'
-import type { SilenceCandidate, Transcript, Word } from '../src/detect.ts'
+import type { DetectReport, SilenceCandidate, Transcript, Word } from '../src/detect.ts'
+import { run } from '../src/exec.ts'
 
 const silence = (startMs: number, endMs: number): Cut => ({ startMs, endMs, reason: 'silence' })
 const semantic = (startMs: number, endMs: number): Cut => ({ startMs, endMs, reason: 'semantic' })
@@ -583,5 +590,147 @@ describe('buildEdlNext', () => {
   test('the hear-the-cut verb carries the given edl path', () => {
     const hints = buildEdlNext('/tmp/edl.json')
     expect(hints.some((hint) => hint.verb.includes('/tmp/edl.json'))).toBe(true)
+  })
+})
+
+// commit (B-V3) builds from an in-memory detect report and proposals array through runBuild
+// rather than round-tripping through --detect/--semantic file paths. This pins that the seam
+// produces byte-identical output (modulo the two fields that are legitimately call-time —
+// createdAt and each source's sha256, both deterministic given the same source bytes and
+// clock, so sha256 is compared and createdAt is dropped before comparing) to running
+// `vcut edl build --detect <path> --semantic <path>` on the equivalent inputs on disk.
+describe('runBuild matches buildEdlCommand given equivalent inputs', () => {
+  let workDir: string
+  let mediaPath: string
+
+  beforeAll(async () => {
+    workDir = mkdtempSync(join(tmpdir(), 'vcut-build-equiv-'))
+    mediaPath = join(workDir, 'source.mp4')
+    // A short, deterministic lavfi source: real enough for ffprobe/ffmpeg to read streams
+    // from, cheap enough to generate inline in a test (tens of milliseconds).
+    const { exitCode, stderr } = await run('ffmpeg', [
+      '-y',
+      '-f',
+      'lavfi',
+      '-i',
+      'testsrc=duration=6:size=320x240:rate=10',
+      '-f',
+      'lavfi',
+      '-i',
+      'anullsrc=r=48000:cl=stereo',
+      '-t',
+      '6',
+      '-c:v',
+      'libx264',
+      '-pix_fmt',
+      'yuv420p',
+      '-c:a',
+      'aac',
+      mediaPath,
+    ])
+    if (exitCode !== 0) {
+      throw new Error(`fixture generation failed: ${stderr}`)
+    }
+  })
+
+  afterAll(() => {
+    rmSync(workDir, { recursive: true, force: true })
+  })
+
+  const stripVolatile = (edl: Record<string, unknown>) => {
+    const { createdAt: _createdAt, ...rest } = edl
+    return rest
+  }
+
+  test('the drafted EDL and build summary match, semantic proposals included', async () => {
+    if (!existsSync(mediaPath)) {
+      throw new Error('fixture source was not generated')
+    }
+    const report: DetectReport = {
+      version: 1,
+      input: mediaPath,
+      durationMs: 6000,
+      preset: 'noisy',
+      thresholdDb: -20,
+      minSilenceMs: 300,
+      marginMs: 100,
+      lang: 'es',
+      transcript: { path: null, wordLevel: false, words: 0 },
+      audioPath: null,
+      silences: [{ kind: 'silence', startMs: 1000, endMs: 1500, durationMs: 500 }],
+      review: [],
+      warnings: [],
+    }
+    const detectPath = join(workDir, 'detect.json')
+    writeFileSync(detectPath, JSON.stringify(report))
+
+    const proposals = [
+      {
+        startMs: 3000,
+        endMs: 3800,
+        kind: 'tangent' as const,
+        reason: 'test aside, cut it',
+      },
+    ]
+    const semanticPath = join(workDir, 'proposals.json')
+    writeFileSync(semanticPath, JSON.stringify(proposals))
+
+    // Path A: the CLI command, exactly as a caller on the command line would run it.
+    const cliEdlPath = join(workDir, 'cli-edl.json')
+    const originalLog = console.log
+    let cliOutput = ''
+    console.log = (...args: unknown[]) => {
+      cliOutput += args.join(' ')
+    }
+    try {
+      await buildEdlCommand([
+        '--detect',
+        detectPath,
+        '--output',
+        join(workDir, 'master.mp4'),
+        '--campaign',
+        'equivalence-test',
+        '--edl',
+        cliEdlPath,
+        '--semantic',
+        semanticPath,
+        '--json',
+      ])
+    } finally {
+      console.log = originalLog
+    }
+    const cliSummary = JSON.parse(cliOutput) as Record<string, unknown>
+    const cliEdl = JSON.parse(readFileSync(cliEdlPath, 'utf8')) as Record<string, unknown>
+
+    // Path B: runBuild called directly with the same report and proposals in memory, the way
+    // commit calls it.
+    const buildOptions: BuildOptions = {
+      outputPath: join(workDir, 'master.mp4'),
+      edlPath: join(workDir, 'seam-edl.json'),
+      campaignId: 'equivalence-test',
+      width: null,
+      height: null,
+      fps: null,
+      edgeFadeMs: 50,
+      crop: null,
+      syncOffsetMs: 0,
+    }
+    const { edl: seamEdl, summary: seamSummary } = await runBuild(report, proposals, buildOptions)
+
+    expect(stripVolatile(seamEdl as Record<string, unknown>)).toEqual(stripVolatile(cliEdl))
+    // The two EDL files were written to different paths by construction; the summary's own
+    // edlPath field differs for the same reason and is stripped below. Everything else,
+    // including semanticCuts[].removedText and warnings, must match exactly.
+    const {
+      edlPath: _cliEdlPath,
+      next: _cliNext,
+      vcutVersion: _v,
+      ...cliSummaryRest
+    } = cliSummary as Record<string, unknown>
+    const { edlPath: _seamEdlPath, ...seamSummaryRest } = seamSummary as unknown as Record<
+      string,
+      unknown
+    >
+    expect(seamSummaryRest).toEqual(cliSummaryRest)
   })
 })
