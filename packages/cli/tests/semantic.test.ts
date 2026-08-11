@@ -883,10 +883,21 @@ describe('semanticCommand merge', () => {
     const b = join(workDir, 'flag-b.json')
     writeFileSync(a, JSON.stringify([proposal(1000, 1500)]))
     writeFileSync(b, JSON.stringify([proposal(2000, 2500)]))
-    const { output } = (await capture(['merge', a, b, '--human'])) as {
+    // --human itself is now a usage error (issue #31: semantic has no human summary to switch
+    // to) — --json is the boolean-shaped global flag this test can still use to prove the same
+    // point, that a recognized flag with no value is skipped rather than read as a file path.
+    const { output } = (await capture(['merge', a, b, '--json'])) as {
       output: { status: string; files: string[] }
     }
     expect(output.status).toBe('merged')
     expect(output.files).toEqual([a, b])
+  })
+
+  test('--human is a usage error: semantic has no human summary to switch to', async () => {
+    const a = join(workDir, 'human-a.json')
+    const b = join(workDir, 'human-b.json')
+    writeFileSync(a, JSON.stringify([proposal(1000, 1500)]))
+    writeFileSync(b, JSON.stringify([proposal(2000, 2500)]))
+    await expect(semanticCommand(['merge', a, b, '--human'])).rejects.toThrow(/--human/)
   })
 })

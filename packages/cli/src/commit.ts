@@ -84,7 +84,9 @@ each segment's approval to "approved" — followed by the existing
 Takes the session's advisory lock for the build+render, released after. A session already
 locked by another live process fails with an error naming its pid, verb, and age. On success
 the session is marked committed, which is what 'vcut session gc' reads as a candidate to
-clear — never something this command deletes itself.`
+clear — never something this command deletes itself.
+
+Also accepts --fields/--jq. See vcut --help for the full picture.`
 
 const BOOLEAN_FLAGS = new Set(['--json', '--human', '--help', '--audio-only', '--video'])
 

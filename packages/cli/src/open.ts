@@ -49,7 +49,9 @@ Sessions live under ~/.vcut/sessions/<sha256-16 of the source>/. The same conten
 twice reuses the cached detect report; a re-open with a different --preset re-detects and
 bumps the session's ref generation. Nothing here reads or prints spoken content: this is the
 map, not the text. Blocks are the speech spans between the detect's own silences, numbered
-b001, b002, ... in time order.`
+b001, b002, ... in time order.
+
+Also accepts --fields/--jq. See vcut --help for the full picture.`
 
 const BOOLEAN_FLAGS = new Set(['--json', '--human', '--help'])
 

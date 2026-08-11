@@ -54,7 +54,9 @@ falls back to a human ear.
 --verify closes the loop honestly. Reading the whole-file transcript to check a classifier
 hit is circular for this class of sound: the transcript is exactly what could not see it.
 --verify cuts a window of the span plus 1.2s of context on each side and asks trx again,
-which is the only way to recover a filler the first pass cleaned away.`
+which is the only way to recover a filler the first pass cleaned away.
+
+Also accepts --fields/--jq. See vcut --help for the full picture.`
 
 export type Span = { startMs: number; endMs: number }
 

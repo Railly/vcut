@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import {
+  cutCommand,
   parseMsRangeArgs,
   parseSpanArg,
   quoteRemovedText,
@@ -190,5 +191,19 @@ describe('quoteRemovedText', () => {
     const words = [word('hola', 0, 500)]
     expect(quoteRemovedText({ startMs: 10_000, endMs: 20_000 }, words)).toBe('')
     expect(quoteRemovedText({ startMs: 0, endMs: 500 }, [])).toBe('')
+  })
+})
+
+// Issue #31: --human --jq used to be a silent no-op on any command that prints human output
+// without ever reaching emitJson. cutCommand resolves mode before it ever touches a session on
+// disk, so this fails fast on the flag conflict rather than needing a real session fixture.
+describe('cutCommand --human --jq', () => {
+  test('is a usage error before any session lookup happens', async () => {
+    await expect(
+      cutCommand(['/no/such/media.mp4', '--human', '--jq', '.accepted', '--kind', 'filler']),
+    ).rejects.toThrow(UsageError)
+    await expect(
+      cutCommand(['/no/such/media.mp4', '--human', '--jq', '.accepted', '--kind', 'filler']),
+    ).rejects.toThrow(/mutually exclusive/)
   })
 })

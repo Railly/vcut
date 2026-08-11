@@ -21,6 +21,9 @@ import {
   type Mode,
   nextStep,
   packageVersion,
+  requireHumanOnly,
+  requireJson,
+  requireRawOutput,
   resolveMode,
   UsageError,
 } from './output.ts'
@@ -142,7 +145,22 @@ export const sessionsHealth = (): SessionsHealth => {
   }
 }
 
+const DOCTOR_HELP = `vcut doctor - check external dependencies
+
+Usage:
+  vcut doctor [flags]
+
+Checks ffmpeg and ffprobe are on PATH, reports whether the optional non-speech classifier is
+installed, and reports the session store's size and orphan count. Exits 1 when ffmpeg or
+ffprobe is missing; a missing classifier or an orphaned session is reported, not a failure.
+
+Also accepts --json/--human/--fields/--jq. See vcut --help for the full picture.`
+
 const doctorCommand = async (argv: string[]): Promise<void> => {
+  if (argv.includes('--help')) {
+    console.log(DOCTOR_HELP)
+    return
+  }
   const mode: Mode = resolveMode(argv, Boolean(process.stdout.isTTY))
   const checks = await Promise.all(
     DEPENDENCIES.map(async (dependency) => {
@@ -207,7 +225,10 @@ Nothing else in vcut needs it: detect, edl build and render all run without it. 
 leaves invariant 7 to a human ear, which is a real answer, not a broken state.
 
 The script also needs Python with panns-inference:
-  pip install panns-inference scipy numpy`
+  pip install panns-inference scipy numpy
+
+vcut setup classifier reports the download as JSON only (no --human summary; --fields/--jq
+still work). See vcut --help for the full picture.`
 
 // Everything a first run needs, done rather than listed.
 //
@@ -257,7 +278,12 @@ Installs ffmpeg through brew when it is missing, the transcriber through npm, th
 transcription model through trx init, and the agent skills through npx skills add
 (into the current directory; --no-skills leaves it alone). Reports anything it could
 not do and exits non-zero. The optional non-speech classifier stays separate:
-vcut setup classifier.`
+vcut setup classifier.
+
+This is a scripted install, not a value-returning command: there is no JSON output to
+switch to. --json/--fields/--jq are usage errors; --human is redundant with the default
+and left alone rather than rejected for asking for what already happens. See vcut --help
+for the full picture.`
 
 const setupAll = async (argv: string[]): Promise<void> => {
   // A --help that runs the installer is worse than no help at all: asking what a command
@@ -267,6 +293,7 @@ const setupAll = async (argv: string[]): Promise<void> => {
     process.stdout.write(`${INIT_HELP}\n`)
     return
   }
+  requireHumanOnly(argv, 'vcut init')
   const skipSkills = argv.includes('--no-skills')
   const modelPath = join(homedir(), '.trx', 'models', 'ggml-large-v3-turbo.bin')
   const blocked: string[] = []
@@ -349,6 +376,11 @@ const setupCommand = async (argv: string[]): Promise<void> => {
   if (target !== 'classifier') {
     throw new UsageError(SETUP_HELP)
   }
+  if (argv.includes('--help')) {
+    console.log(SETUP_HELP)
+    return
+  }
+  requireJson(argv, 'vcut setup classifier')
   const force = argv.includes('--force')
   mkdirSync(CLASSIFIER_HOME, { recursive: true })
 
@@ -720,7 +752,22 @@ const CONTRACTS: Record<string, unknown> = {
   },
 }
 
+const SCHEMA_HELP = `vcut schema - print the JSON contract for a command
+
+Usage:
+  vcut schema             List every command with a documented contract
+  vcut schema <name>      Print that command's own contract
+
+This is a machine contract, not a summary a human reads instead of the thing it describes.
+Also accepts --fields/--jq (no --human: there is no summary to switch to). See vcut --help
+for the full picture.`
+
 const schemaCommand = (argv: string[]): void => {
+  if (argv.includes('--help')) {
+    console.log(SCHEMA_HELP)
+    return
+  }
+  requireJson(argv, 'vcut schema')
   const name = positional(argv)
   if (name === undefined) {
     emitJson({ version: SCHEMA_VERSION, commands: Object.keys(CONTRACTS) })
@@ -810,9 +857,29 @@ export const parseSection = (args: string[]): string | undefined => {
   return value
 }
 
+const SKILLS_HELP = `vcut skills - read the bundled agent manual, or one section of it
+
+Usage:
+  vcut skills list [flags]                        List skills, scripts, and core sections
+  vcut skills get [name] [--section <name>]        Print a skill's SKILL.md, or one section
+  vcut skills path [name]                          Print the skills directory, or a skill's own
+
+list and path honor --json/--human/--fields/--jq like every other command. get streams a
+document's raw bytes to stdout instead — none of the four apply there, and each is a usage
+error naming itself rather than a flag this command silently drops. See vcut --help for the
+full picture.`
+
 const skillsCommand = (argv: string[]): void => {
+  if (argv.includes('--help')) {
+    console.log(SKILLS_HELP)
+    return
+  }
   const [verb, ...rest] = argv
   const directory = skillsDir()
+
+  if (verb === 'get') {
+    requireRawOutput(argv, 'vcut skills get')
+  }
   const mode: Mode = resolveMode(argv, Boolean(process.stdout.isTTY))
 
   if (verb === undefined || verb === 'list') {

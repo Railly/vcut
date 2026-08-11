@@ -5,7 +5,7 @@ import type { DetectReport, Interval, Transcript, Word } from './detect.ts'
 import { parseSilenceLog, parseSrt } from './detect.ts'
 import { run } from './exec.ts'
 import { nearestRef } from './open.ts'
-import { emitJson, UsageError } from './output.ts'
+import { emitJson, requireJson, UsageError } from './output.ts'
 import { deriveRefs } from './session.ts'
 
 const HELP = `vcut semantic - hand the transcript to a model, take back cut proposals
@@ -41,6 +41,8 @@ error (exit 2), same as every other malformed invocation in this CLI.
 
 export, check, and review emit JSON: the reader is an agent, not a terminal. merge does
 too, unless --out is given, in which case the file is written and a summary prints instead.
+There is no --human summary for any of them; passing --human is a usage error rather than
+a silently ignored flag. --fields and --jq still work, since both already read JSON.
 
 vcut never calls a model. Export gives an agent numbered lines with timings and the
 block ref nearest each line (nearestRef); the agent writes proposals back as JSON, and
@@ -50,7 +52,10 @@ Every proposed cut lands as semanticRisk material and stays unapproved.
 
 review closes the loop: it reads an EDL back and returns the transcript as it
 survives the cuts, so the agent judges the result a viewer hears rather than the
-plan it wrote.`
+plan it wrote.
+
+Also accepts --fields/--jq (no --human: every subcommand here is JSON-only). See vcut
+--help for the full picture.`
 
 // Whisper with --max-len 1 emits BPE pieces, not words: "Crafter" arrives as "Cra" + "fter".
 // A model reasoning over raw cues sees fragments and proposes cuts against text nobody
@@ -710,6 +715,10 @@ export const semanticCommand = async (argv: string[]): Promise<void> => {
     process.stdout.write(`${HELP}\n`)
     return
   }
+  // Every subcommand here emits JSON with no human summary to switch to, so --human is a usage
+  // error rather than a flag emitJson silently ignores further down. Checked once, up front,
+  // rather than per subcommand, since the rule is the same for all four.
+  requireJson(argv, 'vcut semantic')
   const value = (flag: string) => {
     const index = argv.indexOf(flag)
     return index === -1 ? undefined : argv[index + 1]
@@ -736,10 +745,11 @@ export const semanticCommand = async (argv: string[]): Promise<void> => {
   if (subcommand === 'merge') {
     // Everything after `merge` that is not a flag is an input file, in the order given:
     // unlike --refs or --detect there is no fixed arity here, so this reads argv as a small
-    // state machine rather than indexOf-ing one flag at a time. Global flags (--json, --human,
-    // --fields, --jq, --help) are not this command's business — emitJson reads them straight
-    // off process.argv the same way every other command lets it — so they are skipped rather
-    // than rejected, the same tolerance detect.ts's BOOLEAN_FLAGS gives positional().
+    // state machine rather than indexOf-ing one flag at a time. --human already failed above
+    // (requireJson); --json, --fields, --jq, and --help are not this command's business —
+    // emitJson reads them straight off process.argv the same way every other command lets it —
+    // so they are skipped here rather than mistaken for an input file, the same tolerance
+    // detect.ts's BOOLEAN_FLAGS gives positional().
     const BOOLEAN_FLAGS = new Set(['--json', '--human', '--help'])
     const paths: string[] = []
     let outPath: string | undefined

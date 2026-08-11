@@ -43,7 +43,9 @@ Flags:
   --human               Force the human summary
   --help                Show this message
 
-Every segment is written as proposed and the EDL as draft. Nothing is approved here.`
+Every segment is written as proposed and the EDL as draft. Nothing is approved here.
+
+Also accepts --fields/--jq. See vcut --help for the full picture.`
 
 export type BuildSummary = {
   status: 'drafted'

@@ -34,7 +34,9 @@ Flags:
   --help                Show this message
 
 Filler cutting needs word-level timestamps. Generate them with:
-  whisper-cli --max-len 1 --split-on-word`
+  whisper-cli --max-len 1 --split-on-word
+
+Also accepts --fields/--jq. See vcut --help for the full picture.`
 
 export type Preset = 'noisy' | 'clean' | 'podcast'
 // Free-form, not an enum: it is passed through to the semantic export so a model knows what

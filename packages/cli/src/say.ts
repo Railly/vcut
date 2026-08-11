@@ -57,7 +57,9 @@ model's guess; the transcript already knows.
 one session swept 18 classifier spans that way. locate --sources answers a list for the same
 reason. With --transcribe, positions transcribe one at a time, never concurrently: each call
 loads a Whisper model into memory, and racing several is the kind of load that chokes a
-machine already carrying a video editor.`
+machine already carrying a video editor.
+
+Also accepts --fields/--jq. See vcut --help for the full picture.`
 
 export type Spoken = {
   atMs: number

@@ -45,7 +45,9 @@ Positions are ranked by how tightly their pauses cluster. It reports where to li
 says nothing about what is there: run 'vcut say' on a position to find out.
 
 The default ratio sits in the middle of a plateau (0.3 to 0.5) where the result did not
-change on the recording it was measured against. It is a flag because that was one file.`
+change on the recording it was measured against. It is a flag because that was one file.
+
+Also accepts --fields/--jq. See vcut --help for the full picture.`
 
 export type Suspect = {
   atMs: number

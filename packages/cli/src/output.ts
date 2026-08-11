@@ -5,20 +5,92 @@ import { runJq } from './jq.ts'
 
 export type Mode = 'json' | 'human'
 
+const hasFields = (args: string[]): boolean =>
+  args.some((arg) => arg === '--fields' || arg.startsWith('--fields='))
+
+const hasJq = (args: string[]): boolean =>
+  args.some((arg) => arg === '--jq' || arg.startsWith('--jq='))
+
+// --fields and --jq both ask for machine output by construction: a caller naming dot paths to
+// extract, or a filter to run, wants that projection, not a human summary those paths and
+// filters do not exist in. The manual says both imply --json, so --human alongside either is a
+// contradiction, not a preference to arbitrate silently — the caller asked for a summary and a
+// machine projection of the same run in one breath. Checked before --json/--human resolve so
+// the conflict is caught however the two are ordered on the command line, and shared between
+// resolveMode and emitJson (its own callers reach it without ever calling resolveMode) so the
+// rule lives once rather than once per seam.
+export const checkModeConflicts = (args: string[]): void => {
+  if (args.includes('--human') && (hasFields(args) || hasJq(args))) {
+    const culprit = hasJq(args) ? '--jq' : '--fields'
+    throw new UsageError(`--human and ${culprit} are mutually exclusive; ${culprit} implies --json`)
+  }
+}
+
+// A handful of commands (schema, setup classifier, semantic's subcommands) never call
+// resolveMode: they have no human summary to switch to, by design — schema prints a machine
+// contract, setup classifier reports a download, semantic hands proposals to a model. --human
+// on any of them used to be accepted and silently ignored rather than switching anything, which
+// is the same silent-acceptance bug resolveMode's own --human/--jq guard exists to close.
+// commandLabel names the caller in the error so a rejection reads as "this command" rather
+// than a generic flag complaint.
+export const requireJson = (args: string[], commandLabel: string): void => {
+  if (args.includes('--human')) {
+    throw new UsageError(`${commandLabel} has no human summary; drop --human`)
+  }
+}
+
+// `vcut skills get <name>` streams a document's raw bytes to stdout (an agent asking for the
+// manual wants the manual, not a JSON envelope around it) — none of the four global output
+// flags apply, and all four used to be silently ignored rather than rejected. Named per flag
+// rather than one combined message, since a caller who typed --jq almost certainly wants to
+// know --jq specifically does not apply here, not that some unspecified flag does not.
+export const requireRawOutput = (args: string[], commandLabel: string): void => {
+  if (args.includes('--json')) {
+    throw new UsageError(`${commandLabel} prints raw text, not JSON; drop --json`)
+  }
+  if (args.includes('--human')) {
+    throw new UsageError(`${commandLabel} prints raw text; there is no separate --human view`)
+  }
+  if (hasFields(args)) {
+    throw new UsageError(`${commandLabel} prints raw text, not JSON; --fields does not apply`)
+  }
+  if (hasJq(args)) {
+    throw new UsageError(`${commandLabel} prints raw text, not JSON; --jq does not apply`)
+  }
+}
+
+// The mirror case: `vcut init` (and `setup all`) is a scripted installer, side effects
+// reported as they happen, never a value to project or reshape. --human asks for the only
+// mode this command has, so it is left alone rather than rejected for redundancy; --json,
+// --fields, and --jq ask this command to become something it structurally is not, and used to
+// be silently accepted and ignored rather than refused.
+export const requireHumanOnly = (args: string[], commandLabel: string): void => {
+  if (args.includes('--json')) {
+    throw new UsageError(`${commandLabel} has no JSON output; drop --json`)
+  }
+  if (hasFields(args)) {
+    throw new UsageError(`${commandLabel} has no JSON output; --fields does not apply`)
+  }
+  if (hasJq(args)) {
+    throw new UsageError(`${commandLabel} has no JSON output; --jq does not apply`)
+  }
+}
+
 // --fields asks for machine output by construction: a caller naming dot paths to extract wants
 // the extraction, not a human summary those paths do not exist in. --jq asks the same thing
 // for a filter or a merge, which is why it forces JSON the same way.
 export const resolveMode = (args: string[], isTty: boolean): Mode => {
+  checkModeConflicts(args)
   if (args.includes('--json')) {
     return 'json'
   }
   if (args.includes('--human')) {
     return 'human'
   }
-  if (args.some((arg) => arg === '--fields' || arg.startsWith('--fields='))) {
+  if (hasFields(args)) {
     return 'json'
   }
-  if (args.some((arg) => arg === '--jq' || arg.startsWith('--jq='))) {
+  if (hasJq(args)) {
     return 'json'
   }
   return isTty ? 'human' : 'json'
@@ -168,6 +240,11 @@ export const projectFields = (
 // selected — it is the version stamp, not a field a caller could ask away.
 export const emitJson = (value: unknown, fields?: string[]): void => {
   const argv = process.argv.slice(2)
+  // A command that calls emitJson without ever calling resolveMode (schema, setup classifier,
+  // semantic's subcommands — all JSON-only by design) still reaches process.argv here, so the
+  // --human/--jq and --human/--fields conflict is caught the same way resolveMode catches it
+  // for every command that does call resolveMode, rather than only for the callers that do.
+  checkModeConflicts(argv)
   const jqExpr = parseJqExpr(argv)
   const requested = fields ?? parseFields(argv) ?? []
   if (jqExpr !== null && requested.length > 0) {

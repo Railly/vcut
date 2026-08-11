@@ -6,13 +6,18 @@ import { matchTarget } from '../src/build-edl.ts'
 import { classifierStatus } from '../src/cli.ts'
 import {
   bar,
+  checkModeConflicts,
   duration,
   emitJson,
   packageVersion,
   parseFields,
   parseJqExpr,
   projectFields,
+  requireHumanOnly,
+  requireJson,
+  requireRawOutput,
   resolveMode,
+  UsageError,
 } from '../src/output.ts'
 
 describe('resolveMode', () => {
@@ -50,6 +55,111 @@ describe('resolveMode', () => {
 
   test('--jq=<expr> also implies JSON', () => {
     expect(resolveMode(['--jq=.a'], true)).toBe('json')
+  })
+
+  // Issue #31: --human --jq (or --human --fields) used to be a silent no-op on any command
+  // that prints human output without reaching emitJson — --human won the resolveMode check
+  // that ran first and --jq's own implication never got a chance to fire. Both orderings are
+  // covered, since a caller could type either flag first.
+  test('--human --jq is a usage error, not a silent no-op', () => {
+    expect(() => resolveMode(['--human', '--jq', '.a'], true)).toThrow(UsageError)
+    expect(() => resolveMode(['--human', '--jq', '.a'], true)).toThrow(/mutually exclusive/)
+  })
+
+  test('--jq --human is the same usage error regardless of flag order', () => {
+    expect(() => resolveMode(['--jq', '.a', '--human'], true)).toThrow(UsageError)
+  })
+
+  test('--human --fields is a usage error, not a silent no-op', () => {
+    expect(() => resolveMode(['--human', '--fields', 'a'], true)).toThrow(UsageError)
+    expect(() => resolveMode(['--human', '--fields', 'a'], true)).toThrow(/mutually exclusive/)
+  })
+
+  test('--human --jq= (inline form) is caught the same way', () => {
+    expect(() => resolveMode(['--human', '--jq=.a'], true)).toThrow(UsageError)
+  })
+
+  test('--human --fields= (inline form) is caught the same way', () => {
+    expect(() => resolveMode(['--human', '--fields=a'], true)).toThrow(UsageError)
+  })
+
+  test('names --jq specifically when both --jq and --fields somehow appear with --human', () => {
+    // Not a real invocation (--fields/--jq are already mutually exclusive elsewhere), but the
+    // guard should still name one flag rather than a vague "a flag" message.
+    expect(() => resolveMode(['--human', '--jq', '.a', '--fields', 'a'], true)).toThrow(/--jq/)
+  })
+
+  test('--jq alone with --human absent is untouched: still forces JSON', () => {
+    expect(resolveMode(['--jq', '.a'], true)).toBe('json')
+  })
+})
+
+describe('checkModeConflicts', () => {
+  test('is silent when --human appears alone', () => {
+    expect(() => checkModeConflicts(['--human'])).not.toThrow()
+  })
+
+  test('is silent when --jq appears without --human', () => {
+    expect(() => checkModeConflicts(['--jq', '.a'])).not.toThrow()
+  })
+
+  test('throws when --human and --jq appear together', () => {
+    expect(() => checkModeConflicts(['--human', '--jq', '.a'])).toThrow(UsageError)
+  })
+})
+
+describe('requireJson', () => {
+  test('is silent when --human is absent', () => {
+    expect(() => requireJson(['--fields', 'a'], 'vcut schema')).not.toThrow()
+  })
+
+  test('throws naming the command when --human is present', () => {
+    expect(() => requireJson(['--human'], 'vcut schema')).toThrow(UsageError)
+    expect(() => requireJson(['--human'], 'vcut schema')).toThrow(/vcut schema/)
+  })
+})
+
+describe('requireRawOutput', () => {
+  test('is silent when none of the four flags are present', () => {
+    expect(() => requireRawOutput(['core'], 'vcut skills get')).not.toThrow()
+  })
+
+  test('rejects --json naming the command', () => {
+    expect(() => requireRawOutput(['--json'], 'vcut skills get')).toThrow(/vcut skills get/)
+  })
+
+  test('rejects --human', () => {
+    expect(() => requireRawOutput(['--human'], 'vcut skills get')).toThrow(UsageError)
+  })
+
+  test('rejects --fields', () => {
+    expect(() => requireRawOutput(['--fields', 'a'], 'vcut skills get')).toThrow(UsageError)
+  })
+
+  test('rejects --jq', () => {
+    expect(() => requireRawOutput(['--jq', '.a'], 'vcut skills get')).toThrow(UsageError)
+  })
+})
+
+describe('requireHumanOnly', () => {
+  test('leaves --human alone: it asks for the only mode this command has', () => {
+    expect(() => requireHumanOnly(['--human'], 'vcut init')).not.toThrow()
+  })
+
+  test('is silent when no JSON-shaped flag is present', () => {
+    expect(() => requireHumanOnly(['--no-skills'], 'vcut init')).not.toThrow()
+  })
+
+  test('rejects --json naming the command', () => {
+    expect(() => requireHumanOnly(['--json'], 'vcut init')).toThrow(/vcut init/)
+  })
+
+  test('rejects --fields', () => {
+    expect(() => requireHumanOnly(['--fields', 'a'], 'vcut init')).toThrow(UsageError)
+  })
+
+  test('rejects --jq', () => {
+    expect(() => requireHumanOnly(['--jq', '.a'], 'vcut init')).toThrow(UsageError)
   })
 })
 
