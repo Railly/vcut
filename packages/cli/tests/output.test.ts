@@ -4,7 +4,15 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { matchTarget } from '../src/build-edl.ts'
 import { classifierStatus } from '../src/cli.ts'
-import { bar, duration, emitJson, packageVersion, resolveMode } from '../src/output.ts'
+import {
+  bar,
+  duration,
+  emitJson,
+  packageVersion,
+  parseFields,
+  projectFields,
+  resolveMode,
+} from '../src/output.ts'
 
 describe('resolveMode', () => {
   test('defaults to JSON when stdout is not a TTY', () => {
@@ -25,6 +33,98 @@ describe('resolveMode', () => {
 
   test('lets --json win over --human when both appear', () => {
     expect(resolveMode(['--human', '--json'], true)).toBe('json')
+  })
+
+  test('--fields implies JSON even on a TTY', () => {
+    expect(resolveMode(['--fields', 'removalPercent'], true)).toBe('json')
+  })
+
+  test('--fields=<paths> also implies JSON', () => {
+    expect(resolveMode(['--fields=removalPercent'], true)).toBe('json')
+  })
+})
+
+describe('parseFields', () => {
+  test('splits a comma-separated --fields value into paths', () => {
+    expect(parseFields(['--fields', 'a,b.c,d'])).toEqual(['a', 'b.c', 'd'])
+  })
+
+  test('trims whitespace around each path', () => {
+    expect(parseFields(['--fields', 'a, b.c , d'])).toEqual(['a', 'b.c', 'd'])
+  })
+
+  test('reads the --fields=<paths> inline form', () => {
+    expect(parseFields(['--fields=a,b.c'])).toEqual(['a', 'b.c'])
+  })
+
+  test('returns null when --fields was not passed', () => {
+    expect(parseFields(['--json'])).toBeNull()
+  })
+
+  test('returns an empty array when --fields was passed with no value', () => {
+    expect(parseFields(['--fields'])).toEqual([])
+  })
+})
+
+describe('projectFields', () => {
+  test('projects a top-level field', () => {
+    const { projected, fieldErrors } = projectFields({ removalPercent: 22.5, segments: 4 }, [
+      'removalPercent',
+    ])
+    expect(projected).toEqual({ removalPercent: 22.5 })
+    expect(fieldErrors).toEqual([])
+  })
+
+  test('projects a nested field by dot path', () => {
+    const { projected } = projectFields({ audio: { speechTargetLufs: -16 } }, [
+      'audio.speechTargetLufs',
+    ])
+    expect(projected).toEqual({ 'audio.speechTargetLufs': -16 })
+  })
+
+  test('projects each element of an array field', () => {
+    const value = {
+      semanticCuts: [{ removedText: 'eh' }, { removedText: 'y luego' }],
+    }
+    const { projected } = projectFields(value, ['semanticCuts.removedText'])
+    expect(projected).toEqual({ 'semanticCuts.removedText': ['eh', 'y luego'] })
+  })
+
+  test('projects several fields in one call', () => {
+    const value = { removalPercent: 22.5, semanticCuts: [{ removedText: 'eh' }] }
+    const { projected } = projectFields(value, ['removalPercent', 'semanticCuts.removedText'])
+    expect(projected).toEqual({
+      removalPercent: 22.5,
+      'semanticCuts.removedText': ['eh'],
+    })
+  })
+
+  test('an unknown path becomes a fieldErrors entry, not a thrown error', () => {
+    const { projected, fieldErrors } = projectFields({ removalPercent: 22.5 }, ['segmentCount'])
+    expect(projected).toEqual({})
+    expect(fieldErrors).toEqual(['segmentCount'])
+  })
+
+  test('mixes a found field and an unknown one in the same call', () => {
+    const { projected, fieldErrors } = projectFields({ removalPercent: 22.5 }, [
+      'removalPercent',
+      'nope',
+    ])
+    expect(projected).toEqual({ removalPercent: 22.5 })
+    expect(fieldErrors).toEqual(['nope'])
+  })
+
+  test('an unknown path inside an array element is reported once for the whole path', () => {
+    const value = { semanticCuts: [{ removedText: 'eh' }] }
+    const { projected, fieldErrors } = projectFields(value, ['semanticCuts.missing'])
+    expect(projected).toEqual({})
+    expect(fieldErrors).toEqual(['semanticCuts.missing'])
+  })
+
+  test('a field present but null resolves, not a fieldErrors entry', () => {
+    const { projected, fieldErrors } = projectFields({ warning: null }, ['warning'])
+    expect(projected).toEqual({ warning: null })
+    expect(fieldErrors).toEqual([])
   })
 })
 
@@ -71,14 +171,14 @@ describe('emitJson', () => {
   // Captured with console.log rather than mocking JSON.stringify, since a caller reads
   // stdout, not the internals: this test proves the same thing an agent piping the output
   // would observe.
-  const captured = (value: unknown): unknown => {
+  const captured = (value: unknown, fields?: string[]): unknown => {
     const original = console.log
     let printed = ''
     console.log = (text: string) => {
       printed = text
     }
     try {
-      emitJson(value)
+      emitJson(value, fields)
     } finally {
       console.log = original
     }
@@ -108,6 +208,44 @@ describe('emitJson', () => {
   test('leaves a non-object value alone', () => {
     expect(captured(['a', 'b'])).toEqual(['a', 'b'])
     expect(captured('plain string')).toBe('plain string')
+  })
+
+  test('with fields given, projects the object down to those paths', () => {
+    const output = captured({ removalPercent: 22.5, segments: 4, cuts: 2 }, ['removalPercent']) as {
+      removalPercent: number
+      segments?: number
+      vcutVersion: string
+    }
+    expect(output).toEqual({ removalPercent: 22.5, vcutVersion: packageVersion() })
+  })
+
+  test('vcutVersion survives selection even when not asked for', () => {
+    const output = captured({ removalPercent: 22.5, segments: 4 }, ['segments']) as {
+      vcutVersion: string
+    }
+    expect(output.vcutVersion).toBe(packageVersion())
+  })
+
+  test('an unknown field surfaces fieldErrors alongside whatever did resolve', () => {
+    const output = captured({ removalPercent: 22.5 }, ['removalPercent', 'nope']) as {
+      removalPercent: number
+      fieldErrors: string[]
+    }
+    expect(output.removalPercent).toBe(22.5)
+    expect(output.fieldErrors).toEqual(['nope'])
+  })
+
+  test('projects an array field across every element', () => {
+    const output = captured({ semanticCuts: [{ removedText: 'eh' }, { removedText: 'y' }] }, [
+      'semanticCuts.removedText',
+    ]) as Record<string, unknown>
+    expect(output['semanticCuts.removedText']).toEqual(['eh', 'y'])
+  })
+
+  test('an empty fields array falls back to the unprojected object', () => {
+    const output = captured({ status: 'ok' }, []) as { status: string; vcutVersion: string }
+    expect(output.status).toBe('ok')
+    expect(output.vcutVersion).toBe(packageVersion())
   })
 })
 

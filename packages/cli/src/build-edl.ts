@@ -3,7 +3,7 @@ import { createReadStream, existsSync, readFileSync, writeFileSync } from 'node:
 import { resolve } from 'node:path'
 import { containsPhrase } from './converge.ts'
 import type { DetectReport, Interval, SilenceCandidate, Transcript, Word } from './detect.ts'
-import { parseSrt } from './detect.ts'
+import { parseSrt, wordsContradictingSilence } from './detect.ts'
 import { run } from './exec.ts'
 import {
   bar,
@@ -372,6 +372,33 @@ export const boundariesInSilence = (
   return [inside(span.startMs), inside(span.endMs)]
 }
 
+/**
+ * Whether a span's removedText is built from words the drift warning would flag: cues whose
+ * claimed start lands inside a span `detect` measured as silence, so the transcript disagrees
+ * with the audio about where speech actually begins.
+ *
+ * Reuses `detect.ts`'s own `wordsContradictingSilence` rather than a second implementation of
+ * that comparison — the same reasoning behind `reasonMismatch` reusing `converge`'s carrying-word
+ * check. Scoped to the words `removedText` itself draws from (the ones falling inside the span),
+ * since a span's own drift is about the words it claims to remove, not the recording's word list
+ * as a whole. On a recording with 326 drifted cues total, `removedText` cried wolf three times in
+ * one run and each wolf cost a `say --transcribe` to refute; this is the corrective read at build
+ * time instead of after a render.
+ *
+ * Deliberately not a re-transcription: the windowed-retranscription alternative the issue also
+ * named answers a harder question (what the audio actually says) and `peek` already provides it
+ * on demand. This answers a cheaper one — does the transcript's own claim about this span
+ * contradict the same measurement the detect warning already trusted — off data already in hand.
+ */
+export const driftSuspectSpan = (
+  span: Interval,
+  words: Word[],
+  silences: SilenceCandidate[],
+): boolean => {
+  const spanWords = words.filter((word) => word.endMs > span.startMs && word.startMs < span.endMs)
+  return wordsContradictingSilence(spanWords, silences).length > 0
+}
+
 const REASON_MISMATCH_MIN_CARRYING_WORDS = 4
 const REASON_MISMATCH_MAX_SHARED_FRACTION = 0.5
 
@@ -419,6 +446,7 @@ export type SemanticCutReport = {
   reason: string
   removedText: string
   boundariesInSilence: [boolean, boolean]
+  driftSuspect?: true
 }
 
 /** Per-proposal build report: what each accepted semantic span actually removes. */
@@ -435,17 +463,27 @@ export const describeSemanticCuts = (
     const span = clampedSpanFor(proposal, merged)
     const text = removedText(span, words)
     const inSilence = boundariesInSilence(span, silences)
-    cuts.push({
+    const drifted = driftSuspectSpan(span, words, silences)
+    const cut: SemanticCutReport = {
       startMs: span.startMs,
       endMs: span.endMs,
       kind: proposal.kind,
       reason: proposal.reason,
       removedText: text,
       boundariesInSilence: inSilence,
-    })
+    }
+    if (drifted) {
+      cut.driftSuspect = true
+    }
+    cuts.push(cut)
     if (reasonMismatch(text, proposal.reason)) {
       warnings.push(
         `semantic cut ${(span.startMs / 1000).toFixed(2)}-${(span.endMs / 1000).toFixed(2)}s removes "${text}", which the reason does not mention ("${proposal.reason}"). Read removedText before rendering: a span can drift onto the wrong words when measured blocks are mis-assigned.`,
+      )
+    }
+    if (drifted) {
+      warnings.push(
+        `semantic cut ${(span.startMs / 1000).toFixed(2)}-${(span.endMs / 1000).toFixed(2)}s removes "${text}", built from cues that claim a word starts inside measured silence. removedText is driftSuspect here: do not trust it without a check (vcut peek or say --transcribe over the span).`,
       )
     }
   }

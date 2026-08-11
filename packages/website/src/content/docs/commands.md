@@ -31,13 +31,24 @@ vcut setup classifier              Fetch the optional non-speech classifier
 vcut version                       Print the version
 ```
 
-Global flags: `--json` forces machine output, `--human` forces the summary, `--help` works on any command.
+Global flags: `--json` forces machine output, `--human` forces the summary, `--fields <a.b,c,d>`
+projects JSON output to those dot paths (comma separated, implies `--json`), `--help` works on
+any command.
 
 Every JSON output carries `vcutVersion`, the version of the binary that produced it, so an
 agent working from a cached manual can tell the tool changed underneath it. Selected outputs
 (`suspects`, `detect`, `edl build`, `semantic review`, `nonspeech`, `render --audio-only`) also
 carry `next`, a short list of `{question, verb}` naming what to run next — a hint, not an
 instruction.
+
+`--fields removalPercent,semanticCuts.removedText` reads back only those paths, keyed by the
+path string itself; an array field projects across every element, so
+`semanticCuts.removedText` over several cuts returns the array of that field. A path that does
+not exist becomes a `fieldErrors` entry naming it rather than failing the call, and
+`vcutVersion` always rides along regardless of selection. Exists because a real 11.7-minute run
+made roughly 40 `python3 -c` calls extracting 2-3 fields each from full payloads it had already
+read, with `jq` on `PATH` the whole time — a native flag is part of the output contract,
+discoverable in `--help` and `schema`, rather than a second syntax recomposed per call.
 
 ### vcut detect
 
@@ -114,6 +125,8 @@ vcut edl build --detect detect.json --output master.mp4 --campaign my-video
 The command inverts the cut intervals into the spans worth **keeping**, so the EDL always describes surviving material rather than deleted material.
 
 **The build report includes `semanticCuts`, one entry per accepted semantic proposal**: `removedText`, the transcript words that fall inside its final span, and `boundariesInSilence`, whether each edge lands inside a silence `detect` measured. Read `removedText` before rendering — it is the corrective for a span drifting onto the wrong words unnoticed, which happened on a real cut: a repetition proposal removed "todos estamos" instead of the stutter "en nuestra propia" because measured blocks were mis-assigned, invisible until a render and a windowed re-transcription caught it. A warning fires when `removedText` shares fewer than half its carrying words (4+ letters) with the proposal's `reason` and has 4 or more of them itself, the same threshold that keeps a short filler cut from firing on a reason that never repeats it word for word.
+
+**`driftSuspect: true` on a `semanticCuts` entry says `removedText` sits on drifted cues.** `removedText` inherits transcript drift the same way the whole-file transcript does: `detect`'s own drift check flags a cue whose claimed start lands inside measured silence, and `edl build` reuses that exact check, scoped to a span's own words, rather than reimplementing it. On a recording with 326 drifted cues, `removedText` cried wolf three times in one run, each costing a `say --transcribe` to refute. `driftSuspect` is present and `true` only on a suspect span, absent (not `false`) on a clean one, and comes with a matching warning naming the span. It does not re-transcribe anything automatically — `vcut peek` and `say --transcribe` already answer that on demand — and on a heavily drifted recording it can flag most or every span, which is `detect`'s own no-invented-tolerance rule applied at span granularity rather than a bug in the derivation.
 
 It also reports a removal percentage. Compare it against the content type:
 

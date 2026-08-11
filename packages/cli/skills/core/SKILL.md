@@ -99,6 +99,22 @@ those fields is in the human summary already: removal percentage, silence count,
 clamping engaged and over how many words, what the review candidates are. Parse the JSON when a
 later command needs a value from it; read the summary when you need to know what happened.
 
+**`--fields <a.b,c,d>` when you need specific values from the full JSON, not a post-processor
+to extract them.** A real 11.7-minute run made roughly 40 separate `python3 -c` calls, each
+pulling 2-3 fields out of a full payload it had already read once, with `jq` on `PATH` the whole
+time — an external post-processor is a second syntax to recompose per call, not part of the
+contract. `--fields removalPercent,semanticCuts.removedText` projects the output down to only
+those dot paths, comma separated, and implies `--json` (asking for fields is asking to parse).
+An array field projects across every element: `semanticCuts.removedText` over nine cuts returns
+the array of nine strings, not one cut's field. Each result is keyed by the exact path you asked
+for, so the shape you get back matches the flag you wrote. Asking for a path that does not
+exist is not a failure of the whole call: it lands in `fieldErrors`, naming the path, so a
+caller working from a stale schema learns what moved instead of losing the call. `vcutVersion`
+rides along regardless of what you selected — it is the version stamp, not a field you can ask
+away. This is the same contract as `--human` and the full default, at a third resolution:
+`--human` for reading, `--fields` for exactly the values you need, full JSON when you need
+everything. Never three different truths about the same run, three ways to read one.
+
 **Every JSON output carries `vcutVersion`.** The manual is read once and cached in an agent's
 context while the CLI can change underneath it: a session upgraded mid-run and kept hand-rolling
 an 18-call window loop for a question `converge`, shipped an hour earlier, already answered in
@@ -639,6 +655,34 @@ signal to call disjoint, and firing there would train a reader to skip it, the s
 behind not keying the boundary warning on "words were removed." `boundariesInSilence` is
 reported alongside but not gated on — a semantic boundary landing in speech rather than
 silence is common and not itself wrong, since the model chose it by meaning, not by pause.
+
+**`removedText` inherits transcript drift, and `driftSuspect: true` says when not to trust it.**
+`detect`'s own drift warning flags cues whose claimed start lands inside a span it measured as
+silence — the transcript disagreeing with the audio about where speech begins. `removedText`
+is built from those same cues, so a span sitting on drifted words can misreport what it removes
+the same way the whole-file transcript can. On a recording with 326 drifted cues, `removedText`
+cried wolf three times in one run, each wolf costing a `say --transcribe` to refute before the
+real cause (drift, not a bad proposal) was found. `edl build` now reuses `detect`'s own drift
+check, scoped to the words a span's `removedText` actually draws from, and marks the cut
+`driftSuspect: true` with a matching warning when any of them contradict measured silence:
+
+```
+warning   semantic cut 662.35-671.83s removes "mejor. Quiero estornudar. ¡Wow! Ah, perdón,
+          estorné...", built from cues that claim a word starts inside measured silence.
+          removedText is driftSuspect here: do not trust it without a check (vcut peek or
+          say --transcribe over the span).
+```
+
+`driftSuspect` is present and `true` only on a suspect span; a clean one has no such field at
+all, not `false`. On a heavily drifted recording this can flag most or even every semantic
+span — that is not a bug in the check, it is `detect`'s own "no invented tolerance" rule
+(any word claiming to start inside measured silence counts, however far in) applied at span
+granularity instead of file granularity. A saturated result is itself information: it says the
+transcript's timing is unreliable everywhere in this recording, not just at the spans flagged,
+and every `removedText` on the build is worth a `peek` before trusting it. This is deliberately
+not a re-transcription: that answers what the audio actually says, which `peek` and `say
+--transcribe` already provide on demand, and running one automatically per span would spend a
+transcription call on every proposal whether it needed one or not.
 
 Compare the reported `removalPercent` against the target for the content type:
 

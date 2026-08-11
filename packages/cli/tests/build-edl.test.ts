@@ -13,6 +13,7 @@ import {
   clampedSpanFor,
   clampToWords,
   describeSemanticCuts,
+  driftSuspectSpan,
   invertToSegments,
   matchTarget,
   mergeIntervals,
@@ -456,6 +457,53 @@ describe('boundariesInSilence', () => {
   })
 })
 
+describe('driftSuspectSpan', () => {
+  const word = (text: string, startMs: number, endMs: number): Word => ({
+    text,
+    startsWord: true,
+    startMs,
+    endMs,
+  })
+  const silence = (startMs: number, endMs: number): SilenceCandidate => ({
+    kind: 'silence',
+    startMs,
+    endMs,
+    durationMs: endMs - startMs,
+  })
+
+  test('flags a span whose word claims to start inside measured silence', () => {
+    // The word claims to begin at 1000ms; the audio stays silent until 1400ms.
+    const words = [word('hola', 1000, 1600)]
+    const silences = [silence(800, 1400)]
+    expect(driftSuspectSpan({ startMs: 900, endMs: 2000 }, words, silences)).toBe(true)
+  })
+
+  test('does not flag a clean span with no contradicting word', () => {
+    const words = [word('hola', 1500, 1800)]
+    const silences = [silence(800, 1400)]
+    expect(driftSuspectSpan({ startMs: 900, endMs: 2000 }, words, silences)).toBe(false)
+  })
+
+  test('ignores a contradicting word outside the span', () => {
+    // The drifted word sits well before the span; the span's own words are clean.
+    const words = [word('antes', 100, 300), word('dentro', 5000, 5300)]
+    const silences = [silence(0, 250)]
+    expect(driftSuspectSpan({ startMs: 4900, endMs: 5500 }, words, silences)).toBe(false)
+  })
+
+  test('no words, no silences: never flags', () => {
+    expect(driftSuspectSpan({ startMs: 0, endMs: 1000 }, [], [])).toBe(false)
+  })
+
+  test('boundary case: a word starting exactly at a silence edge is not inside it', () => {
+    // wordsContradictingSilence uses startMs >= span.startMs && startMs < span.endMs; a word
+    // starting exactly at the silence's own end is speech resuming, not drift.
+    const words = [word('justo', 1400, 1700)]
+    const silences = [silence(800, 1400)]
+    expect(driftSuspectSpan({ startMs: 900, endMs: 2000 }, words, silences)).toBe(false)
+  })
+})
+
 describe('reasonMismatch', () => {
   test('fires when removedText and reason share no carrying words', () => {
     expect(
@@ -574,6 +622,47 @@ describe('describeSemanticCuts', () => {
     const { cuts, warnings } = describeSemanticCuts(proposals, merged, [], [])
     expect(cuts[0]?.removedText).toBe('')
     expect(warnings).toHaveLength(0)
+  })
+
+  test('marks driftSuspect and warns when the span sits on drifted cues', () => {
+    const proposals = [
+      { startMs: 900, endMs: 2000, kind: 'filler' as const, reason: 'stray word removed' },
+    ]
+    const merged: Cut[] = [{ startMs: 900, endMs: 2000, reason: 'semantic' }]
+    // Claims to start at 1000ms; the audio stays silent until 1400ms.
+    const words = [word('hola', 1000, 1600)]
+    const silences = [silence(800, 1400)]
+    const { cuts, warnings } = describeSemanticCuts(proposals, merged, words, silences)
+    expect(cuts[0]?.driftSuspect).toBe(true)
+    expect(warnings.some((warning) => warning.includes('driftSuspect'))).toBe(true)
+  })
+
+  test('leaves driftSuspect unset on a clean span', () => {
+    const proposals = [
+      { startMs: 1000, endMs: 2000, kind: 'filler' as const, reason: 'filler removed' },
+    ]
+    const merged: Cut[] = [{ startMs: 1000, endMs: 2000, reason: 'semantic' }]
+    const words = [word('hola', 1500, 1800)]
+    const { cuts, warnings } = describeSemanticCuts(proposals, merged, words, [])
+    expect(cuts[0]?.driftSuspect).toBeUndefined()
+    expect(warnings.some((warning) => warning.includes('driftSuspect'))).toBe(false)
+  })
+
+  test('driftSuspect can fire independently of reasonMismatch on the same span', () => {
+    // The reason accurately names the word, so reasonMismatch stays silent; the word's own
+    // timing still contradicts measured silence, so driftSuspect still fires.
+    const proposals = [
+      { startMs: 900, endMs: 2000, kind: 'filler' as const, reason: 'removes stray "hola cómo"' },
+    ]
+    const merged: Cut[] = [{ startMs: 900, endMs: 2000, reason: 'semantic' }]
+    const words = [word('hola', 1000, 1600), word('cómo', 1600, 1900)]
+    const silences = [silence(800, 1400)]
+    const { cuts, warnings } = describeSemanticCuts(proposals, merged, words, silences)
+    expect(cuts[0]?.driftSuspect).toBe(true)
+    expect(warnings.some((warning) => warning.includes('driftSuspect'))).toBe(true)
+    expect(
+      warnings.every((warning) => !warning.includes('which the reason does not mention')),
+    ).toBe(true)
   })
 })
 
