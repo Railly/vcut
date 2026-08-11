@@ -55,6 +55,69 @@ so a session carries its own history of what was proposed and what got built fro
 and wavs stay out of the session, matching everything else the session holds: cheap to
 regenerate, expensive to store.
 
+**Runs `metaSpeech` on every round that has a transcript, no verb required (#38).** `semantic
+review`'s own `metaSpeech` field (#37) only ever appeared inside a verb the session loop never
+forces to run — an agnostic run committed four gated rounds without invoking `review` once, and
+shipped the same spoken rewind marker two runs had already caught. `commit` closes that gap
+directly: whenever the session's cached transcript is present, it rebuilds the same lines
+`review` would from that transcript and checks them against this round's own EDL, the identical
+pure pass `metaSpeech()` in `semantic.ts` already runs, over data already on disk. Nothing gets
+transcribed here — the transcript is the session's cached copy, and the cost is the same
+merge/clamp/invert-adjacent pass the build just above it already pays, not a second one.
+
+The result rides in the same JSON `commit` already emits: `metaSpeech` (an array, `[]` when
+clean) and `metaSpeechChecked` (`true`/`false`, whether the session had a transcript to check
+this round). Both fields are always present — `metaSpeech`'s absence can never be read as "not
+checked," because it is never absent; `metaSpeechChecked: false` is the honest, separate signal
+for the one case an empty array cannot distinguish on its own: a session with no transcript yet.
+
+```
+committed  ./edl.json
+  removalPercent          14.2%
+  semantic cuts           2
+  render                  rendered
+  output                  ./master.wav
+  metaSpeech              1 span not cut — read each and cut it or name why it stays
+    1.40-1.90s            "ah, ok, otra, rebobinando desde el inicio"
+  committedRounds         1
+  roundsGate              insufficient-rounds
+```
+
+**Standing metaSpeech findings are named first, ahead of every other hint — including the
+rounds gate's own.** `next[0]` reads `"N metaSpeech spans not cut; read each and cut it or name
+why it stays"` whenever the round leaves any standing, before the rounds gate's missing-pass
+hints and before `commitNext`'s transcribe/review/approve sequence. This is the retro's rank-2
+fix, chosen because `commit`'s own output is the one artefact a run reads in full every round,
+unprompted — a finding-class folded into a hint list only the caller reads on request is exactly
+as skippable as one folded into a verb the caller can decline to run.
+
+The test this exists for: a span that can be deleted without a listener learning anything less,
+the same deletion rule `REVIEW_INSTRUCTIONS` already states for `filler` and every other
+`metaSpeech` candidate. It is not a search for directive verbs — "corta eso" and "rebobinando"
+narrated mid-sentence both pass the same test, and the run this fixes missed the second because
+it read like narration rather than an instruction, not because it lacked a verb worth grepping
+for.
+
+**The human decision boundary is unchanged: `metaSpeech` never auto-cuts and never blocks a
+render.** It names findings the same way `repeated` and `unreviewed` already do — a candidate
+list, not a verdict, answered by a human proposing a cut or saying in a reason why the span
+stays.
+
+**Recorded per round, so `vcut rounds --diff` reports addressed vs. standing (#38).**
+`rounds/round-N/metaspeech.json` holds exactly what this round's `metaSpeech` field carried.
+`rounds --diff` compares round N's file against round N+1's by span identity: a finding present
+in round N and absent from round N+1 was cut (`addressed`); a finding present in both is
+`standing`. A round with no transcript to check writes no `metaspeech.json` at all, and the diff
+says so explicitly (`null`) rather than reading a missing file as a clean round.
+
+The rounds gate itself (`roundsGate` in this same output, #36) is untouched by this — it stays a
+pure function of committed-round count, no metaSpeech state threaded through it. Folding a
+mention in there would mean the gate's own message compares round N's standing count against
+round N+1's, which needs the previous round's recorded findings passed into what is currently a
+two-argument pure function; the commit-level hint above already puts the same information first
+in the one place every round reads, so the added coupling did not pay for itself and the gate
+was left alone.
+
 **Carries the rounds gate in `roundsGate` and shapes `next` around it (#36).** Below 2
 committed rounds, `roundsGate.status` is `'insufficient-rounds'` and `next` is the missing
 pass — render, transcribe, `semantic review` against THIS render, read, `cut`, `commit` again —

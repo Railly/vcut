@@ -39,6 +39,15 @@ span regardless of which raw proposal edge produced it.
 `reason` is read by a human deciding whether to approve. Say what is lost, not what rule
 matched. Proposing nothing is a valid answer.
 
+**`export` and `review` answer different questions, and the names alone do not say so.**
+`export` gives you lines to propose against — the raw material for a round that has not built
+anything yet. `review` checks a finished round: it reads an EDL back and reports the transcript
+as it survives the cuts, `repeated`/`unreviewed`/`metaSpeech` included, none of which `export`
+computes because there is no EDL yet for them to be checked against. `commit` now carries
+`review`'s own `metaSpeech` check itself (#38, below) — one more reason `export` was never the
+place to look for it: an agent reaching for "the lines" via `export` gets exactly the lines and
+nothing checked against a round.
+
 ## metaSpeech
 
 `review`'s output carries a `metaSpeech` field: spans of first-person editing verbs and
@@ -62,11 +71,21 @@ It is a candidate list, not a verdict, same as `repeated`. `corta` fires on the 
 grammar this word-level lexicon does not parse, and building that parser for one ambiguous stem
 was not worth it against reading the line (MSW). `REVIEW_INSTRUCTIONS` says so explicitly and
 requires every `metaSpeech` entry to be answered the same way every entry in `repeated` is:
-propose a cut, or say why it stays.
+propose a cut, or say why it stays. This is not a search for imperative verbs — the marker that
+motivated it, "ah, ok, otra, rebobinando", was narrated backtracking with no directive verb at
+all. The test that classifies it correctly is the same deletion rule every other candidate here
+answers to: a span that can be deleted without a listener learning anything less.
 
 A lexicon on its own is not the fix for the failure that motivated it. The agent's own retro on
 the run that shipped "rebobinando" put it plainly: a lexicon without the rounds gate just gives
 the next run a bigger list to skim past. The gate — refusing to call an edit converged on fewer
-than two committed rounds — is #36, in flight separately. `metaSpeech` makes the marker
-structurally visible in every round's output; #36 is what stops a round from reading past it
-anyway.
+than two committed rounds — is #36. `metaSpeech` makes the marker structurally visible in every
+round's output; #36 stops a round from reading past it.
+
+**Neither was enough on its own (#38).** A fourth agnostic run ran four gated rounds through
+`open`/`cut`/`commit` and never once invoked `semantic review` — the only verb `metaSpeech`
+lived inside — and shipped the same marker again. A finding-class that only exists inside a verb
+the session loop never forces to run is optional by construction, whatever the gate around it
+says. `commit` (`--section commit`) now runs the same `metaSpeech()` pass itself, on every round
+that has a transcript, no verb required: the field rides in `commit`'s own output, the one
+artefact a run reads in full every round, unprompted.

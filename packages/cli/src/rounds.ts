@@ -17,6 +17,7 @@
  */
 
 import type { SemanticCutReport } from './build-edl.ts'
+import type { MetaSpeechSpan } from './semantic.ts'
 
 export type RoundReport = {
   removalPercent: number
@@ -95,3 +96,50 @@ export const diffRounds = (
   segmentCountDelta: toReport.segments - fromReport.segments,
   semanticCuts: diffSemanticCuts(fromReport.semanticCuts, toReport.semanticCuts),
 })
+
+// --- metaSpeech, addressed vs standing (#38) --------------------------------------------------
+//
+// `metaSpeech` (semantic.ts) already excludes any span landing inside a cut this EDL made — that
+// is its own containment check (`isInsideACut`), run fresh against each round's own gaps. So a
+// span present in round N's recorded output and absent from round N+1's is, by construction, one
+// round N+1 cut: nothing else removes a line from that field. Comparing the two recorded arrays
+// by identity is the whole diff; there is no separate "was this cut" question to ask.
+//
+// Identity is text + startMs + endMs together, not startMs/endMs alone: `metaSpeech` names spans
+// off transcript lines rebuilt fresh each round from the same silences and words, so an unrelated
+// span landing on the same millisecond pair after an upstream change is not the same finding
+// wearing new timings, and text is what a human reads to tell the two apart.
+const metaSpeechKey = (span: MetaSpeechSpan): string => `${span.startMs}:${span.endMs}:${span.text}`
+
+export type MetaSpeechDiffEntry =
+  | { status: 'addressed'; from: MetaSpeechSpan }
+  | { status: 'standing'; from: MetaSpeechSpan }
+  | { status: 'new'; to: MetaSpeechSpan }
+
+/**
+ * `from`/`to` are round N and round N+1's own recorded `metaspeech.json`, or `null` when a round
+ * predates #38 or had no transcript to check that round — a diff against `null` cannot say
+ * anything about addressed/standing, since there is no prior finding list to compare against, so
+ * it returns `null` itself rather than a misleadingly empty array.
+ */
+export const diffMetaSpeech = (
+  from: MetaSpeechSpan[] | null,
+  to: MetaSpeechSpan[] | null,
+): MetaSpeechDiffEntry[] | null => {
+  if (from === null || to === null) {
+    return null
+  }
+  const toKeys = new Set(to.map(metaSpeechKey))
+  const fromKeys = new Set(from.map(metaSpeechKey))
+  const entries: MetaSpeechDiffEntry[] = from.map((span) =>
+    toKeys.has(metaSpeechKey(span))
+      ? { status: 'standing', from: span }
+      : { status: 'addressed', from: span },
+  )
+  for (const span of to) {
+    if (!fromKeys.has(metaSpeechKey(span))) {
+      entries.push({ status: 'new', to: span })
+    }
+  }
+  return entries
+}

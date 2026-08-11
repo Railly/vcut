@@ -29,19 +29,28 @@
  * deletes it automatically.
  */
 
-import { existsSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { basename, dirname, extname, join, resolve } from 'node:path'
 
 import { type BuildOptions, type Crop, parseCrop, runBuild } from './build-edl.ts'
-import type { CliOptions as DetectOptions, Preset } from './detect.ts'
-import { runDetect } from './detect.ts'
+import type { CliOptions as DetectOptions, DetectReport, Preset } from './detect.ts'
+import { parseSrt, runDetect } from './detect.ts'
 import { emitJson, heading, line, type Mode, nextStep, resolveMode, UsageError } from './output.ts'
 import { type Edl, type RenderOptions, runRender } from './render-edl.ts'
 import { acknowledgeSingleRound, evaluateRoundsGate, type RoundsGate } from './rounds-gate.ts'
 import {
+  buildLines,
+  gapsBetween,
+  joinWords,
+  LINE_BREAK_MS,
+  type MetaSpeechSpan,
+  metaSpeech,
+} from './semantic.ts'
+import {
   acquireLock,
   cachedDetect,
   checkSession,
+  deriveRefs,
   listRoundNumbers,
   markCommitted,
   nextRoundDir,
@@ -50,6 +59,7 @@ import {
   readProposalsFile,
   releaseLock,
   writeCachedDetect,
+  writeMetaSpeech,
   writeRound,
 } from './session.ts'
 
@@ -210,12 +220,56 @@ export const commitNext = (
   },
 ]
 
+/**
+ * #38: standing metaSpeech findings go first, ahead of every other hint — including the rounds
+ * gate's own — because a run that reads hint[0] and stops is exactly the failure #38 exists for.
+ * `commitNext`/the gate's own hints follow, unchanged, once this is non-empty or there is nothing
+ * to name.
+ */
+export const metaSpeechNext = (
+  findings: MetaSpeechSpan[],
+): Array<{ question: string; verb: string }> =>
+  findings.length === 0
+    ? []
+    : [
+        {
+          question: `${findings.length} metaSpeech span${findings.length === 1 ? '' : 's'} not cut; read each and cut it or name why it stays`,
+          verb: 'read the metaSpeech field above, then vcut cut <media> --start-ms <n> --end-ms <n> --kind filler --reason "..." per span you are removing',
+        },
+      ]
+
+/**
+ * The metaSpeech pass this round: lines rebuilt from the session's own cached transcript, the
+ * same way `semantic review` builds them, checked against the gaps this EDL's own segments leave
+ * (`gapsBetween`) — the spans already cut by any proposal this round, silence or semantic alike.
+ * `null` when the report carries no usable transcript: metaSpeech needs word-level text to find a
+ * marker in, and a session opened without one has nothing to check, the same "cannot answer" the
+ * rest of the pipeline already gives a report with no transcript path.
+ */
+export const metaSpeechForRound = (
+  report: DetectReport,
+  segments: Array<{ inMs: number; outMs: number }>,
+): MetaSpeechSpan[] | null => {
+  if (report.transcript.path === null || !existsSync(report.transcript.path)) {
+    return null
+  }
+  const transcript = parseSrt(readFileSync(report.transcript.path, 'utf8'))
+  const lines = buildLines(joinWords(transcript), report.silences, LINE_BREAK_MS)
+  const cuts = gapsBetween(
+    segments.map((segment) => ({ startMs: segment.inMs, endMs: segment.outMs })),
+  )
+  const blocks = deriveRefs(report.silences, report.durationMs)
+  return metaSpeech(lines, cuts, blocks, report.lang)
+}
+
 const humanReport = (
   edlPath: string,
   removalPercent: number,
   semanticCuts: Array<{ startMs: number; endMs: number; kind: string; removedText: string }>,
   render: { status: string; outputPath: string; sha256?: string; duration?: string },
   gate: RoundsGate,
+  metaSpeechFindings: MetaSpeechSpan[] | null,
+  hints: Array<{ question: string; verb: string }>,
 ): string => {
   const lines = [
     heading(`committed  ${edlPath}`),
@@ -235,11 +289,31 @@ const humanReport = (
   if (render.duration !== undefined) {
     lines.push(line('duration', `${render.duration}s`))
   }
+  // #38: one warning-style line whenever this round's transcript carried standing metaSpeech
+  // spans — spoken editing markers ("rebobinando", "corta eso") sitting outside every cut this
+  // round made. metaSpeechFindings is null (not printed) when the session has no transcript to
+  // check yet, distinct from an empty array, which means the check ran and found nothing.
+  if (metaSpeechFindings !== null && metaSpeechFindings.length > 0) {
+    lines.push(
+      line(
+        'metaSpeech',
+        `${metaSpeechFindings.length} span${metaSpeechFindings.length === 1 ? '' : 's'} not cut — read each and cut it or name why it stays`,
+      ),
+    )
+    for (const finding of metaSpeechFindings) {
+      lines.push(
+        line(
+          `  ${(finding.startMs / 1000).toFixed(2)}-${(finding.endMs / 1000).toFixed(2)}s`,
+          `"${finding.text}"`,
+        ),
+      )
+    }
+  }
   lines.push(line('committedRounds', String(gate.committedRounds)))
   lines.push(line('roundsGate', gate.status))
   lines.push(heading(gate.message))
-  if (gate.status === 'insufficient-rounds' && gate.next !== undefined && gate.next.length > 0) {
-    lines.push(nextStep(gate.next[0].verb))
+  if (hints.length > 0) {
+    lines.push(nextStep(hints[0].verb))
   } else {
     lines.push(nextStep(`trx transcribe ${render.outputPath} --words`))
   }
@@ -317,6 +391,17 @@ export const commitCommand = async (argv: string[]): Promise<void> => {
     const roundDir = nextRoundDir(session.dir)
     writeRound(roundDir, edl, summary)
 
+    // #38: the metaSpeech analysis (semantic.ts, born from #37) runs here, on every commit that
+    // has a transcript to check, not only inside `semantic review` — a verb the session loop
+    // never forces. It reuses the round's own EDL segments and the session's already-cached
+    // transcript, so nothing gets transcribed at commit time: this is a pure pass over data
+    // already on disk, the same cost class as the merge/clamp/invert build just above it.
+    const edlSegments = (edl as { segments: Array<{ inMs: number; outMs: number }> }).segments
+    const metaSpeechFindings = metaSpeechForRound(report, edlSegments)
+    if (metaSpeechFindings !== null) {
+      writeMetaSpeech(roundDir, metaSpeechFindings)
+    }
+
     // Audio-only lands beside the EDL as a .wav unless --output already names one, matching
     // render's own rule so a caller reading the EDL's own output path is never surprised by
     // where the sound landed.
@@ -352,10 +437,13 @@ export const commitCommand = async (argv: string[]): Promise<void> => {
     // a caller reading "transcribe, review, approve" after round 1 and treating review of round
     // 1's own output as the second round. commitNext's approve-shaped hints only apply once the
     // gate has cleared.
-    const hints =
+    const baseHints =
       gate.status === 'insufficient-rounds' && gate.next !== undefined
         ? gate.next
         : commitNext(args.edlPath, render.outputPath)
+    // #38: standing metaSpeech findings are named before every other hint, including the rounds
+    // gate's own — the run this issue is about read hint[0] every round and stopped there.
+    const hints = [...metaSpeechNext(metaSpeechFindings ?? []), ...baseHints]
 
     if (mode === 'json') {
       emitJson({
@@ -366,12 +454,25 @@ export const commitCommand = async (argv: string[]): Promise<void> => {
         build: summary,
         render,
         roundsGate: gate,
+        // Always present, even as `[]`, so its absence can never be read as "not checked" (#38).
+        // `metaSpeechChecked` is the honest separate signal for the one case an empty array
+        // cannot distinguish on its own: a session with no transcript to check yet.
+        metaSpeech: metaSpeechFindings ?? [],
+        metaSpeechChecked: metaSpeechFindings !== null,
         next: hints,
       })
       return
     }
     console.log(
-      humanReport(args.edlPath, summary.removalPercent, summary.semanticCuts, render, gate),
+      humanReport(
+        args.edlPath,
+        summary.removalPercent,
+        summary.semanticCuts,
+        render,
+        gate,
+        metaSpeechFindings,
+        hints,
+      ),
     )
   } finally {
     releaseLock(session.dir)
