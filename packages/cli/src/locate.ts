@@ -145,8 +145,12 @@ const numericFlag = (argv: string[], name: string): number | undefined => {
 /**
  * Duration only, without -count_frames: this asks where a position came from, and
  * decoding every frame to answer that would make the cheap question expensive.
+ *
+ * Exported for `joins`, which needs the identical measurement to check the EDL's map against
+ * the same render it re-transcribes, rather than a second ffprobe invocation for the same
+ * question.
  */
-const probeDurationMs = async (path: string): Promise<number> => {
+export const probeDurationMs = async (path: string): Promise<number> => {
   const { stdout, stderr, exitCode } = await run('ffprobe', [
     '-v',
     'error',

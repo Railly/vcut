@@ -3,7 +3,7 @@ import { createReadStream, existsSync, readFileSync, writeFileSync } from 'node:
 import { resolve } from 'node:path'
 import { containsPhrase } from './converge.ts'
 import type { DetectReport, Interval, SilenceCandidate, Transcript, Word } from './detect.ts'
-import { parseSrt } from './detect.ts'
+import { parseSrt, wordsContradictingSilence } from './detect.ts'
 import { run } from './exec.ts'
 import {
   bar,
@@ -42,7 +42,7 @@ Flags:
 
 Every segment is written as proposed and the EDL as draft. Nothing is approved here.`
 
-type BuildSummary = {
+export type BuildSummary = {
   status: 'drafted'
   edlPath: string
   segments: number
@@ -165,17 +165,32 @@ export type Cut = Interval & {
 // A segment touching a model-proposed cut carries the risk of that proposal: approving it
 // means agreeing that what was removed next to it was safe to remove. Marking the neighbours
 // is what lets a reviewer find them without reading all 70.
+//
+// `proposals` (raw, unmerged) resolve against `merged` through `clampedSpanFor` before their
+// edges are compared to segments — not the raw proposal edges directly. A proposal absorbs
+// into a wider merged span whenever a silence cut or another proposal sits close enough
+// (`absorbSlivers`/`mergeIntervals`, both already applied to `merged` by the caller), and a
+// real span measured this way ran about 10s from a 9.4s proposal. Comparing against the raw
+// 9.4s edges left the segments touching the absorbed 600ms tail reading `semanticRisk: 'none'`
+// — exactly the segments a reviewer approving "what did the model choose to remove" needs
+// flagged, since the render carries the full merged cut regardless of which raw proposal edge
+// produced it. Deliberately not `cuts.filter(reason === 'semantic')` on the merged list: a
+// merged interval reports `reason: 'silence'` the moment it absorbs even one differently-typed
+// cut (`mergeIntervals`'s own rule), so filtering the merged list by reason would drop exactly
+// the absorbed spans this fix exists to catch.
 export const markSemanticRisk = (
   segments: KeptSegment[],
-  cuts: Cut[],
+  proposals: Interval[],
+  merged: Cut[],
   toleranceMs: number,
 ): KeptSegment[] => {
-  const edges = cuts
-    .filter((cut) => cut.reason === 'semantic')
-    .flatMap((cut) => [cut.startMs, cut.endMs])
-  if (edges.length === 0) {
+  if (proposals.length === 0) {
     return segments
   }
+  const edges = proposals.flatMap((proposal) => {
+    const span = clampedSpanFor(proposal, merged)
+    return [span.startMs, span.endMs]
+  })
   return segments.map((segment) => {
     const touches = edges.some(
       (edge) =>
@@ -372,6 +387,33 @@ export const boundariesInSilence = (
   return [inside(span.startMs), inside(span.endMs)]
 }
 
+/**
+ * Whether a span's removedText is built from words the drift warning would flag: cues whose
+ * claimed start lands inside a span `detect` measured as silence, so the transcript disagrees
+ * with the audio about where speech actually begins.
+ *
+ * Reuses `detect.ts`'s own `wordsContradictingSilence` rather than a second implementation of
+ * that comparison — the same reasoning behind `reasonMismatch` reusing `converge`'s carrying-word
+ * check. Scoped to the words `removedText` itself draws from (the ones falling inside the span),
+ * since a span's own drift is about the words it claims to remove, not the recording's word list
+ * as a whole. On a recording with 326 drifted cues total, `removedText` cried wolf three times in
+ * one run and each wolf cost a `say --transcribe` to refute; this is the corrective read at build
+ * time instead of after a render.
+ *
+ * Deliberately not a re-transcription: the windowed-retranscription alternative the issue also
+ * named answers a harder question (what the audio actually says) and `peek` already provides it
+ * on demand. This answers a cheaper one — does the transcript's own claim about this span
+ * contradict the same measurement the detect warning already trusted — off data already in hand.
+ */
+export const driftSuspectSpan = (
+  span: Interval,
+  words: Word[],
+  silences: SilenceCandidate[],
+): boolean => {
+  const spanWords = words.filter((word) => word.endMs > span.startMs && word.startMs < span.endMs)
+  return wordsContradictingSilence(spanWords, silences).length > 0
+}
+
 const REASON_MISMATCH_MIN_CARRYING_WORDS = 4
 const REASON_MISMATCH_MAX_SHARED_FRACTION = 0.5
 
@@ -419,6 +461,7 @@ export type SemanticCutReport = {
   reason: string
   removedText: string
   boundariesInSilence: [boolean, boolean]
+  driftSuspect?: true
 }
 
 /** Per-proposal build report: what each accepted semantic span actually removes. */
@@ -435,17 +478,27 @@ export const describeSemanticCuts = (
     const span = clampedSpanFor(proposal, merged)
     const text = removedText(span, words)
     const inSilence = boundariesInSilence(span, silences)
-    cuts.push({
+    const drifted = driftSuspectSpan(span, words, silences)
+    const cut: SemanticCutReport = {
       startMs: span.startMs,
       endMs: span.endMs,
       kind: proposal.kind,
       reason: proposal.reason,
       removedText: text,
       boundariesInSilence: inSilence,
-    })
+    }
+    if (drifted) {
+      cut.driftSuspect = true
+    }
+    cuts.push(cut)
     if (reasonMismatch(text, proposal.reason)) {
       warnings.push(
         `semantic cut ${(span.startMs / 1000).toFixed(2)}-${(span.endMs / 1000).toFixed(2)}s removes "${text}", which the reason does not mention ("${proposal.reason}"). Read removedText before rendering: a span can drift onto the wrong words when measured blocks are mis-assigned.`,
+      )
+    }
+    if (drifted) {
+      warnings.push(
+        `semantic cut ${(span.startMs / 1000).toFixed(2)}-${(span.endMs / 1000).toFixed(2)}s removes "${text}", built from cues that claim a word starts inside measured silence. removedText is driftSuspect here: do not trust it without a check (vcut peek or say --transcribe over the span).`,
       )
     }
   }
@@ -523,16 +576,22 @@ type ProbeStream = {
   avg_frame_rate?: string
   sample_rate?: string
   channels?: number
+  duration?: string
 }
 
+// format.duration is the container's: the longest of its streams, audio included. A screen
+// recording's audio device keeps running a beat after the capture stops drawing frames, so
+// the container reports that longer audio tail as its own duration. A segment trimmed to
+// that number asks ffmpeg's video trim filter for frames the stream does not have, and the
+// filter clamps silently rather than erroring — the render comes out short, not the EDL.
 const probeSource = async (
   path: string,
-): Promise<{ streams: ProbeStream[]; durationMs: number }> => {
+): Promise<{ streams: ProbeStream[]; durationMs: number; videoDurationMs: number }> => {
   const { stdout, stderr, exitCode } = await run('ffprobe', [
     '-v',
     'error',
     '-show_entries',
-    'format=duration:stream=codec_type,width,height,r_frame_rate,avg_frame_rate,sample_rate,channels',
+    'format=duration:stream=codec_type,width,height,r_frame_rate,avg_frame_rate,sample_rate,channels,duration',
     '-of',
     'json',
     path,
@@ -541,7 +600,13 @@ const probeSource = async (
     throw new Error(stderr.trim() || `ffprobe exited with ${exitCode}`)
   }
   const parsed = JSON.parse(stdout) as { streams: ProbeStream[]; format: { duration: string } }
-  return { streams: parsed.streams, durationMs: Math.round(Number(parsed.format.duration) * 1000) }
+  const durationMs = Math.round(Number(parsed.format.duration) * 1000)
+  const video = parsed.streams.find((stream) => stream.codec_type === 'video')
+  // A container that omits stream-level duration (some do) still deserves a bound rather
+  // than a thrown error here, so it falls back to the container figure it already had.
+  const videoDurationMs =
+    video?.duration === undefined ? durationMs : Math.round(Number(video.duration) * 1000)
+  return { streams: parsed.streams, durationMs, videoDurationMs }
 }
 
 const slug = (value: string): string =>
@@ -563,6 +628,23 @@ type CliOptions = {
   fps: number | null
   edgeFadeMs: number
   semanticPath: string | null
+  crop: Crop | null
+  syncOffsetMs: number
+}
+
+// What `runBuild` needs once the detect report is already in hand and proposals are already
+// validated objects rather than a path on disk. `commit` (B-V3) builds from a session's
+// accumulated proposals.json without ever writing them to a scratch file first, which is why
+// this is `Proposal[]` and not `semanticPath: string | null` the way CliOptions still is for
+// the CLI-facing parse step.
+export type BuildOptions = {
+  outputPath: string
+  edlPath: string
+  campaignId: string
+  width: number | null
+  height: number | null
+  fps: number | null
+  edgeFadeMs: number
   crop: Crop | null
   syncOffsetMs: number
 }
@@ -674,17 +756,17 @@ const collectCuts = (report: DetectReport): Cut[] =>
     reason: 'silence' as const,
   }))
 
-export const buildEdlCommand = async (argv: string[]): Promise<void> => {
-  if (argv.includes('--help') || argv.length === 0) {
-    console.log(HELP)
-    return
-  }
-  const mode: Mode = resolveMode(argv, Boolean(process.stdout.isTTY))
-  const options = parseCli(argv)
-  if (!existsSync(options.detectPath)) {
-    throw new Error(`detect report missing: ${options.detectPath}`)
-  }
-  const report = JSON.parse(readFileSync(options.detectPath, 'utf8')) as DetectReport
+// The callable seam `commit` (B-V3) uses: everything `buildEdlCommand` does once a detect
+// report and a set of already-validated proposals are in hand, minus reading either off disk
+// and minus printing. Pulled out with the same minimal-refactor discipline B-V1 applied to
+// `detect.ts` — the CLI path below calls straight through it, so command behaviour and every
+// existing test are unchanged; a pinned equivalence test in build-edl.test.ts is what proves
+// `commit`'s build matches `vcut edl build --semantic <path>` run by hand on the same inputs.
+export const runBuild = async (
+  report: DetectReport,
+  proposals: Proposal[],
+  options: BuildOptions,
+): Promise<{ edl: unknown; summary: BuildSummary }> => {
   if (!existsSync(report.input)) {
     throw new Error(`source missing: ${report.input}`)
   }
@@ -703,20 +785,7 @@ export const buildEdlCommand = async (argv: string[]): Promise<void> => {
           .map((cut) => clampToWords(cut, boundaries, report.minSilenceMs))
           .filter((cut): cut is Cut => cut !== null)
 
-  // Refused loudly rather than skipped: a proposal that disappears between check and build
-  // would look like the model chose not to cut there.
-  const semantic =
-    options.semanticPath === null
-      ? { proposals: [], issues: [] }
-      : readProposals(options.semanticPath, report.durationMs)
-  if (semantic.issues.length > 0) {
-    throw new UsageError(
-      `semantic proposals rejected:\n${semantic.issues
-        .map((issue) => `  [${issue.index}] ${issue.problem}`)
-        .join('\n')}`,
-    )
-  }
-  const semanticProposals = semantic.proposals
+  const semanticProposals = proposals
 
   const probe = await probeSource(report.input)
   const video = probe.streams.find((stream) => stream.codec_type === 'video')
@@ -756,10 +825,13 @@ export const buildEdlCommand = async (argv: string[]): Promise<void> => {
     report.audioPath === null || report.audioPath === undefined
       ? null
       : await describeAudioSource(report.audioPath, sourceId)
+  // Segments are trimmed from this source's video stream, so what bounds a kept span is the
+  // video stream's own duration, not the container's — the container reports the longest of
+  // its streams, and a screen recording's audio device commonly outlives the last frame.
   const segments = markSemanticRisk(
     invertToSegments(
       allCuts,
-      probe.durationMs,
+      probe.videoDurationMs,
       sourceId,
       report.marginMs,
       outputFps,
@@ -767,12 +839,13 @@ export const buildEdlCommand = async (argv: string[]): Promise<void> => {
       options.crop,
     ),
     semanticCuts,
+    mergedCuts,
     report.marginMs + Math.ceil(1000 / outputFps),
   )
   assertSegmentCount(segments.length)
 
   const keptMs = segments.reduce((total, segment) => total + segment.outMs - segment.inMs, 0)
-  const removalPercent = ((probe.durationMs - keptMs) / probe.durationMs) * 100
+  const removalPercent = ((probe.videoDurationMs - keptMs) / probe.videoDurationMs) * 100
 
   const edl = {
     version: 1,
@@ -784,7 +857,10 @@ export const buildEdlCommand = async (argv: string[]): Promise<void> => {
         id: sourceId,
         path: report.input,
         sha256: await sha256(report.input),
-        durationMs: probe.durationMs,
+        // The renderer bounds every segment against this number. It has to be the video
+        // stream's own duration: segments are trimmed from the picture, and the picture is
+        // what runs out first when the container's duration comes from a longer audio track.
+        durationMs: probe.videoDurationMs,
         hasVideo: true,
         hasAudio: audio !== undefined,
         averageFrameRate: video.avg_frame_rate ?? frameRate,
@@ -823,8 +899,6 @@ export const buildEdlCommand = async (argv: string[]): Promise<void> => {
     },
   }
 
-  writeFileSync(options.edlPath, `${JSON.stringify(edl, null, 2)}\n`)
-
   const summary: BuildSummary = {
     status: 'drafted',
     edlPath: options.edlPath,
@@ -849,6 +923,50 @@ export const buildEdlCommand = async (argv: string[]): Promise<void> => {
       ...reasonWarnings,
     ],
   }
+
+  return { edl, summary }
+}
+
+export const buildEdlCommand = async (argv: string[]): Promise<void> => {
+  if (argv.includes('--help') || argv.length === 0) {
+    console.log(HELP)
+    return
+  }
+  const mode: Mode = resolveMode(argv, Boolean(process.stdout.isTTY))
+  const options = parseCli(argv)
+  if (!existsSync(options.detectPath)) {
+    throw new Error(`detect report missing: ${options.detectPath}`)
+  }
+  const report = JSON.parse(readFileSync(options.detectPath, 'utf8')) as DetectReport
+
+  // Refused loudly rather than skipped: a proposal that disappears between check and build
+  // would look like the model chose not to cut there.
+  const semantic =
+    options.semanticPath === null
+      ? { proposals: [], issues: [] }
+      : readProposals(options.semanticPath, report.durationMs)
+  if (semantic.issues.length > 0) {
+    throw new UsageError(
+      `semantic proposals rejected:\n${semantic.issues
+        .map((issue) => `  [${issue.index}] ${issue.problem}`)
+        .join('\n')}`,
+    )
+  }
+
+  const { edl, summary } = await runBuild(report, semantic.proposals, {
+    outputPath: options.outputPath,
+    edlPath: options.edlPath,
+    campaignId: options.campaignId,
+    width: options.width,
+    height: options.height,
+    fps: options.fps,
+    edgeFadeMs: options.edgeFadeMs,
+    crop: options.crop,
+    syncOffsetMs: options.syncOffsetMs,
+  })
+
+  writeFileSync(options.edlPath, `${JSON.stringify(edl, null, 2)}\n`)
+
   if (mode === 'json') {
     emitJson({ ...summary, next: buildEdlNext(summary.edlPath) })
     return

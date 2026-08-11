@@ -15,10 +15,17 @@ vcut semantic export|check|review  Hand the transcript to a model, take proposal
 vcut render --edl <path> [flags]   Render an EDL to video
 vcut locate --edl <path> [flags]   Translate between master time and source time
 vcut audit --edl <path> --render <path>  Check a render against the EDL it came from
+vcut joins --edl <path> --render <path>  Verify every semantic join in one call
 vcut say <media> [flags]           Read back what is spoken at a position
 vcut silences <media> [flags]      Speech/silence blocks over a range, at a chosen resolution
 vcut converge <media> [flags]      Find where a repeated phrase stops coming back
 vcut nonspeech <render> [--verify] Find audible sound that is not language
+vcut open <media> [flags]          Open or resume a session, map its blocks with stable refs
+vcut peek <media> (--ref|--at)     The four views of a position, aligned, disagreement named
+vcut cut <media> --refs|--span     Propose a semantic cut against a session, see what it removes
+vcut commit <media> [flags]        Build + render a session's proposals into a draft EDL
+vcut rounds <media> [--diff N M]   A session's committed rounds, diffed between two
+vcut session list|gc [flags]       See what a session store holds, and clear it explicitly
 vcut schema [name]                 Print the JSON contract for a command
 vcut skills list|get [name]        Read the bundled agent manual
 vcut doctor                        Check external dependencies
@@ -27,13 +34,24 @@ vcut setup classifier              Fetch the optional non-speech classifier
 vcut version                       Print the version
 ```
 
-Global flags: `--json` forces machine output, `--human` forces the summary, `--help` works on any command.
+Global flags: `--json` forces machine output, `--human` forces the summary, `--fields <a.b,c,d>`
+projects JSON output to those dot paths (comma separated, implies `--json`), `--help` works on
+any command.
 
 Every JSON output carries `vcutVersion`, the version of the binary that produced it, so an
 agent working from a cached manual can tell the tool changed underneath it. Selected outputs
 (`suspects`, `detect`, `edl build`, `semantic review`, `nonspeech`, `render --audio-only`) also
 carry `next`, a short list of `{question, verb}` naming what to run next — a hint, not an
 instruction.
+
+`--fields removalPercent,semanticCuts.removedText` reads back only those paths, keyed by the
+path string itself; an array field projects across every element, so
+`semanticCuts.removedText` over several cuts returns the array of that field. A path that does
+not exist becomes a `fieldErrors` entry naming it rather than failing the call, and
+`vcutVersion` always rides along regardless of selection. Exists because a real 11.7-minute run
+made roughly 40 `python3 -c` calls extracting 2-3 fields each from full payloads it had already
+read, with `jq` on `PATH` the whole time — a native flag is part of the output contract,
+discoverable in `--help` and `schema`, rather than a second syntax recomposed per call.
 
 ### vcut detect
 
@@ -111,6 +129,8 @@ The command inverts the cut intervals into the spans worth **keeping**, so the E
 
 **The build report includes `semanticCuts`, one entry per accepted semantic proposal**: `removedText`, the transcript words that fall inside its final span, and `boundariesInSilence`, whether each edge lands inside a silence `detect` measured. Read `removedText` before rendering — it is the corrective for a span drifting onto the wrong words unnoticed, which happened on a real cut: a repetition proposal removed "todos estamos" instead of the stutter "en nuestra propia" because measured blocks were mis-assigned, invisible until a render and a windowed re-transcription caught it. A warning fires when `removedText` shares fewer than half its carrying words (4+ letters) with the proposal's `reason` and has 4 or more of them itself, the same threshold that keeps a short filler cut from firing on a reason that never repeats it word for word.
 
+**`driftSuspect: true` on a `semanticCuts` entry says `removedText` sits on drifted cues.** `removedText` inherits transcript drift the same way the whole-file transcript does: `detect`'s own drift check flags a cue whose claimed start lands inside measured silence, and `edl build` reuses that exact check, scoped to a span's own words, rather than reimplementing it. On a recording with 326 drifted cues, `removedText` cried wolf three times in one run, each costing a `say --transcribe` to refute. `driftSuspect` is present and `true` only on a suspect span, absent (not `false`) on a clean one, and comes with a matching warning naming the span. It does not re-transcribe anything automatically — `vcut peek` and `say --transcribe` already answer that on demand — and on a heavily drifted recording it can flag most or every span, which is `detect`'s own no-invented-tolerance rule applied at span granularity rather than a bug in the derivation.
+
 It also reports a removal percentage. Compare it against the content type:
 
 | Content | Expected removal |
@@ -141,6 +161,149 @@ Longer sources fire *less* per minute rather than more, because a long take carr
 
 **It says where, never what.** Telling a discarded retake from a speaker pausing to pick a related thought lives in content, and rhythm is all this measures. Run `vcut say --transcribe` on a position to find out what is there.
 
+### vcut open
+
+```bash
+vcut open recording.mp4 --preset clean --lang es --transcript words.srt
+```
+
+Opens or resumes a session keyed by the content of the source, not its path: `~/.vcut/sessions/<sha256-16>/`. The same bytes at two paths share a session; the same path with new content gets one of its own. Everything inside is disposable cache, not an artifact — the EDL a human approves still lives where they wrote it.
+
+`open` runs `detect` once and caches the report. A second `open` on unchanged media at the same preset reuses that cache instead of re-running ffmpeg (`cached: true` in the output); a preset this session has never used re-detects and assigns it a new `gen`.
+
+`gen` derives from the **effective preset**, not from whether the immediately previous open differed: a session remembers every preset it has ever used and the `gen` each was first assigned, so returning to a preset already used returns to that preset's own generation rather than minting a new one. `noisy` → `clean` → `noisy` reads gen 1, 2, 1 — never 1, 2, 3.
+
+Those silences become **refs**: the speech blocks between them, numbered `b001`, `b002`, ... in time order — something a later verb can point at instead of a raw millisecond pair. Refs derive from `detect`'s own silence list, never from `vcut silences`.
+
+| Flag | What it does |
+| --- | --- |
+| `--preset <name>` | `noisy` (-20 dB, default) \| `clean` (-30 dB) \| `podcast` (-35 dB) |
+| `--lang <code>` | Recording language, free-form (default `es`) |
+| `--transcript <path>` | Caches an SRT into the session and points the cached detect report's own `transcript.path` at that copy, so every later reader gets a path guaranteed to still resolve. Without it, `open` still works — refs come from silences, not words |
+
+`open`'s output is counts, not content: duration, preset, gen, silence and block counts, whether a transcript is cached, and the top 10 suspects (same ranking as `suspects`, each with the nearest block ref). No spoken text appears anywhere in it. Reading what a ref actually says, and cutting against refs, are later verbs.
+
+### vcut peek
+
+```bash
+vcut peek recording.mp4 --ref b042
+vcut peek recording.mp4 --at 550.0 --window 5 --lang es
+```
+
+The four views of one position, aligned in a single call: what the session's cached transcript claims is there (`transcript`), what the audio actually says when asked again over the span (`heard`), the speech/silence shape at fine resolution (`blocks`, -33dB/0.08s min over the span padded by a second either side), and the level (`level`). Resolves the session for `<media>` the way `open` does, creating it if none exists.
+
+| Flag | What it does |
+| --- | --- |
+| `--ref <ref>` | A block ref from this session's `refs.json` (from `vcut open`) |
+| `--at <sec>` | A position in seconds, instead of a ref |
+| `--window <sec>` | Width of the span when using `--at` (default 4, centred on `--at`) |
+| `--lang <code>` | Language passed to the transcriber |
+
+`viewsDisagree` compares `transcript` against `heard` on carrying words (4+ letters, the same comparison `converge` uses) and names `transcript-claims-more`, `heard-more`, `aligned`, or `soft-speech-below-threshold` — the last one firing when the fine-resolution `blocks` read silence for the whole span but `heard` still carries words: speech under the level threshold that neither `silences` nor `detect` alone can see. A disagreement is a place to look, not a verdict — a short window transcribes noisily, the same caveat `say --transcribe` already carries.
+
+### vcut cut
+
+```bash
+vcut cut recording.mp4 --refs b202..b207 --kind tangent --reason "sneeze, speaker says cut it"
+vcut cut recording.mp4 --span 0..13.25 --kind tangent --reason "pre-roll before the take begins"
+vcut cut recording.mp4 --list
+vcut cut recording.mp4 --drop 0
+```
+
+Proposes a semantic cut against a session's own refs, and shows what it removes at propose time rather than after a build. `--refs` takes a single ref or an inclusive range (`b042..b044`, from the first ref's own start to the second's own end); `--span <startS>..<endS>` is the escape hatch for a raw span when no ref fits. Mutually exclusive.
+
+| Flag | What it does |
+| --- | --- |
+| `--refs <ref[..ref]>` | A block ref or an inclusive range from this session's `refs.json` |
+| `--span <s..s>` | A raw span in seconds when no ref fits |
+| `--kind <kind>` | Required: `false-start` \| `repetition` \| `tangent` \| `filler` |
+| `--reason <text>` | Required, non-empty. Read by a human deciding whether to approve |
+| `--list` | Print the session's accumulated proposals with their `removedText` |
+| `--drop <index>` | Remove the proposal at this 0-based index |
+
+The session must already exist — `cut` never creates one, and a ref from an earlier generation is a usage error naming the ref and the session's current `gen`, the same enforcement `peek` already applies. `removedText` is quoted from the session's cached transcript, not re-transcribed. Proposals accumulate in the session's `proposals.json`; `--list`/`--drop` read and edit that list without hand-editing JSON.
+
+**This `removedText` carries no `driftSuspect` flag.** It reads straight from the cached transcript at propose time, before `edl build`'s drift check runs — that check happens later, on the merged span `commit` produces. A proposal can read clean here and still come back `driftSuspect: true` once committed. Treat `cut --list`'s `removedText` as a preview, not a drift-checked read; confirm a specific span with `peek` first if `detect`'s drift warning fired on this recording.
+
+Proposing and `--drop` take the session's advisory lock for the write and release it after; `--list` never locks. A session already locked by a live process fails naming the holder's pid, verb, and age — see **vcut session** below for the full lock story.
+
+### vcut commit
+
+```bash
+vcut commit recording.mp4 --output master.mp4 --campaign my-video
+```
+
+Builds the EDL from a session's cached detect report and its accumulated proposals, then renders it — byte-identical to running `vcut edl build --detect <cached> --semantic <path>` by hand, since `commit` calls the same build seam internally rather than a second implementation.
+
+| Flag | What it does |
+| --- | --- |
+| `--output <path>` | Where the eventual master will go (required) |
+| `--campaign <id>` | Campaign identifier, required |
+| `--edl <path>` | Where to write the EDL (default `./edl.json`, the current directory — the user's artefact, not the session) |
+| `--audio-only` | Render audio only, `.wav` beside the EDL (default) |
+| `--video` | Render the preview video instead |
+| `--fps`, `--width`, `--height`, `--edge-fade`, `--crop` | Passed through to the build, same as `edl build` |
+
+Records the round in the session (`rounds/round-N/`: the EDL copy and the build report); renders and wavs stay out of it. **Master mode never happens here.** Approval is a human edit to the EDL followed by the existing `vcut render --edl <path> --mode master` — this command only ever drafts and previews.
+
+Takes the session's advisory lock for the whole build+render, released in a `finally`. **On success, marks the session `committed`** — the signal `vcut session gc` reads as a candidate to clear, never a trigger that deletes anything itself.
+
+```bash
+vcut commit recording.mp4 --output master.mp4 --campaign my-video \
+  --fields build.removalPercent,build.semanticCuts.removedText
+```
+
+### vcut rounds
+
+```bash
+vcut rounds recording.mp4
+vcut rounds recording.mp4 --diff 1 2
+vcut rounds recording.mp4 --diff
+```
+
+A session's own history of what got built. Without `--diff`, lists every committed round number, ascending. With `--diff <N> <M>`, compares round `N`'s build report against round `M`'s; omitted, diffs the latest two.
+
+| Flag | What it does |
+| --- | --- |
+| `--diff [N M]` | Compare two rounds' build reports. Omit N and M to diff the latest two |
+
+Reports `removalPercentDelta`, `segmentCountDelta`, and `semanticCuts` matched between rounds **by span overlap**, not array position — a proposal whose edges shifted slightly between rounds (absorbed by a neighbouring cut, re-clamped) still reads as the same cut. Each entry is `added`, `removed`, `changed`, or `unchanged`.
+
+This diffs what each round's **build** asked for (`rounds/round-N/report.json`, the same data `commit` writes), not what either round's **render** actually says: a text-level diff needs a transcript of each render, and a session never stores renders or their transcripts (cheap to regenerate, expensive to keep). Confirm a semantic diff against the actual renders with `peek` or `say --transcribe` before trusting it alone.
+
+The session must already exist with at least two committed rounds for `--diff` — like `cut` and `commit`, this reads a session's history rather than creating one.
+
+### vcut session
+
+```bash
+vcut session list
+vcut session gc
+vcut session gc --apply
+vcut session gc --older-than 14 --apply
+```
+
+`list` shows every session under `~/.vcut/sessions/`: source path and whether it still exists, size on disk, creation time, committed round count, and whether a live process currently holds its lock.
+
+`gc` classifies every session against the reasons it could be cleared, **without deleting anything unless `--apply` is given** — dry-run is the default, not a flag to remember.
+
+| Flag | What it does |
+| --- | --- |
+| `--apply` | Actually delete what was classified deletable. Without it, gc only reports |
+| `--older-than <days>` | Also classify sessions older than this many days. Omitted, age alone never qualifies a session |
+
+A session is a gc candidate when:
+
+| Reason | Condition |
+| --- | --- |
+| `orphan` | Its source file no longer exists |
+| `committed` | At least one `commit` ran successfully against it |
+| `older-than` | Only with `--older-than <days>`, and it qualifies |
+| `locked-protected` | A live process currently holds its lock — **always wins**, never deletable regardless of any other reason |
+
+**The EDL a human approved is never at risk.** `commit` writes it wherever `--output`/`--edl` pointed, never inside a session directory `gc` manages, so clearing a whole session directory can only ever remove the disposable detect cache, transcript copy, refs, proposals, and round history behind it.
+
+**Advisory lock.** `cut`'s mutating paths and `commit` take a lock (`lock.json`: `{ pid, startedAt, verb }`) before writing and release it after, even on error. Readers (`open`, `peek`, `cut --list`, `rounds`) never lock. A second writer finding a live pid's lock is refused with an error naming that pid, its verb, and how long ago it started; a lock whose pid is no longer alive clears itself automatically on the next attempt, with no need for a human to delete `lock.json` by hand. This is a courtesy between cooperating writers, not a kernel-level guarantee — two writers racing the exact same instant could both pass the check before either writes the file.
+
 ### vcut semantic
 
 Repeated lines, false starts, digressions and filler words need something reading the transcript. **vcut never calls a model.** It exports the lines and takes proposals back, so the judgement stays with whoever is reading.
@@ -160,7 +323,7 @@ vcut edl build --detect detect.json --semantic proposals.json ...
 | `review --edl <path> --detect <path>` | Reads an EDL back: what survives, and where nobody looked |
 | `--terse` (export, review) | Omits the instructions block, identical every call and 72% of one measured payload |
 
-A proposal is `{startMs, endMs, kind, reason}` where `kind` is `false-start`, `repetition`, `tangent`, `filler`, or `non-speech`. Every semantic cut lands as `semanticRisk: material` on the segments around it, so a reviewer can find them without reading all of them.
+A proposal is `{startMs, endMs, kind, reason}` where `kind` is `false-start`, `repetition`, `tangent`, `filler`, or `non-speech`. Every semantic cut lands as `semanticRisk: material` on the segments around it, so a reviewer can find them without reading all of them. Measured against each proposal's **merged** span (after it absorbs a neighbouring silence cut or another proposal), not the raw span proposed — a segment touching the wider, real cut boundary reads `material` even when its edge sits past where the raw proposal ended.
 
 Nothing malformed passes: an inverted span, a span past the end of the source, an unknown kind, or an empty `reason` is refused by index and aborts the build. A proposal that vanished between check and build would read as the model choosing not to cut there, which is worse than a refusal.
 
@@ -245,6 +408,31 @@ audit  22 of 22 segments compared
 ```
 
 **A low score is a place to look, not a verdict.** Envelope correlation is weak over short or quiet windows, and loudness normalisation lifts quiet passages by several dB. On the run above, the segment that scored low was carrying exactly the right words. It reports rather than fails, and stays out of `render`, for that reason.
+
+### vcut joins
+
+```bash
+vcut joins --edl edl.json --render cut.mp4 --report report.json --lang es
+```
+
+The post-render twin of `edl build`'s `removedText`: one call that verifies every semantic join instead of `N x (locate + say --transcribe)`. On a real 11.7-minute run, verifying 9 joins by hand cost about 14 calls.
+
+Each join is the EDL segment that opens right after a semantic cut, derived the same way `edl build`'s own `boundariesAfterSpeech` finds it — by the kind of cut, not a distance. Runs on `--render`, never the source, checks the EDL's own master-time total against the render's measured duration first, then re-transcribes a window around each join and reports a `reading`: `lands`, `removed-text-leaked` (the window's carrying words majority-overlap the cut's removed text), or `check-by-ear` (the window carries too little to judge).
+
+```
+joins  cut.mp4
+  64.83s (segment-020)   lands  "Que haga lo que tú exactamente querías, pues entonces el workaround del"
+  160.18s (segment-047)  removed-text-leaked  "En este principio de agregar, agregar verificabilidad a los"
+```
+
+**`removed-text-leaked` is a place to look, not a verdict.** On the run above, that reading was a false positive: the cut's removed text was the speaker stumbling on the same phrase three times before landing it, and the surviving sentence legitimately reused that phrase as its real content. A wider `vcut say --transcribe --window 8` confirmed the join read clean — `joins` names that exact command in `next`.
+
+`--report <path>` (a build report from `edl build`, `commit`, or the `report.json` `commit` writes into `rounds/round-N/`, the default lookup beside `--edl`) adds `removedText`, `reason`, and `driftSuspect` to each join. Its absence is a supported state: `joins` still runs, with those three fields `null`.
+
+```bash
+vcut joins --edl edl.json --render cut.mp4 --report report.json \
+  --fields joins.reading,joins.joinMasterMs,joins.removedText
+```
 
 ### vcut say
 
@@ -355,6 +543,8 @@ The guide ships inside the npm package and is served by the CLI itself, so it al
 Checks that `ffmpeg` and `ffprobe` are reachable and reports their versions. Exits non-zero when either is missing.
 
 It also reports the optional non-speech classifier, which is a supported absence rather than a failure: without it the check it performs falls back to a human ear.
+
+And it reports sessions: how many exist, their total size, how many are orphans (source file gone), and the oldest one's creation date — one line in human mode, a `sessions` object in JSON. An absent sessions directory reports zero across the board rather than an error: a machine that has never run `vcut open` has nothing wrong with it. This is the detector class that was missing when a different cache directory grew to 609MB unnoticed — `vcut session gc` is the fix once `doctor` reports something to clear.
 
 ### Exit codes
 

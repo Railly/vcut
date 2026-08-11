@@ -69,6 +69,29 @@ candidate positions afterwards scored **0.975** for the position the EDL named a
 
 `audit` marks where to look. Reading the words at that position settles it in seconds.
 
+## "Did every semantic join land clean?"
+
+```bash
+vcut joins --edl edl.json --render cut.mp4 --report report.json --lang es
+```
+
+**Trap: believing a `removed-text-leaked` reading.** It fires when the re-transcribed window
+around a join shares a majority of carrying words with the cut's own `removedText` — real
+signal for a leaked tail, but a false-start's removed text is often the speaker repeating the
+same phrase before landing it, and the sentence that survives can legitimately reuse that
+phrase as its real content. Carrying-word overlap cannot tell the two apart; both are, by
+construction, about the same words.
+
+Verified on real material: a cut removed three stumbled attempts at "agregar
+verificabilidad", and the surviving sentence used "agregar verificabilidad" as its subject.
+`joins` read it as leaked. `vcut say cut.mp4 --transcribe --at <s> --window 8`, the exact
+command `next` names on that reading, returned "nos basamos mucho en este principio de
+agregar verificabilidad a los instrumentos de los agentes, porque los agentes necesitan..." —
+a clean sentence, no leaked tail.
+
+`removed-text-leaked` and `check-by-ear` are both places to look, not verdicts. Confirm with
+the wider window before folding anything back into a proposal.
+
 ## "Was a word cut in half?"
 
 ```bash
@@ -207,6 +230,54 @@ mil miembros" — the whole line, for 0.7 seconds more runtime.
 miembros" parses, carries the fact, and passes every invariant in the manual. The defect is
 audible and only audible, which is why the last check before approval is a person listening
 rather than another measurement.
+
+## "`converge` answered fast. Is the boundary real?"
+
+```bash
+vcut converge source.mp4 --phrase "<the recurring words>" --from <sec> --lang es
+```
+
+**Trap: trusting the first window it reports as clear.** `converge` stops at the first window
+that lacks the phrase, and it has no way to tell a real end-of-retake from either of two things
+that look identical to it: discard babble sitting between two attempts, or a single window whose
+transcription happened to drop the phrase. Both produce a confident, fast `boundaryMs` that is
+wrong.
+
+Measured on real stumbled speech (2026-08-10): probing from 84.0s, where the phrase occurred at
+84.0-84.5s and was followed by babble ("perdón, crear, ok, eso no, básicamente era, ya") before
+the real keeper at 95s, `converge` stopped at the very next window and returned `boundaryMs:
+84500` — an answer that looked exactly like the others and was useless. Separately, probing
+"agregar verificabilidad" from 204s inside a quadruple retake, the 204.5s window's transcript
+happened to omit the phrase — a transcription miss — and `converge` stopped immediately, though
+the phrase recurs through 216s.
+
+Read the trace, not just `boundaryMs`: if the window right past the answer has a gap in content
+that reads like babble rather than a clean retake edge, or the phrase's disappearance looks like
+a one-window fluke against everything around it, do not trust a single call. Check the shape of
+the gaps with `vcut silences`, then anchor specific offsets with `vcut say --transcribe` — both
+resolved on the real run above.
+
+## "A render fails its own frame-count and duration checks with no other cause in sight"
+
+Check whether the source is a screen recording, or anything else where the video and audio come
+from separate devices. Their streams do not have to end at the same instant.
+
+```bash
+ffprobe -v error -show_entries stream=codec_type,duration -of json source.mp4
+```
+
+**Trap: assuming `format.duration` describes the picture.** That field is the container's, which
+reports the longest of its streams, audio included. On one 11.7-minute recording the video
+stream ended at 700.717s and the container reported 700.8s: the audio device stayed open 83ms
+after the capture stopped drawing frames. An EDL built against the container figure claims a
+final segment that reaches into video that does not exist. `render`'s trim filter clamps that
+silently rather than failing, so the render comes out short and fails `render frame count
+differs from EDL duration` and `render duration differs from EDL` with no line in the error
+pointing at the source.
+
+`edl build` clamps the last segment to the video stream's own duration since 0.14.1; a render
+that still fails these checks on a current build is a different defect; read the numbers the
+error now reports (`expected` vs `got`, and the tolerance) before assuming it is this one again.
 
 ## "The tool did the wrong thing with my input"
 

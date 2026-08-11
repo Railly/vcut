@@ -1,23 +1,34 @@
-import { describe, expect, test } from 'bun:test'
+import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import {
   absorbSlivers,
+  type BuildOptions,
   boundariesAfterSpeech,
   boundariesInSilence,
+  buildEdlCommand,
   buildEdlNext,
   type Cut,
   clampedSpanFor,
   clampToWords,
   describeSemanticCuts,
+  driftSuspectSpan,
   invertToSegments,
+  type KeptSegment,
+  markSemanticRisk,
   matchTarget,
   mergeIntervals,
   parseCrop,
   reasonMismatch,
   removedText,
+  runBuild,
   snapToFrame,
   wordBoundaries,
 } from '../src/build-edl.ts'
-import type { SilenceCandidate, Transcript, Word } from '../src/detect.ts'
+import type { DetectReport, SilenceCandidate, Transcript, Word } from '../src/detect.ts'
+import { run } from '../src/exec.ts'
+import { buildFfmpegArgs, type Edl, outputErrors } from '../src/render-edl.ts'
 
 const silence = (startMs: number, endMs: number): Cut => ({ startMs, endMs, reason: 'silence' })
 const semantic = (startMs: number, endMs: number): Cut => ({ startMs, endMs, reason: 'semantic' })
@@ -329,6 +340,67 @@ describe('invertToSegments with a crop', () => {
   })
 })
 
+describe('markSemanticRisk', () => {
+  const seg = (id: string, inMs: number, outMs: number): KeptSegment => ({
+    id,
+    sourceId: 'src',
+    inMs,
+    outMs,
+    reason: 'approved-line',
+    handlesMs: { before: 0, after: 0 },
+    approval: 'proposed',
+    semanticRisk: 'none',
+    crop: null,
+  })
+
+  test('flags a segment touching the raw proposal edge when nothing merged', () => {
+    const segments = [seg('segment-001', 0, 5000), seg('segment-002', 5000, 10_000)]
+    const proposal = { startMs: 5000, endMs: 6000 }
+    const merged: Cut[] = [semantic(5000, 6000)]
+    const flagged = markSemanticRisk(segments, [proposal], merged, 50)
+    expect(flagged[0].semanticRisk).toBe('material')
+    expect(flagged[1].semanticRisk).toBe('material')
+  })
+
+  // The absorbed-span case: a 9.4s proposal (5000-14400) sits close enough to a neighbouring
+  // silence cut that mergeIntervals/absorbSlivers fuse them into one ~10s span (4900-15200).
+  // Comparing segment edges against the raw 5000/14400 proposal edges misses the segments
+  // that touch the merged span's actual 4900/15200 boundaries, which is what the render
+  // carries regardless of which raw edge produced it — they read `semanticRisk: 'none'`
+  // before this fix, exactly the gap the real recording surfaced.
+  test('flags a segment touching the merged (absorbed) span, not the raw proposal edge', () => {
+    const segments = [seg('segment-001', 0, 4900), seg('segment-002', 15_200, 20_000)]
+    const proposal = { startMs: 5000, endMs: 14_400 }
+    const merged: Cut[] = [semantic(4900, 15_200)]
+    const flagged = markSemanticRisk(segments, [proposal], merged, 50)
+    expect(flagged[0].semanticRisk).toBe('material')
+    expect(flagged[1].semanticRisk).toBe('material')
+  })
+
+  test('does not flag a segment that touches only the raw edge once merging moved the real edge away', () => {
+    // A segment sitting exactly at the raw proposal's 5000ms edge is not where the render's
+    // cut actually starts once merging pulled the boundary back to 4900ms; flagging it would
+    // point a reviewer at a boundary the render does not have.
+    const segments = [seg('segment-001', 0, 5000)]
+    const proposal = { startMs: 5000, endMs: 14_400 }
+    const merged: Cut[] = [semantic(4900, 15_200)]
+    const flagged = markSemanticRisk(segments, [proposal], merged, 0)
+    expect(flagged[0].semanticRisk).toBe('none')
+  })
+
+  test('no proposals means no flags, even with segments and a tolerance', () => {
+    const segments = [seg('segment-001', 0, 5000)]
+    expect(markSemanticRisk(segments, [], [], 50)).toEqual(segments)
+  })
+
+  test('a proposal with nothing merged containing it falls back to its own raw edges', () => {
+    const segments = [seg('segment-001', 0, 5000)]
+    const proposal = { startMs: 5000, endMs: 6000 }
+    const flagged = markSemanticRisk(segments, [proposal], [], 50)
+    expect(flagged[0].semanticRisk).toBe('material')
+  })
+})
+
 describe('boundariesAfterSpeech', () => {
   const seg = (inMs: number, outMs: number, id: string) => ({ id, inMs, outMs })
   const span = (startMs: number, endMs: number) => ({ startMs, endMs })
@@ -446,6 +518,53 @@ describe('boundariesInSilence', () => {
       false,
       false,
     ])
+  })
+})
+
+describe('driftSuspectSpan', () => {
+  const word = (text: string, startMs: number, endMs: number): Word => ({
+    text,
+    startsWord: true,
+    startMs,
+    endMs,
+  })
+  const silence = (startMs: number, endMs: number): SilenceCandidate => ({
+    kind: 'silence',
+    startMs,
+    endMs,
+    durationMs: endMs - startMs,
+  })
+
+  test('flags a span whose word claims to start inside measured silence', () => {
+    // The word claims to begin at 1000ms; the audio stays silent until 1400ms.
+    const words = [word('hola', 1000, 1600)]
+    const silences = [silence(800, 1400)]
+    expect(driftSuspectSpan({ startMs: 900, endMs: 2000 }, words, silences)).toBe(true)
+  })
+
+  test('does not flag a clean span with no contradicting word', () => {
+    const words = [word('hola', 1500, 1800)]
+    const silences = [silence(800, 1400)]
+    expect(driftSuspectSpan({ startMs: 900, endMs: 2000 }, words, silences)).toBe(false)
+  })
+
+  test('ignores a contradicting word outside the span', () => {
+    // The drifted word sits well before the span; the span's own words are clean.
+    const words = [word('antes', 100, 300), word('dentro', 5000, 5300)]
+    const silences = [silence(0, 250)]
+    expect(driftSuspectSpan({ startMs: 4900, endMs: 5500 }, words, silences)).toBe(false)
+  })
+
+  test('no words, no silences: never flags', () => {
+    expect(driftSuspectSpan({ startMs: 0, endMs: 1000 }, [], [])).toBe(false)
+  })
+
+  test('boundary case: a word starting exactly at a silence edge is not inside it', () => {
+    // wordsContradictingSilence uses startMs >= span.startMs && startMs < span.endMs; a word
+    // starting exactly at the silence's own end is speech resuming, not drift.
+    const words = [word('justo', 1400, 1700)]
+    const silences = [silence(800, 1400)]
+    expect(driftSuspectSpan({ startMs: 900, endMs: 2000 }, words, silences)).toBe(false)
   })
 })
 
@@ -568,6 +687,47 @@ describe('describeSemanticCuts', () => {
     expect(cuts[0]?.removedText).toBe('')
     expect(warnings).toHaveLength(0)
   })
+
+  test('marks driftSuspect and warns when the span sits on drifted cues', () => {
+    const proposals = [
+      { startMs: 900, endMs: 2000, kind: 'filler' as const, reason: 'stray word removed' },
+    ]
+    const merged: Cut[] = [{ startMs: 900, endMs: 2000, reason: 'semantic' }]
+    // Claims to start at 1000ms; the audio stays silent until 1400ms.
+    const words = [word('hola', 1000, 1600)]
+    const silences = [silence(800, 1400)]
+    const { cuts, warnings } = describeSemanticCuts(proposals, merged, words, silences)
+    expect(cuts[0]?.driftSuspect).toBe(true)
+    expect(warnings.some((warning) => warning.includes('driftSuspect'))).toBe(true)
+  })
+
+  test('leaves driftSuspect unset on a clean span', () => {
+    const proposals = [
+      { startMs: 1000, endMs: 2000, kind: 'filler' as const, reason: 'filler removed' },
+    ]
+    const merged: Cut[] = [{ startMs: 1000, endMs: 2000, reason: 'semantic' }]
+    const words = [word('hola', 1500, 1800)]
+    const { cuts, warnings } = describeSemanticCuts(proposals, merged, words, [])
+    expect(cuts[0]?.driftSuspect).toBeUndefined()
+    expect(warnings.some((warning) => warning.includes('driftSuspect'))).toBe(false)
+  })
+
+  test('driftSuspect can fire independently of reasonMismatch on the same span', () => {
+    // The reason accurately names the word, so reasonMismatch stays silent; the word's own
+    // timing still contradicts measured silence, so driftSuspect still fires.
+    const proposals = [
+      { startMs: 900, endMs: 2000, kind: 'filler' as const, reason: 'removes stray "hola cómo"' },
+    ]
+    const merged: Cut[] = [{ startMs: 900, endMs: 2000, reason: 'semantic' }]
+    const words = [word('hola', 1000, 1600), word('cómo', 1600, 1900)]
+    const silences = [silence(800, 1400)]
+    const { cuts, warnings } = describeSemanticCuts(proposals, merged, words, silences)
+    expect(cuts[0]?.driftSuspect).toBe(true)
+    expect(warnings.some((warning) => warning.includes('driftSuspect'))).toBe(true)
+    expect(
+      warnings.every((warning) => !warning.includes('which the reason does not mention')),
+    ).toBe(true)
+  })
 })
 
 describe('buildEdlNext', () => {
@@ -585,3 +745,282 @@ describe('buildEdlNext', () => {
     expect(hints.some((hint) => hint.verb.includes('/tmp/edl.json'))).toBe(true)
   })
 })
+
+// commit (B-V3) builds from an in-memory detect report and proposals array through runBuild
+// rather than round-tripping through --detect/--semantic file paths. This pins that the seam
+// produces byte-identical output (modulo the two fields that are legitimately call-time —
+// createdAt and each source's sha256, both deterministic given the same source bytes and
+// clock, so sha256 is compared and createdAt is dropped before comparing) to running
+// `vcut edl build --detect <path> --semantic <path>` on the equivalent inputs on disk.
+describe('runBuild matches buildEdlCommand given equivalent inputs', () => {
+  let workDir: string
+  let mediaPath: string
+
+  beforeAll(async () => {
+    workDir = mkdtempSync(join(tmpdir(), 'vcut-build-equiv-'))
+    mediaPath = join(workDir, 'source.mp4')
+    // A short, deterministic lavfi source: real enough for ffprobe/ffmpeg to read streams
+    // from, cheap enough to generate inline in a test (tens of milliseconds).
+    const { exitCode, stderr } = await run('ffmpeg', [
+      '-y',
+      '-f',
+      'lavfi',
+      '-i',
+      'testsrc=duration=6:size=320x240:rate=10',
+      '-f',
+      'lavfi',
+      '-i',
+      'anullsrc=r=48000:cl=stereo',
+      '-t',
+      '6',
+      '-c:v',
+      'libx264',
+      '-pix_fmt',
+      'yuv420p',
+      '-c:a',
+      'aac',
+      mediaPath,
+    ])
+    if (exitCode !== 0) {
+      throw new Error(`fixture generation failed: ${stderr}`)
+    }
+  })
+
+  afterAll(() => {
+    rmSync(workDir, { recursive: true, force: true })
+  })
+
+  const stripVolatile = (edl: Record<string, unknown>) => {
+    const { createdAt: _createdAt, ...rest } = edl
+    return rest
+  }
+
+  test('the drafted EDL and build summary match, semantic proposals included', async () => {
+    if (!existsSync(mediaPath)) {
+      throw new Error('fixture source was not generated')
+    }
+    const report: DetectReport = {
+      version: 1,
+      input: mediaPath,
+      durationMs: 6000,
+      preset: 'noisy',
+      thresholdDb: -20,
+      minSilenceMs: 300,
+      marginMs: 100,
+      lang: 'es',
+      transcript: { path: null, wordLevel: false, words: 0 },
+      audioPath: null,
+      silences: [{ kind: 'silence', startMs: 1000, endMs: 1500, durationMs: 500 }],
+      review: [],
+      warnings: [],
+    }
+    const detectPath = join(workDir, 'detect.json')
+    writeFileSync(detectPath, JSON.stringify(report))
+
+    const proposals = [
+      {
+        startMs: 3000,
+        endMs: 3800,
+        kind: 'tangent' as const,
+        reason: 'test aside, cut it',
+      },
+    ]
+    const semanticPath = join(workDir, 'proposals.json')
+    writeFileSync(semanticPath, JSON.stringify(proposals))
+
+    // Path A: the CLI command, exactly as a caller on the command line would run it.
+    const cliEdlPath = join(workDir, 'cli-edl.json')
+    const originalLog = console.log
+    let cliOutput = ''
+    console.log = (...args: unknown[]) => {
+      cliOutput += args.join(' ')
+    }
+    try {
+      await buildEdlCommand([
+        '--detect',
+        detectPath,
+        '--output',
+        join(workDir, 'master.mp4'),
+        '--campaign',
+        'equivalence-test',
+        '--edl',
+        cliEdlPath,
+        '--semantic',
+        semanticPath,
+        '--json',
+      ])
+    } finally {
+      console.log = originalLog
+    }
+    const cliSummary = JSON.parse(cliOutput) as Record<string, unknown>
+    const cliEdl = JSON.parse(readFileSync(cliEdlPath, 'utf8')) as Record<string, unknown>
+
+    // Path B: runBuild called directly with the same report and proposals in memory, the way
+    // commit calls it.
+    const buildOptions: BuildOptions = {
+      outputPath: join(workDir, 'master.mp4'),
+      edlPath: join(workDir, 'seam-edl.json'),
+      campaignId: 'equivalence-test',
+      width: null,
+      height: null,
+      fps: null,
+      edgeFadeMs: 50,
+      crop: null,
+      syncOffsetMs: 0,
+    }
+    const { edl: seamEdl, summary: seamSummary } = await runBuild(report, proposals, buildOptions)
+
+    expect(stripVolatile(seamEdl as Record<string, unknown>)).toEqual(stripVolatile(cliEdl))
+    // The two EDL files were written to different paths by construction; the summary's own
+    // edlPath field differs for the same reason and is stripped below. Everything else,
+    // including semanticCuts[].removedText and warnings, must match exactly.
+    const {
+      edlPath: _cliEdlPath,
+      next: _cliNext,
+      vcutVersion: _v,
+      ...cliSummaryRest
+    } = cliSummary as Record<string, unknown>
+    const { edlPath: _seamEdlPath, ...seamSummaryRest } = seamSummary as unknown as Record<
+      string,
+      unknown
+    >
+    expect(seamSummaryRest).toEqual(cliSummaryRest)
+  })
+})
+
+// A screen recording's audio device commonly outruns the last frame: the container reports
+// the audio's longer duration as its own, and a segment trimmed to that number asks the video
+// trim filter for frames the stream does not have. ffmpeg clamps silently, so the render comes
+// out short and fails its own frame-count and duration checks (issue #14). Built on the fly, a
+// real file because the defect lives in what ffprobe reports per stream, which a fixture path
+// cannot fake. Where ffmpeg is absent the behaviour under test cannot exist, so this skips
+// rather than fails: see semantic.test.ts's renderedGaps for the same convention.
+const hasFfmpeg = await run('ffmpeg', ['-version'])
+  .then((result) => result.exitCode === 0)
+  .catch(() => false)
+
+describe.if(hasFfmpeg)(
+  'edl build clamps the final segment to the video stream, not the container',
+  () => {
+    const dir = mkdtempSync(join(tmpdir(), 'vcut-avmismatch-'))
+    const fixturePath = join(dir, 'fixture.mp4')
+    const detectPath = join(dir, 'detect.json')
+    const edlPath = join(dir, 'edl.json')
+    const masterPath = join(dir, 'master.mp4')
+
+    beforeAll(async () => {
+      // 60fps video for 5s (300 frames) against audio that runs 84ms longer, the same shape
+      // testing-10m.mp4 measured: video stream duration 700.717s, container 700.800s.
+      const built = await run('ffmpeg', [
+        '-v',
+        'error',
+        '-f',
+        'lavfi',
+        '-i',
+        'testsrc2=rate=60:size=320x240:duration=5',
+        '-f',
+        'lavfi',
+        '-i',
+        'sine=frequency=440:duration=5.084',
+        '-map',
+        '0:v',
+        '-map',
+        '1:a',
+        '-y',
+        fixturePath,
+      ])
+      if (built.exitCode !== 0) {
+        throw new Error(built.stderr)
+      }
+
+      // Silences scattered across the fixture so invertToSegments keeps many segments, with
+      // the last one running uncut to the source's end — the span that used to reach past the
+      // video stream into the audio-only tail.
+      const silences: SilenceCandidate[] = []
+      let cursor = 300
+      while (cursor < 4600) {
+        silences.push({ startMs: cursor, endMs: cursor + 350, kind: 'silence', durationMs: 350 })
+        cursor += 350 + 300
+      }
+      const report: DetectReport = {
+        version: 1,
+        input: fixturePath,
+        durationMs: 5084,
+        preset: 'noisy',
+        thresholdDb: -20,
+        minSilenceMs: 300,
+        marginMs: 100,
+        lang: 'en',
+        transcript: { path: null, wordLevel: false, words: 0 },
+        audioPath: null,
+        silences,
+        review: [],
+        warnings: [],
+      }
+      await Bun.write(detectPath, JSON.stringify(report))
+
+      await buildEdlCommand([
+        '--detect',
+        detectPath,
+        '--output',
+        masterPath,
+        '--campaign',
+        'avmismatch-test',
+        '--edl',
+        edlPath,
+        '--fps',
+        '60',
+        '--edge-fade',
+        '0',
+      ])
+    })
+
+    afterAll(() => {
+      rmSync(dir, { recursive: true, force: true })
+    })
+
+    test('writes a source durationMs bounded by the video stream, not the longer audio tail', async () => {
+      const edl = JSON.parse(await Bun.file(edlPath).text()) as Edl
+      // The fixture's audio runs to 5084ms; its video stream ends at 5000ms (300 frames @ 60fps).
+      expect(edl.sources[0]?.durationMs).toBeLessThanOrEqual(5000)
+      expect(edl.sources[0]?.durationMs).toBeGreaterThan(4900)
+    })
+
+    test('never asks a segment to trim past the video stream', async () => {
+      const edl = JSON.parse(await Bun.file(edlPath).text()) as Edl
+      // Fixed against the fixture's true video duration, not edl.sources[0].durationMs: that
+      // field is what the bug got wrong, so asserting a segment stays under it would pass even
+      // on the buggy build.
+      for (const segment of edl.segments) {
+        expect(segment.outMs).toBeLessThanOrEqual(5000)
+      }
+    })
+
+    test('renders clean: frame count and duration land inside the validator tolerance', async () => {
+      const edl = JSON.parse(await Bun.file(edlPath).text()) as Edl
+      const renderedPath = join(dir, 'rendered.mp4')
+      const args = buildFfmpegArgs(edl, renderedPath)
+      const rendered = await run('ffmpeg', ['-v', 'error', ...args])
+      expect(rendered.exitCode).toBe(0)
+
+      const probed = await run('ffprobe', [
+        '-v',
+        'error',
+        '-count_frames',
+        '-show_entries',
+        'format=duration:stream=codec_type,width,height,pix_fmt,color_range,color_space,color_transfer,color_primaries,r_frame_rate,nb_read_frames,sample_rate,channels',
+        '-of',
+        'json',
+        renderedPath,
+      ])
+      expect(probed.exitCode).toBe(0)
+      const probe = JSON.parse(probed.stdout)
+      // color_transfer/color_primaries come back absent on this fixture's 320x240 testsrc2
+      // encode, a libx264 tagging quirk at that resolution unrelated to issue #14 (a real
+      // 1056x720 source carries all four fields). Filtered out so this test stays about the
+      // frame count and duration checks it exists to prove.
+      const errors = outputErrors(edl, probe).filter((error) => !error.includes('color metadata'))
+      expect(errors).toEqual([])
+    })
+  },
+)

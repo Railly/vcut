@@ -21,6 +21,27 @@ Stopping after one round leaves work that looks like polish and is not.
 
 ### The round
 
+With a session open (`vcut open recording.mp4 --preset clean --lang es --transcript words.srt`,
+once), `cut` and `commit` are the round — no `proposals.json` to open and hand-edit, no
+`--detect`/`--semantic` paths to re-type each pass:
+
+```bash
+vcut cut recording.mp4 --refs b042..b044 --kind repetition --reason "..."  # per finding
+vcut commit recording.mp4 --output master.mp4 --campaign my-video          # builds + renders
+
+trx transcribe master.wav --words --language es -m large-v3-turbo
+
+vcut semantic review --edl edl.json --detect detect.json --terse \
+  --master master.wav --master-transcript <the .srt trx wrote> > review.json
+
+vcut rounds recording.mp4 --diff   # what changed since the last round
+```
+
+`commit` renders `--audio-only` by default, the same rule the stateless round below already
+follows, and records the round in the session's own `rounds/round-N/` — no `N=1` counter to
+bump by hand. Without a session, the same round is the stateless pipeline this replaces,
+calling the identical build seam directly:
+
 ```bash
 N=1   # bump every round: the renderer refuses to overwrite
 
@@ -37,7 +58,12 @@ vcut semantic check --proposals proposals.json --detect detect.json \
   --review review-$N.json          # exit 2 while a repeated phrase goes unnamed
 ```
 
-Then fold the findings into `proposals.json`, bump `N`, and run it again. Render the video once, at the end, and run `vcut audit` and `vcut nonspeech --verify` there — they need a picture and answer a question no round is asking.
+Then fold the findings into a proposal — `vcut cut` with a session, `proposals.json` by hand
+without one — and run it again. Render the video once, at the end, and run `vcut audit`,
+`vcut joins`, and `vcut nonspeech --verify` there — they need a picture and answer a question
+no round is asking.
+
+`vcut joins --edl edl-$N.json --render cut-$N.mp4 --report report-$N.json --lang es` replaces the `locate` + `say --transcribe` round for every semantic cut in one call — a real 11.7-minute run verified 9 joins that way for about 14 calls, before `joins` existed. Each `reading` of `removed-text-leaked` or `check-by-ear` is a place to look, not a verdict: confirm with the wider `say --transcribe` window `next` names before folding anything back into a proposal.
 
 Close a `nonspeech` hit with `--verify`, not by reading the whole-file transcript. That transcript is exactly the instrument that could not see this class of sound in the first place, so checking a hit against it is circular: measured on a real 7.5-minute run, 18 spans closed that way were all read as breaths and seven were audible "eeeh" fillers a listener caught immediately. `--verify` re-transcribes a short window around each span instead and reports which are `vocalization-suspect`, `words-around`, or `empty`.
 
@@ -91,6 +117,16 @@ vcut audit --edl edl-$N.json --render cut-$N.mp4
 ```
 
 Everything the renderer validates about itself is an aggregate, so a render whose segments carried the wrong material passes every one of those checks. `audit` compares the audio segment by segment against the source the EDL points at, and names what to inspect. Read the words at any position it flags before believing the number.
+
+### Verify every semantic join in one call
+
+```bash
+vcut joins --edl edl-$N.json --render cut-$N.mp4 --report report-$N.json --lang es
+```
+
+Every accepted semantic cut has a join: the EDL segment that opens right after it, the same boundary `edl build`'s `boundariesAfterSpeech` warns about at build time. Checking each one by hand is `locate` to find the master position, `say --transcribe` to hear the window — once per cut. `joins` derives every join from the EDL itself, checks the EDL's own master-time map against the render's measured duration, and re-transcribes each window in one call: on the real recording that motivated this, 8 joins came back in about 15 seconds.
+
+A `removed-text-leaked` reading means the window's carrying words majority-overlap the cut's `removedText` — a real signal, and also one that can misfire: a false-start whose removed text is the speaker repeating a phrase before landing it can leave a surviving sentence that legitimately reuses the same words. Confirm before folding anything back in.
 
 ### Transcribe the render every round
 

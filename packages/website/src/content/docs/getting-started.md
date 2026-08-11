@@ -46,6 +46,23 @@ vcut render --edl edl.json --mode preview
 
 The middle step is not optional plumbing. The EDL is the artifact you read and disagree with before anything gets rendered.
 
+### Editing across several calls
+
+Silence removal alone is rarely the whole edit — see [The cutting loop](#cutting-loop) for why
+it takes several rounds on anything longer than a quick take. `vcut open` starts the session a
+real edit runs inside instead of re-detecting and re-passing paths every round:
+
+```bash
+vcut open recording.mp4 --preset clean --lang es --transcript words.srt   # once
+vcut cut recording.mp4 --refs b042..b044 --kind repetition --reason "..." # per finding
+vcut commit recording.mp4 --output master.mp4 --campaign my-video         # build + render, one call
+```
+
+`open` caches the same detect pass step 1 above runs, and turns its silences into stable block
+refs (`b001`, `b002`, ...) a later `cut` points at by name instead of a hand-typed millisecond
+pair. The three-step quickstart above is still correct for a one-off cut with no session; `open`
+is where an edit that is going to take more than one round starts instead.
+
 ### Reading the summary
 
 In a terminal, `vcut detect` prints a summary rather than the raw candidate list:

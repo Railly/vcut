@@ -3,11 +3,15 @@ import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { auditCommand } from './audit-command.ts'
 import { buildEdlCommand } from './build-edl.ts'
+import { commitCommand } from './commit.ts'
 import { convergeCommand } from './converge.ts'
+import { cutCommand } from './cut.ts'
 import { detectCommand, positional } from './detect.ts'
 import { run, runInherit } from './exec.ts'
+import { joinsCommand } from './joins.ts'
 import { locateCommand } from './locate.ts'
 import { nonspeechCommand } from './nonspeech.ts'
+import { openCommand } from './open.ts'
 import {
   emitJson,
   fail,
@@ -19,9 +23,13 @@ import {
   resolveMode,
   UsageError,
 } from './output.ts'
+import { peekCommand } from './peek.ts'
 import { renderCommand } from './render-edl.ts'
+import { roundsCommand } from './rounds-command.ts'
 import { sayCommand } from './say.ts'
 import { semanticCommand } from './semantic.ts'
+import { listSessions } from './session.ts'
+import { sessionCommand } from './session-command.ts'
 import { silencesCommand } from './silences.ts'
 import { skillsDir } from './skills-dir.ts'
 import { suspectsCommand } from './suspects.ts'
@@ -42,10 +50,17 @@ Usage:
   vcut render --edl <path> [flags]   Render an EDL to video
   vcut locate --edl <path> [flags]   Translate between master time and source time
   vcut audit --edl <path> --render <path>  Check a render against the EDL it came from
+  vcut joins --edl <path> --render <path>  Verify every semantic join in one call
   vcut say <media> [flags]           Read back what is spoken at a position
   vcut silences <media> [flags]      Speech/silence blocks over a range, at a chosen resolution
   vcut converge <media> [flags]      Find where a repeated phrase stops coming back
   vcut nonspeech <render> [--verify] Find audible sound that is not language
+  vcut open <media> [flags]          Open or resume a session, map its blocks with stable refs
+  vcut peek <media> (--ref|--at)     The four views of a position, aligned, disagreement named
+  vcut cut <media> --refs|--span     Propose a semantic cut against a session, see what it removes
+  vcut commit <media> [flags]        Build + render a session's proposals into a draft EDL
+  vcut rounds <media> [--diff N M]   A session's committed rounds, diffed between two
+  vcut session list|gc [flags]       See what a session store holds, and clear it explicitly
   vcut schema [name]                 Print the JSON contract for a command
   vcut skills list|get [name]        Read the bundled agent manual
   vcut doctor                        Check external dependencies
@@ -54,9 +69,10 @@ Usage:
   vcut version                       Print the version
 
 Global flags:
-  --json     Force JSON output (the default when stdout is not a TTY)
-  --human    Force the human summary
-  --help     Show help for a command
+  --json             Force JSON output (the default when stdout is not a TTY)
+  --human            Force the human summary
+  --fields <paths>   Project JSON output to these dot paths, comma separated. Implies --json.
+  --help             Show help for a command
 
 Every command writes data to stdout and diagnostics to stderr. Exit code 2 means
 the invocation was wrong, 1 means the run failed.`
@@ -92,6 +108,35 @@ export const classifierStatus = (present: boolean[]): { ok: boolean; detail: str
   }
 }
 
+// The detector kai-doctor.sh's own audit named as missing before it existed: a cache directory
+// that grows without anything watching its size or its orphans (~/.kai/logs reaching 609MB
+// unnoticed is the precedent). Absent sessions dir reports zero across the board rather than
+// an error — a machine that has never run vcut open has nothing wrong with it.
+export type SessionsHealth = {
+  count: number
+  totalMb: number
+  orphanCount: number
+  oldestCreatedAt: string | null
+}
+
+export const sessionsHealth = (): SessionsHealth => {
+  const sessions = listSessions()
+  if (sessions.length === 0) {
+    return { count: 0, totalMb: 0, orphanCount: 0, oldestCreatedAt: null }
+  }
+  const totalBytes = sessions.reduce((total, session) => total + session.sizeBytes, 0)
+  const orphanCount = sessions.filter((session) => !session.sourceExists).length
+  const oldest = sessions.reduce((earliest, session) =>
+    session.createdAt < earliest.createdAt ? session : earliest,
+  )
+  return {
+    count: sessions.length,
+    totalMb: Number((totalBytes / (1024 * 1024)).toFixed(2)),
+    orphanCount,
+    oldestCreatedAt: oldest.createdAt,
+  }
+}
+
 const doctorCommand = async (argv: string[]): Promise<void> => {
   const mode: Mode = resolveMode(argv, Boolean(process.stdout.isTTY))
   const checks = await Promise.all(
@@ -113,15 +158,27 @@ const doctorCommand = async (argv: string[]): Promise<void> => {
   const classifier = classifierStatus(
     CLASSIFIER_FILES.map((file) => existsSync(join(CLASSIFIER_HOME, file.name))),
   )
+  const sessions = sessionsHealth()
 
   if (mode === 'json') {
-    emitJson({ ok: missing.length === 0, checks, classifier })
+    emitJson({ ok: missing.length === 0, checks, classifier, sessions })
   } else {
     const lines = [heading('dependencies')]
     for (const check of checks) {
       lines.push(line(check.name, check.ok ? check.version : `MISSING - needed for ${check.why}`))
     }
     lines.push(line('non-speech classifier', classifier.ok ? classifier.detail : classifier.detail))
+    lines.push(
+      line(
+        'sessions',
+        sessions.count === 0
+          ? 'none'
+          : `${sessions.count}, ${sessions.totalMb}MB, ${sessions.orphanCount} orphan(s), oldest ${sessions.oldestCreatedAt}`,
+      ),
+    )
+    if (sessions.orphanCount > 0) {
+      lines.push(nextStep('vcut session gc  # dry-run first, --apply to clear orphans'))
+    }
     if (missing.length > 0) {
       lines.push(nextStep(`brew install ${missing.map((check) => check.name).join(' ')}`))
     }
@@ -347,13 +404,14 @@ const CONTRACTS: Record<string, unknown> = {
       removalPercent: 'number, 0-100',
       wordBoundaryClamping: 'boolean, whether cuts were clamped to word edges',
       semanticCuts:
-        '[{ startMs, endMs, kind, reason, removedText, boundariesInSilence: [bool, bool] }], one per accepted semantic proposal, span already merged with whatever else lands in the same place',
+        '[{ startMs, endMs, kind, reason, removedText, boundariesInSilence: [bool, bool], driftSuspect?: true }], one per accepted semantic proposal, span already merged with whatever else lands in the same place',
       warnings: 'string[]',
     },
     notes: [
       'The EDL itself validates against schemas/edl.schema.json.',
       'Every segment is written as proposed and the EDL as draft. Nothing is approved here.',
       'Read semanticCuts[].removedText before rendering: it is the transcript text the span actually removes, not the raw proposal. A warning fires when removedText and reason share fewer than half their carrying words and removedText has 4 or more of them, which is the corrective for a span drifting onto the wrong words unnoticed.',
+      'driftSuspect is present and true only when removedText is built from cues the same drift check detect runs would flag: a word claiming to start inside measured silence. Absent (not false) when the span is clean. Do not trust removedText on a driftSuspect span without a check (peek or say --transcribe over it); the field is never re-transcribed automatically.',
     ],
   },
   semantic: {
@@ -389,6 +447,133 @@ const CONTRACTS: Record<string, unknown> = {
       'This is the placing instrument, not the cutting one: detect.silences is still what edl build cuts against, at the threshold proven in production.',
       'Positions on --from/--to are seconds; the JSON speaks milliseconds, same rule as every other command.',
       "Exists for a resolution detect cannot give: the gap between a filler and the next word can measure 80-150ms, well under detect's 0.3s default minimum.",
+    ],
+  },
+  open: {
+    version: SCHEMA_VERSION,
+    command: 'vcut open',
+    output: {
+      version: 'number, always 1',
+      sessionDir: 'absolute path to ~/.vcut/sessions/<sha256-16>/',
+      input: 'absolute path to the source, as given on this call',
+      durationMs: 'integer',
+      preset: 'noisy | clean | podcast',
+      lang: 'free-form language tag',
+      gen: 'integer, the refs generation. Bumps whenever a re-open changes the preset',
+      cached:
+        'boolean, whether the cached detect report from a prior open was reused for this preset',
+      silenceCount: 'integer, from the cached or fresh detect report',
+      blockCount: 'integer, how many refs this open produced',
+      transcriptPresent:
+        'boolean, whether a transcript is cached in this session (from --transcript now or an earlier open)',
+      suspects:
+        '[{ atMs, gapMs, ratio, nearestRef }], top 10, same ranking as vcut suspects, each with the block ref nearest it',
+      fresh:
+        'boolean, whether this call created the session (false when resuming one already on disk)',
+    },
+    notes: [
+      'Sessions are addressed by content: ~/.vcut/sessions/<first 16 hex chars of the sha256>/. The same bytes at two paths share a session; the same path with new content gets a new one.',
+      "Refs (b001, b002, ...) are the speech blocks between the cached detect report's own silences, in time order. They derive from detect.silences, never from vcut silences, which answers a different, caller-chosen resolution question.",
+      "A re-open with a preset this session has never used re-detects and assigns it a new gen. Refs from an earlier gen describe a silence list this session no longer has; cut/peek reject them by name rather than silently reusing stale boundaries. Gen derives from the effective preset, not from whether the immediately previous open differed: returning to a preset this session has already used before returns to that preset's own original gen rather than minting a new one, so noisy -> clean -> noisy reads gen 1, 2, 1, never 1, 2, 3.",
+      'This reports counts, not content: no spoken text appears anywhere in this output. Reading what is actually said at a position is a later verb (peek, not in this slice).',
+      'video scan (black/frozen frame detection) is skipped: refs and the suspects ranking only need silences, and the scan is real ffmpeg time this command has no use for.',
+      "With --transcript, the cached detect report's transcript.path is rewritten to the session's own copy at cache time, so every later reader of the cached detect (commit, a hand-inspected detect.json) sees a path guaranteed to still resolve rather than whatever external path this call happened to be given.",
+    ],
+  },
+  peek: {
+    version: SCHEMA_VERSION,
+    command: 'vcut peek',
+    output: {
+      version: 'number, always 1',
+      input: 'absolute path to the source',
+      sessionDir: 'absolute path to this session',
+      ref: 'the ref this peek resolved, or null when --at was used',
+      atMs: 'integer, the centre of the span',
+      spanStartMs: 'integer',
+      spanEndMs: 'integer',
+      transcript:
+        '{ words: [{text, startMs, endMs}], note? }. Words the cached transcript claims inside the span; note explains an empty result when no transcript is cached',
+      heard: '{ text: string }. The span re-transcribed just now, verbatim preset',
+      blocks:
+        '[{ kind: "speech"|"silence", startMs, endMs, durationMs }], fine resolution (-33dB, 0.08s min) over span ± 1s',
+      level: '{ peakDb: number|null, meanDb: number|null }, over the span itself',
+      viewsDisagree:
+        '{ disagree: boolean, kind: "transcript-claims-more"|"heard-more"|"aligned"|"soft-speech-below-threshold" }',
+    },
+    notes: [
+      "Resolves the session for <media> the way open does (creates it if absent, reuses checkSession's cheap path otherwise). --ref resolves a block from this session's refs.json; --at takes a raw position and derives a span --window seconds wide (default 4), centred on --at.",
+      'viewsDisagree compares transcript against heard on carrying words (4+ letters), the same comparison converge uses for the same reason: short words drift between two transcriptions of the same audio and comparing them reports noise, not disagreement.',
+      'soft-speech-below-threshold fires when the fine-resolution blocks read silence for the whole span but heard still carries words: speech under the level threshold that neither silences nor detect can see, but a transcriber hears plainly.',
+      'A disagreement is a place to look, not a verdict. Short-window transcription is itself noisy; treat viewsDisagree as a pointer, confirm with a wider window before acting on it.',
+    ],
+  },
+  cut: {
+    version: SCHEMA_VERSION,
+    command: 'vcut cut',
+    output: {
+      default:
+        '{ version, input, sessionDir, refs: string[], accepted: Proposal & {removedText, proposedAt}, transcriptPresent, next }',
+      '--list':
+        '{ version, input, sessionDir, proposals: (Proposal & {removedText, proposedAt})[] }',
+      '--drop':
+        '{ version, input, sessionDir, dropped: number, proposals: (Proposal & {removedText, proposedAt})[] }',
+    },
+    notes: [
+      'The session must already exist: cut resolves refs against a session it does not create. Run vcut open first.',
+      "--refs takes a single ref or an inclusive range (b042..b044): the span runs from the first ref's start to the second's end. Resolution reuses peek's resolveRef, so an unknown or stale-gen ref is a usage error naming the ref and the session's current gen, not a guess.",
+      '--span <startS>..<endS> is the escape hatch for a raw span when no ref fits. Mutually exclusive with --refs.',
+      "removedText is quoted from the session's cached transcript at propose time, before any build runs — the corrective for a cut whose span drifted onto the wrong words unnoticed until a render.",
+      "Appends to the session's proposals.json (created on first cut). Proposing and --drop take the session's advisory lock for the write and release it after; --list never locks. A session already locked by a live process fails with an error naming its pid, verb, and age.",
+    ],
+  },
+  commit: {
+    version: SCHEMA_VERSION,
+    command: 'vcut commit',
+    output: {
+      status: 'always "committed"',
+      edlPath: 'absolute path to the EDL written (default ./edl.json, the current directory)',
+      sessionDir: 'absolute path to the session this was built from',
+      roundDir:
+        'absolute path to rounds/round-N/ inside the session, where the EDL copy and build report were recorded',
+      build:
+        'the same BuildSummary shape edl build emits (segments, removalPercent, semanticCuts with removedText, warnings, ...)',
+      render: 'the same shape render emits (status, outputPath, sha256, duration, ...)',
+      next: '[{ question, verb }]',
+    },
+    notes: [
+      "Builds from the session's cached detect report and its accumulated proposals.json, through the same runBuild seam vcut edl build --semantic <path> uses — byte-identical output given the same inputs.",
+      'The EDL is written to the current directory by default, never only inside the session: it is the artefact a human approves.',
+      "--audio-only is the default render (matching the manual's per-round rule); --video renders the preview instead. Master mode never happens here.",
+      'Approval is a human edit to the EDL followed by vcut render --edl <path> --mode master. This command drafts and previews only; it never writes approval.status.',
+      "Takes the session's advisory lock (pid+startedAt+verb in lock.json) for the build+render, released after. A second writer on a session already locked by a live process gets a non-usage error naming the holder's pid, verb, and age. On success the session is marked committed, which vcut session gc reads as a candidate — nothing is deleted here or automatically.",
+    ],
+  },
+  rounds: {
+    version: SCHEMA_VERSION,
+    command: 'vcut rounds',
+    output: {
+      default: '{ version, input, sessionDir, rounds: number[] }',
+      '--diff': '{ version, input, sessionDir, diff: RoundsDiff }',
+    },
+    notes: [
+      'Without --diff, lists every round number this session has committed, ascending. With --diff <N> <M>, compares round N against round M; omitting N and M diffs the latest two.',
+      'RoundsDiff: { fromRound, toRound, removalPercentDelta, segmentCountDelta, semanticCuts: [{status: "added"|"removed"|"changed"|"unchanged", from?, to?}] }. semanticCuts entries are matched between rounds by span overlap, not by array position, since a proposal\'s exact edges can shift slightly between rounds without being a different decision.',
+      "This diffs each round's build report (removalPercent, segments, semanticCuts — the same data vcut commit already writes to rounds/round-N/report.json), not either round's actual render: a text-level diff of what a render says needs a transcript of it, and vcut does not store renders or their transcripts in a session. Confirm a semantic diff with vcut peek or say --transcribe on the renders themselves.",
+      "The session must already exist with at least 2 committed rounds for --diff; like cut and commit, this reads a session's history rather than creating one.",
+    ],
+  },
+  session: {
+    version: SCHEMA_VERSION,
+    command: 'vcut session list | vcut session gc',
+    output: {
+      list: '{ version, sessions: SessionSummary[] }',
+      gc: '{ version, applied: boolean, olderThanDays: number|null, candidates: GcCandidate[], deleted: number }',
+    },
+    notes: [
+      'SessionSummary: { sessionDir, sourcePath, sourceExists, sizeBytes, createdAt, committedRounds, committedAt, locked }.',
+      'GcCandidate: { sessionDir, sourcePath, sizeBytes, reasons: ("orphan"|"committed"|"older-than"|"locked-protected")[], deletable }.',
+      'gc is dry-run by default: it classifies every session and reports what would go, deleting nothing until --apply is also passed. A session is a candidate when its source file no longer exists (orphan), it has committed at least one round (committed), or --older-than <days> was given and it qualifies (older-than). A session a live process currently holds the lock on is always locked-protected and never deletable regardless of any other reason.',
+      'Nothing here can reach an approved EDL: vcut commit writes it to --output/--edl, wherever the caller pointed, never inside a session directory. gc clearing a whole session only ever removes the disposable detect cache, transcript copy, refs, proposals, and round history behind it.',
     ],
   },
   say: {
@@ -450,6 +635,34 @@ const CONTRACTS: Record<string, unknown> = {
       'Deriving it by hand is the trap this replaces: the accumulated total can match the rendered file to the millisecond while individual positions land seconds away.',
       'Pass --render to compare the map against a file that exists. Agreement on the total is necessary, not sufficient.',
       'A --source position that was cut is reported as removed with the next surviving segment, not as an error.',
+    ],
+  },
+  joins: {
+    version: SCHEMA_VERSION,
+    command: 'vcut joins',
+    output: {
+      version: 'number, always 1',
+      edl: 'absolute path to the EDL',
+      render: 'absolute path to the rendered file',
+      renderCheck:
+        '{ agrees, expectedMs, observedMs, deltaMs }, the EDL map checked against the measured render, same shape as locate --render',
+      joins:
+        '[{ segmentId, joinMasterMs, windowStartMs, windowEndMs, windowText, removedText, reason, driftSuspect, reading, next }], one per semantic cut that has a following segment',
+      'joins[].reading': '"lands" | "removed-text-leaked" | "check-by-ear"',
+      'joins[].removedText':
+        'string|null. null when no --report (or sibling report.json) carries semanticCuts for this EDL',
+      'joins[].reason': 'string|null, the semantic proposal reason, same source as removedText',
+      'joins[].driftSuspect':
+        'boolean|null, from the build report entry when present, null otherwise',
+    },
+    notes: [
+      "The post-render twin of edl build's removedText: one call verifies every semantic join instead of N x (locate + say --transcribe). On a real 11.7-minute run, verifying 9 joins by hand cost ~14 calls.",
+      "Each join is the EDL segment that opens right after a semantic cut, derived the same way build-edl.ts's boundariesAfterSpeech finds it (by the kind of cut, not a distance) — reused directly rather than re-derived, so this can never disagree with the warning edl build already writes about the same boundary. A semantic cut that opens the file (nothing precedes it) has no join and is silently absent.",
+      "Runs on --render, never the source: the EDL is intent, the render is what happened. renderCheck compares the EDL's own master-time total against the render's measured duration before any window is read, the same numeric style locate --render already uses.",
+      '--report points at a build report (vcut edl build or vcut commit JSON, or rounds/round-N/report.json which is the default sibling lookup next to --edl) for removedText/reason/driftSuspect. Absent is a supported state: joins still runs and reports reading from the window alone, with those three fields null.',
+      'reading is "lands" when the window\'s carrying words do not majority-overlap the cut\'s removedText, "removed-text-leaked" when they do (the tail of removed speech survived the join), and "check-by-ear" when the window carries no words worth judging — the same honest-limits stance peek\'s viewsDisagree and nonspeech --verify already take rather than reading silence as a verdict.',
+      '"removed-text-leaked" is a place to look, not a verdict, same as every other disagreement reading in this codebase. Verified false positive on real material: a false-start whose removedText was the speaker stumbling on the same phrase before landing it, followed by a surviving sentence that legitimately reuses that phrase as its real content — carrying-word overlap cannot tell a leaked tail from a kept sentence sharing vocabulary with its own discarded false starts. Confirm with a wider say --transcribe window before acting on it, the next hint this reading carries.',
+      "Transcribes strictly sequentially, one trx call at a time, never Promise.all — the same reasoning nonspeech.ts's verifySpansSequentially and say --positions --transcribe already apply.",
     ],
   },
   nonspeech: {
@@ -612,6 +825,9 @@ export const route = async (argv: string[]): Promise<void> => {
   if (command === 'locate') {
     return locateCommand(rest)
   }
+  if (command === 'joins') {
+    return joinsCommand(rest)
+  }
   if (command === 'say') {
     return sayCommand(rest)
   }
@@ -620,6 +836,24 @@ export const route = async (argv: string[]): Promise<void> => {
   }
   if (command === 'silences') {
     return silencesCommand(rest)
+  }
+  if (command === 'open') {
+    return openCommand(rest)
+  }
+  if (command === 'peek') {
+    return peekCommand(rest)
+  }
+  if (command === 'cut') {
+    return cutCommand(rest)
+  }
+  if (command === 'commit') {
+    return commitCommand(rest)
+  }
+  if (command === 'rounds') {
+    return roundsCommand(rest)
+  }
+  if (command === 'session') {
+    return sessionCommand(rest)
   }
   if (command === 'schema') {
     return schemaCommand(rest)
