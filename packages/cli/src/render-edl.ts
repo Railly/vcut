@@ -461,13 +461,21 @@ const videoOutputErrors = (
     errors.push('render frame rate differs from EDL')
   }
   if (!Number.isFinite(observedFrames) || Math.abs(observedFrames - expectedFrames) > 1) {
-    errors.push('render frame count differs from EDL duration')
+    errors.push(
+      `render frame count differs from EDL duration: expected ${expectedFrames} frames, got ${
+        Number.isFinite(observedFrames) ? observedFrames : 'unknown'
+      } (tolerance 1 frame)`,
+    )
   }
   if (
     !Number.isFinite(observedDuration) ||
     Math.abs(observedDuration - expectedDuration) > toleranceMs
   ) {
-    errors.push('render duration differs from EDL')
+    errors.push(
+      `render duration differs from EDL: expected ${expectedDuration}ms, got ${
+        Number.isFinite(observedDuration) ? Math.round(observedDuration) : 'unknown'
+      }ms (tolerance ${Math.round(toleranceMs)}ms)`,
+    )
   }
   return errors
 }

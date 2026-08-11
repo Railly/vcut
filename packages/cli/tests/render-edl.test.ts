@@ -364,3 +364,46 @@ describe('renderAudioOnlyNext', () => {
     expect(hints.some((hint) => hint.verb.includes('/tmp/render.wav'))).toBe(true)
   })
 })
+
+// A render that failed its own contract used to say only that it failed, with neither the
+// measured numbers nor the tolerance that rejected them — three renders a night were spent
+// re-deriving by hand what the validator already knew (issue #14).
+describe('videoOutputErrors messages', () => {
+  test('reports the expected and observed frame count on a mismatch', () => {
+    const mismatched = probe(2)
+    const videoStream = mismatched.streams.find((stream) => stream.codec_type === 'video')
+    if (videoStream !== undefined) {
+      videoStream.nb_read_frames = '294'
+    }
+    const errors = outputErrors(edl('required'), mismatched)
+    // edl('required') defaults to a 5000ms segment at 60fps: 300 expected frames.
+    expect(errors).toContain(
+      'render frame count differs from EDL duration: expected 300 frames, got 294 (tolerance 1 frame)',
+    )
+  })
+
+  test('reports the expected and observed duration in milliseconds on a mismatch', () => {
+    const mismatched = probe(2)
+    mismatched.format.duration = '4.900000'
+    const errors = outputErrors(edl('required'), mismatched)
+    expect(errors).toContain(
+      'render duration differs from EDL: expected 5000ms, got 4900ms (tolerance 53ms)',
+    )
+  })
+
+  test('names both mismatches independently, not one swallowing the other', () => {
+    const mismatched = probe(2)
+    const videoStream = mismatched.streams.find((stream) => stream.codec_type === 'video')
+    if (videoStream !== undefined) {
+      videoStream.nb_read_frames = '250'
+    }
+    mismatched.format.duration = '4.100000'
+    const errors = outputErrors(edl('required'), mismatched)
+    expect(errors.some((error) => error.startsWith('render frame count differs'))).toBe(true)
+    expect(errors.some((error) => error.startsWith('render duration differs'))).toBe(true)
+  })
+
+  test('stays silent on both when the render lands inside tolerance', () => {
+    expect(outputErrors(edl('required'), probe(2))).toEqual([])
+  })
+})

@@ -257,6 +257,28 @@ a one-window fluke against everything around it, do not trust a single call. Che
 the gaps with `vcut silences`, then anchor specific offsets with `vcut say --transcribe` — both
 resolved on the real run above.
 
+## "A render fails its own frame-count and duration checks with no other cause in sight"
+
+Check whether the source is a screen recording, or anything else where the video and audio come
+from separate devices. Their streams do not have to end at the same instant.
+
+```bash
+ffprobe -v error -show_entries stream=codec_type,duration -of json source.mp4
+```
+
+**Trap: assuming `format.duration` describes the picture.** That field is the container's, which
+reports the longest of its streams, audio included. On one 11.7-minute recording the video
+stream ended at 700.717s and the container reported 700.8s: the audio device stayed open 83ms
+after the capture stopped drawing frames. An EDL built against the container figure claims a
+final segment that reaches into video that does not exist. `render`'s trim filter clamps that
+silently rather than failing, so the render comes out short and fails `render frame count
+differs from EDL duration` and `render duration differs from EDL` with no line in the error
+pointing at the source.
+
+`edl build` clamps the last segment to the video stream's own duration since 0.14.1; a render
+that still fails these checks on a current build is a different defect; read the numbers the
+error now reports (`expected` vs `got`, and the tolerance) before assuming it is this one again.
+
 ## "The tool did the wrong thing with my input"
 
 **Check your own input first.** Before reporting that a tool mishandled a file or ignored a
