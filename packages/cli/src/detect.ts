@@ -331,7 +331,7 @@ export const probeDurationMs = async (path: string): Promise<number> => {
   return Math.round(Number(parsed.format.duration) * 1000)
 }
 
-type CliOptions = {
+export type CliOptions = {
   input: string
   preset: Preset
   minSilenceMs: number
@@ -484,13 +484,12 @@ export const DETECT_NEXT = [
   },
 ]
 
-export const detectCommand = async (argv: string[]): Promise<void> => {
-  if (argv.includes('--help') || argv.length === 0) {
-    console.log(HELP)
-    return
-  }
-  const mode: Mode = resolveMode(argv, Boolean(process.stdout.isTTY))
-  const options = parseCli(argv)
+/**
+ * The detection pass itself, without any printing. `detectCommand` is this plus argv parsing
+ * and output; `session.ts` calls this directly so `vcut open` runs the same detection exactly
+ * once rather than shelling out to its own CLI or duplicating the ffmpeg calls above.
+ */
+export const runDetect = async (options: CliOptions): Promise<DetectReport> => {
   if (!existsSync(options.input)) {
     throw new Error(`input missing: ${options.input}`)
   }
@@ -585,6 +584,17 @@ export const detectCommand = async (argv: string[]): Promise<void> => {
     review,
     warnings,
   }
+  return report
+}
+
+export const detectCommand = async (argv: string[]): Promise<void> => {
+  if (argv.includes('--help') || argv.length === 0) {
+    console.log(HELP)
+    return
+  }
+  const mode: Mode = resolveMode(argv, Boolean(process.stdout.isTTY))
+  const options = parseCli(argv)
+  const report = await runDetect(options)
   if (mode === 'json') {
     emitJson({ ...report, next: DETECT_NEXT })
     return
