@@ -19,6 +19,7 @@ vcut say <media> [flags]           Read back what is spoken at a position
 vcut silences <media> [flags]      Speech/silence blocks over a range, at a chosen resolution
 vcut converge <media> [flags]      Find where a repeated phrase stops coming back
 vcut nonspeech <render> [--verify] Find audible sound that is not language
+vcut open <media> [flags]          Open or resume a session, map its blocks with stable refs
 vcut schema [name]                 Print the JSON contract for a command
 vcut skills list|get [name]        Read the bundled agent manual
 vcut doctor                        Check external dependencies
@@ -140,6 +141,26 @@ Longer sources fire *less* per minute rather than more, because a long take carr
 | `--limit <n>` | Return at most this many positions, tightest first |
 
 **It says where, never what.** Telling a discarded retake from a speaker pausing to pick a related thought lives in content, and rhythm is all this measures. Run `vcut say --transcribe` on a position to find out what is there.
+
+### vcut open
+
+```bash
+vcut open recording.mp4 --preset clean --lang es --transcript words.srt
+```
+
+Opens or resumes a session keyed by the content of the source, not its path: `~/.vcut/sessions/<sha256-16>/`. The same bytes at two paths share a session; the same path with new content gets one of its own. Everything inside is disposable cache, not an artifact — the EDL a human approves still lives where they wrote it.
+
+`open` runs `detect` once and caches the report. A second `open` on unchanged media at the same preset reuses that cache instead of re-running ffmpeg (`cached: true` in the output); a different `--preset` re-detects and bumps the session's `gen` counter.
+
+Those silences become **refs**: the speech blocks between them, numbered `b001`, `b002`, ... in time order — something a later verb can point at instead of a raw millisecond pair. Refs derive from `detect`'s own silence list, never from `vcut silences`.
+
+| Flag | What it does |
+| --- | --- |
+| `--preset <name>` | `noisy` (-20 dB, default) \| `clean` (-30 dB) \| `podcast` (-35 dB) |
+| `--lang <code>` | Recording language, free-form (default `es`) |
+| `--transcript <path>` | Caches an SRT into the session. Without it, `open` still works — refs come from silences, not words |
+
+`open`'s output is counts, not content: duration, preset, gen, silence and block counts, whether a transcript is cached, and the top 10 suspects (same ranking as `suspects`, each with the nearest block ref). No spoken text appears anywhere in it. Reading what a ref actually says, and cutting against refs, are later verbs.
 
 ### vcut semantic
 

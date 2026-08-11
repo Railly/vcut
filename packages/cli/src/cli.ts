@@ -8,6 +8,7 @@ import { detectCommand, positional } from './detect.ts'
 import { run, runInherit } from './exec.ts'
 import { locateCommand } from './locate.ts'
 import { nonspeechCommand } from './nonspeech.ts'
+import { openCommand } from './open.ts'
 import {
   emitJson,
   fail,
@@ -46,6 +47,7 @@ Usage:
   vcut silences <media> [flags]      Speech/silence blocks over a range, at a chosen resolution
   vcut converge <media> [flags]      Find where a repeated phrase stops coming back
   vcut nonspeech <render> [--verify] Find audible sound that is not language
+  vcut open <media> [flags]          Open or resume a session, map its blocks with stable refs
   vcut schema [name]                 Print the JSON contract for a command
   vcut skills list|get [name]        Read the bundled agent manual
   vcut doctor                        Check external dependencies
@@ -391,6 +393,36 @@ const CONTRACTS: Record<string, unknown> = {
       "Exists for a resolution detect cannot give: the gap between a filler and the next word can measure 80-150ms, well under detect's 0.3s default minimum.",
     ],
   },
+  open: {
+    version: SCHEMA_VERSION,
+    command: 'vcut open',
+    output: {
+      version: 'number, always 1',
+      sessionDir: 'absolute path to ~/.vcut/sessions/<sha256-16>/',
+      input: 'absolute path to the source, as given on this call',
+      durationMs: 'integer',
+      preset: 'noisy | clean | podcast',
+      lang: 'free-form language tag',
+      gen: 'integer, the refs generation. Bumps whenever a re-open changes the preset',
+      cached:
+        'boolean, whether the cached detect report from a prior open was reused for this preset',
+      silenceCount: 'integer, from the cached or fresh detect report',
+      blockCount: 'integer, how many refs this open produced',
+      transcriptPresent:
+        'boolean, whether a transcript is cached in this session (from --transcript now or an earlier open)',
+      suspects:
+        '[{ atMs, gapMs, ratio, nearestRef }], top 10, same ranking as vcut suspects, each with the block ref nearest it',
+      fresh:
+        'boolean, whether this call created the session (false when resuming one already on disk)',
+    },
+    notes: [
+      'Sessions are addressed by content: ~/.vcut/sessions/<first 16 hex chars of the sha256>/. The same bytes at two paths share a session; the same path with new content gets a new one.',
+      "Refs (b001, b002, ...) are the speech blocks between the cached detect report's own silences, in time order. They derive from detect.silences, never from vcut silences, which answers a different, caller-chosen resolution question.",
+      'A re-open with a different --preset re-detects and bumps gen. Refs from an earlier gen describe a silence list this session no longer has; a later slice (cut) rejects them by name rather than silently reusing stale boundaries.',
+      'This reports counts, not content: no spoken text appears anywhere in this output. Reading what is actually said at a position is a later verb (peek, not in this slice).',
+      'video scan (black/frozen frame detection) is skipped: refs and the suspects ranking only need silences, and the scan is real ffmpeg time this command has no use for.',
+    ],
+  },
   say: {
     version: SCHEMA_VERSION,
     command: 'vcut say',
@@ -620,6 +652,9 @@ export const route = async (argv: string[]): Promise<void> => {
   }
   if (command === 'silences') {
     return silencesCommand(rest)
+  }
+  if (command === 'open') {
+    return openCommand(rest)
   }
   if (command === 'schema') {
     return schemaCommand(rest)

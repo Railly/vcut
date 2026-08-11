@@ -34,6 +34,7 @@ ran.
 |---|---|
 | What in this file is worth cutting? | `detect` |
 | Where should I look first in a long file? | `suspects --detect detect.json` |
+| What is the map of this recording, cached across calls instead of re-run? | `open <media>` — a content-addressed session with stable block refs |
 | What is said at a position — cheap, from an existing transcript? | `say --transcript ... --at <s>` |
 | What is actually said there, when the transcript may have averaged it away? | `say --transcribe --at <s>` |
 | What is said at several positions at once? | `say --positions <s1,s2,...>` or `locate --sources <s1,s2,...>` |
@@ -55,6 +56,7 @@ ran.
 |---|---|
 | running the whole edit | **Workflow for an agent**, then **semantic** |
 | deciding where to look in a long file | **suspects** |
+| working a long recording across several calls without re-passing paths | **open** |
 | asking what is spoken somewhere | **say** |
 | checking a breath or a filler the transcript cannot see | **Non-verbal sound needs a classifier, not a statistic**, **The muletillas playbook** |
 | placing a boundary at sub-second resolution | **silences** |
@@ -349,6 +351,41 @@ position to find out what is there.
 `--pause-ratio` defaults to 0.4, the middle of a plateau where 0.3, 0.4 and 0.5 all found every
 defect with no false positives. That plateau was measured on one recording, which is why it is
 a flag.
+
+## open
+
+```bash
+vcut open recording.mp4 --preset clean --lang es --transcript words.srt
+```
+
+A session keyed by the content of the source, not its path: `~/.vcut/sessions/<sha256-16>/`.
+The same bytes at two paths share a session; the same path with new content gets a session of
+its own rather than silently serving stale cache. Everything inside is disposable — a cache
+`open` and later verbs read and write, never an artifact. The EDL a human approves still lives
+where they wrote it, not inside a session directory a future `session gc` can clear.
+
+`open` runs `detect` once and caches the report. A second `open` on unchanged media at the
+same preset serves that cache instead of re-running ffmpeg: `cached: true` in the output, and
+the difference is not subtle — seconds against a fraction of one. A different `--preset`
+re-detects on purpose and bumps the session's `gen` counter, because a new threshold measures
+different silences.
+
+Those silences are what `open` turns into **refs**: the speech blocks between them, numbered
+`b001`, `b002`, ... in time order. A ref names a block the way a browser snapshot names an
+element — something later verbs point at instead of a raw millisecond pair. Refs derive from
+`detect`'s silence list, never from `vcut silences` (a different, caller-chosen resolution), and
+a ref from an old `gen` describes boundaries the session no longer has.
+
+`--transcript` caches a copy of the SRT into the session; without it, `open` still works — refs
+come from silences, not words — and the output says a semantic pass will need one before it can
+run.
+
+**This is the map, not the read.** `open`'s output reports counts: duration, preset, gen,
+silence count, block count, whether a transcript is cached, and the top 10 suspects (same
+ranking as `suspects`, each with the block ref nearest it) — never any spoken text. Reading
+what is actually said at a ref is a later verb (`peek`, not yet built); cutting against refs
+(`cut`) and committing a session to a render (`commit`) are later still. `open` only opens the
+session and draws the map.
 
 ## edl build
 

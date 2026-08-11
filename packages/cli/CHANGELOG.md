@@ -2,6 +2,19 @@
 
 Notable changes to `@crafter/vcut`. Entries say what changed and, where it is not obvious, what measurement led to it.
 
+## Unreleased
+
+### Added
+
+- **`vcut open <media>` opens or resumes a content-addressed session.** `~/.vcut/sessions/<sha256-16>/` holds a session keyed by the source's own bytes, not its path: the same content at two paths shares a session, and the same path pointed at new content opens a new one rather than serving stale cache silently. `open` runs `detect` once and caches the report; a second `open` on unchanged media at the same preset reuses it (`cached: true`, and the difference is not subtle — seconds against a fraction of one on a real 11.7-minute recording). A different `--preset` re-detects on purpose. Invalidation is two levels: a cheap size+mtime check against `meta.json`, re-hashing only when that disagrees, and a sha that changes on re-hash is never mixed in silently — a later verb turns it into a clear error naming both hashes and the session the new content belongs to.
+- **Refs**: the session's cached silences become `b001`, `b002`, ... — the speech blocks between them, in time order, stable identifiers a later verb can point at instead of a raw millisecond pair. They derive strictly from `detect`'s own silence list, never from `vcut silences` (a different, caller-chosen resolution). A re-open with a different preset bumps the session's `gen` counter, since refs from an earlier gen describe boundaries the session no longer has.
+- **`vcut schema open`** documents the contract.
+
+### Notes
+
+- This is the first slice of a session-backed arc (`open` now; `peek`, `cut`, `commit`, `rounds`, `session gc`/lock/doctor land in later slices of the same 0.15.x line). `open`'s output is counts, never spoken content — reading what a ref actually says is a later verb's job.
+- The session store persists `meta.json`, the cached `detect.json`, a copy of the transcript, and `refs.json`. It never persists renders or wavs: the whole session directory is disposable cache, and the EDL a human approves lives where they wrote it, not inside it.
+
 ## 0.14.0
 
 ### Added
