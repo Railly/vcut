@@ -37,10 +37,12 @@ import type { CliOptions as DetectOptions, Preset } from './detect.ts'
 import { runDetect } from './detect.ts'
 import { emitJson, heading, line, type Mode, nextStep, resolveMode, UsageError } from './output.ts'
 import { type Edl, type RenderOptions, runRender } from './render-edl.ts'
+import { acknowledgeSingleRound, evaluateRoundsGate, type RoundsGate } from './rounds-gate.ts'
 import {
   acquireLock,
   cachedDetect,
   checkSession,
+  listRoundNumbers,
   markCommitted,
   nextRoundDir,
   openSession,
@@ -69,6 +71,10 @@ Flags:
   --height <n>          Passed through to edl build
   --edge-fade <ms>      Passed through to edl build (default 50)
   --crop <spec>         Passed through to edl build
+  --single-round        Deliberate override for a genuine one-round edit (a trivial clip).
+                        Without it, a commit that leaves the session with fewer than 2 committed
+                        rounds refuses the converged framing and names the missing pass. Recorded
+                        in the session, never a default.
   --json / --human      Output mode
   --help                Show this message
 
@@ -76,6 +82,15 @@ Builds from this session's cached detect report and its accumulated proposals.js
 'vcut cut'), byte-identical to running 'vcut edl build --detect <cached> --semantic <path>' by
 hand on the same inputs. Records the round in the session (rounds/round-N/: the EDL copy and
 the build report) but never stores the render itself there.
+
+**Fewer than 2 committed rounds refuses the converged framing.** The manual's own rule — never
+stop at one round, the empty round that ends the loop must be a real propose pass against the
+previous round's render, not a re-check of round 1's own output — used to be prose an agent
+could read, agree with, and violate on a clean-looking first pass. This commit's own 'next'
+hints and 'roundsGate.status' say 'insufficient-rounds' instead of a next step that reads like
+polish, until a second committed round exists. '--single-round' is the deliberate escape hatch
+for the genuine one-round case, and it is recorded in the session (single-round-ack.json), not
+inferred from a good-looking run.
 
 Master mode never happens here. Approving the EDL is a human edit — set approval.status and
 each segment's approval to "approved" — followed by the existing
@@ -88,7 +103,14 @@ clear — never something this command deletes itself.
 
 Also accepts --fields/--jq. See vcut --help for the full picture.`
 
-const BOOLEAN_FLAGS = new Set(['--json', '--human', '--help', '--audio-only', '--video'])
+const BOOLEAN_FLAGS = new Set([
+  '--json',
+  '--human',
+  '--help',
+  '--audio-only',
+  '--video',
+  '--single-round',
+])
 
 const positional = (args: string[]): string | undefined => {
   for (const [index, arg] of args.entries()) {
@@ -134,6 +156,7 @@ type CommitArgs = {
   fps: number | null
   edgeFadeMs: number
   crop: Crop | null
+  singleRound: boolean
 }
 
 const parseArgs = (argv: string[]): CommitArgs => {
@@ -159,9 +182,16 @@ const parseArgs = (argv: string[]): CommitArgs => {
     fps: numericFlag(argv, '--fps'),
     edgeFadeMs: numericFlag(argv, '--edge-fade') ?? DEFAULT_EDGE_FADE_MS,
     crop: cropArg === undefined ? null : parseCrop(cropArg),
+    singleRound: argv.includes('--single-round'),
   }
 }
 
+/**
+ * Hints for a session that has cleared the rounds floor (>= 2 committed rounds, or an
+ * acknowledged single round). This is the only case in which "approve" belongs in the list — a
+ * round that has not cleared the floor gets `roundsGate.next` instead (see rounds-gate.ts),
+ * which points at another propose pass, not at approval.
+ */
 export const commitNext = (
   edlPath: string,
   renderPath: string,
@@ -185,6 +215,7 @@ const humanReport = (
   removalPercent: number,
   semanticCuts: Array<{ startMs: number; endMs: number; kind: string; removedText: string }>,
   render: { status: string; outputPath: string; sha256?: string; duration?: string },
+  gate: RoundsGate,
 ): string => {
   const lines = [
     heading(`committed  ${edlPath}`),
@@ -204,7 +235,14 @@ const humanReport = (
   if (render.duration !== undefined) {
     lines.push(line('duration', `${render.duration}s`))
   }
-  lines.push(nextStep(`trx transcribe ${render.outputPath} --words`))
+  lines.push(line('committedRounds', String(gate.committedRounds)))
+  lines.push(line('roundsGate', gate.status))
+  lines.push(heading(gate.message))
+  if (gate.status === 'insufficient-rounds' && gate.next !== undefined && gate.next.length > 0) {
+    lines.push(nextStep(gate.next[0].verb))
+  } else {
+    lines.push(nextStep(`trx transcribe ${render.outputPath} --words`))
+  }
   return lines.join('\n')
 }
 
@@ -300,7 +338,25 @@ export const commitCommand = async (argv: string[]): Promise<void> => {
     // is state `session gc` may now consider clearing, never state it deletes on its own.
     markCommitted(session.dir)
 
-    const hints = commitNext(args.edlPath, render.outputPath)
+    // The rounds gate (#36): evaluated AFTER writeRound, against the same committed-round count
+    // `rounds` itself reads, so a caller cannot see a converged framing before the round that
+    // earns it is actually on disk. `--single-round` is recorded here — a deliberate act visible
+    // in the session (single-round-ack.json), never a default that silently waives the floor.
+    const committedRounds = listRoundNumbers(session.dir).length
+    if (args.singleRound) {
+      acknowledgeSingleRound(session.dir, committedRounds)
+    }
+    const gate = evaluateRoundsGate(committedRounds, args.singleRound)
+
+    // Below the floor, the hints ARE the missing pass — the exact defect this gate exists for is
+    // a caller reading "transcribe, review, approve" after round 1 and treating review of round
+    // 1's own output as the second round. commitNext's approve-shaped hints only apply once the
+    // gate has cleared.
+    const hints =
+      gate.status === 'insufficient-rounds' && gate.next !== undefined
+        ? gate.next
+        : commitNext(args.edlPath, render.outputPath)
+
     if (mode === 'json') {
       emitJson({
         status: 'committed',
@@ -309,11 +365,14 @@ export const commitCommand = async (argv: string[]): Promise<void> => {
         roundDir,
         build: summary,
         render,
+        roundsGate: gate,
         next: hints,
       })
       return
     }
-    console.log(humanReport(args.edlPath, summary.removalPercent, summary.semanticCuts, render))
+    console.log(
+      humanReport(args.edlPath, summary.removalPercent, summary.semanticCuts, render, gate),
+    )
   } finally {
     releaseLock(session.dir)
   }

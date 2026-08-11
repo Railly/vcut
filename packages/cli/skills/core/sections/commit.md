@@ -55,6 +55,18 @@ so a session carries its own history of what was proposed and what got built fro
 and wavs stay out of the session, matching everything else the session holds: cheap to
 regenerate, expensive to store.
 
+**Carries the rounds gate in `roundsGate` and shapes `next` around it (#36).** Below 2
+committed rounds, `roundsGate.status` is `'insufficient-rounds'` and `next` is the missing
+pass — render, transcribe, `semantic review` against THIS render, read, `cut`, `commit` again —
+never the approve-shaped hints, because those are exactly what let a run mistake round 1's own
+verification for a second round. `--single-round` acknowledges a genuine one-round edit
+explicitly, recording `single-round-ack.json` in the session so the override shows up in the
+record rather than living only in the caller's head; a session already acknowledged reports
+`'acknowledged-single-round'` instead of refusing. At 2 or more committed rounds without an
+override, `roundsGate.status` is `'converged-pending-review'` — the floor is cleared, but
+convergence still means the most recent round proposed nothing, which this field does not
+itself verify.
+
 **Master mode never happens here, and the human decision boundary the core manual states is
 untouched.**
 Approval is a human edit to the EDL — `approval.status` to `"approved"`, each segment's own

@@ -12,6 +12,7 @@ import { resolve } from 'node:path'
 import type { BuildSummary } from './build-edl.ts'
 import { emitJson, heading, line, type Mode, resolveMode, UsageError } from './output.ts'
 import { diffRounds, type RoundReport, type RoundsDiff } from './rounds.ts'
+import { evaluateRoundsGate, readSingleRoundAck } from './rounds-gate.ts'
 import { checkSession, listRoundNumbers, openSession, readRound } from './session.ts'
 
 const HELP = `vcut rounds - a session's committed rounds, and what changed between two of them
@@ -64,13 +65,14 @@ const toRoundReport = (report: unknown): RoundReport => {
   }
 }
 
-const humanList = (input: string, rounds: number[]): string => {
+const humanList = (input: string, rounds: number[], gateMessage: string): string => {
   if (rounds.length === 0) {
     return heading(`${input.split('/').pop()}  no committed rounds yet`)
   }
   return [
     heading(`${input.split('/').pop()}  ${rounds.length} round(s)`),
     line('rounds', rounds.join(', ')),
+    heading(gateMessage),
   ].join('\n')
 }
 
@@ -145,11 +147,22 @@ export const roundsCommand = async (argv: string[]): Promise<void> => {
   const diffIndex = argv.indexOf('--diff')
 
   if (diffIndex === -1) {
+    // The rounds gate (#36): this summary is one of the two surfaces an agent reads to decide a
+    // session is done, so it carries the same refusal `commit` does rather than a bare count a
+    // caller has to know to compare against 2 itself.
+    const ack = readSingleRoundAck(session.dir)
+    const gate = evaluateRoundsGate(rounds.length, ack !== null)
     if (mode === 'json') {
-      emitJson({ version: 1, input: resolvedMedia, sessionDir: session.dir, rounds })
+      emitJson({
+        version: 1,
+        input: resolvedMedia,
+        sessionDir: session.dir,
+        rounds,
+        roundsGate: gate,
+      })
       return
     }
-    console.log(humanList(resolvedMedia, rounds))
+    console.log(humanList(resolvedMedia, rounds, gate.message))
     return
   }
 

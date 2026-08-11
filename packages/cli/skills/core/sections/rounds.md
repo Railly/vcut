@@ -40,3 +40,11 @@ Confirm a semantic diff against what a render actually sounds like with `peek` o
 **The session must already exist, with at least two committed rounds for `--diff`.** Like `cut`
 and `commit`, `rounds` reads a session's history rather than creating one; the error for a
 missing session or a session with fewer than two rounds names exactly what to run first.
+
+**Without `--diff`, the summary carries the rounds gate too (#36).** `roundsGate.status` reads
+`'insufficient-rounds'` below 2 committed rounds — the same refusal `commit`'s own output
+gives, on the same field name, since this is the other surface an agent reads to decide a
+session is done. It reads `'converged-pending-review'` at 2 or more, or
+`'acknowledged-single-round'` when `commit --single-round` recorded the deliberate override for
+this session. The second committed round has to contain a real propose pass against the first
+round's render transcript; verification of round 1's own output does not count.
