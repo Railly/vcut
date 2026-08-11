@@ -137,6 +137,17 @@ deliberate override for a genuine one-round edit (a trivial clip), recorded in t
 inferred from a clean-looking run. Preview renders and the human approval boundary are
 untouched by this — it is a framing gate on what the CLI calls "done," not a lock on rendering.
 
+**`commit` also checks for standing spoken edit markers, without waiting for `semantic review`
+(#38).** A finding class that only lives inside a verb the loop never forces to run is optional
+by construction: a run committed four gated rounds through `open`/`cut`/`commit` and never
+invoked `review` once, and shipped the same spoken rewind marker two prior runs had already
+caught. `commit` now runs the same `metaSpeech` check itself, on every round that has a cached
+transcript, and folds the result into its own JSON (`metaSpeech`, always present, `[]` when
+clean) and `--human` output — the one artefact a run reads in full every round, unprompted. A
+round with standing findings gets a hint naming them first, ahead of every other next step. It
+never auto-cuts and never blocks a render; the human decision boundary is unchanged. Detail:
+`vcut skills get core --section commit`, `--section semantic`.
+
 Method, invariants, and the full stopping condition:
 `vcut skills get core --section rounds-methodology`, `--section invariants`.
 

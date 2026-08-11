@@ -270,8 +270,10 @@ export const mergeProposals = (
 }
 
 // Between the median silence and the third quartile on the corpus this was built against:
-// long enough to skip the gaps between words, short enough to still end a thought.
-const LINE_BREAK_MS = 700
+// long enough to skip the gaps between words, short enough to still end a thought. Exported
+// because commit.ts's own metaSpeech pass (#38) builds lines from the same transcript the same
+// way, and a second constant here could drift from this one silently.
+export const LINE_BREAK_MS = 700
 
 const loadTranscript = (report: DetectReport): Transcript => {
   if (report.transcript.path === null || !existsSync(report.transcript.path)) {

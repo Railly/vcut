@@ -11,9 +11,21 @@ import { resolve } from 'node:path'
 
 import type { BuildSummary } from './build-edl.ts'
 import { emitJson, heading, line, type Mode, resolveMode, UsageError } from './output.ts'
-import { diffRounds, type RoundReport, type RoundsDiff } from './rounds.ts'
+import {
+  diffMetaSpeech,
+  diffRounds,
+  type MetaSpeechDiffEntry,
+  type RoundReport,
+  type RoundsDiff,
+} from './rounds.ts'
 import { evaluateRoundsGate, readSingleRoundAck } from './rounds-gate.ts'
-import { checkSession, listRoundNumbers, openSession, readRound } from './session.ts'
+import {
+  checkSession,
+  listRoundNumbers,
+  openSession,
+  readMetaSpeech,
+  readRound,
+} from './session.ts'
 
 const HELP = `vcut rounds - a session's committed rounds, and what changed between two of them
 
@@ -76,7 +88,7 @@ const humanList = (input: string, rounds: number[], gateMessage: string): string
   ].join('\n')
 }
 
-const humanDiff = (diff: RoundsDiff): string => {
+const humanDiff = (diff: RoundsDiff, metaSpeech: MetaSpeechDiffEntry[] | null): string => {
   const lines = [
     heading(`round ${diff.fromRound} -> round ${diff.toRound}`),
     line(
@@ -111,6 +123,27 @@ const humanDiff = (diff: RoundsDiff): string => {
   }
   if (diff.semanticCuts.every((entry) => entry.status === 'unchanged')) {
     lines.push(line('semanticCuts', 'unchanged'))
+  }
+  if (metaSpeech === null) {
+    lines.push(line('metaSpeech', 'not recorded for one of these rounds (predates #38)'))
+  } else {
+    const standing = metaSpeech.filter((entry) => entry.status === 'standing')
+    const addressed = metaSpeech.filter((entry) => entry.status === 'addressed')
+    if (standing.length === 0 && addressed.length === 0) {
+      lines.push(line('metaSpeech', 'none carried from the earlier round'))
+    } else {
+      lines.push(
+        line('metaSpeech', `${addressed.length} addressed, ${standing.length} still standing`),
+      )
+      for (const entry of standing) {
+        lines.push(
+          line(
+            '  standing',
+            `${(entry.from.startMs / 1000).toFixed(2)}-${(entry.from.endMs / 1000).toFixed(2)}s  "${entry.from.text}"`,
+          ),
+        )
+      }
+    }
   }
   return lines.join('\n')
 }
@@ -211,10 +244,22 @@ export const roundsCommand = async (argv: string[]): Promise<void> => {
     toRound,
     toRoundReport(toData.report),
   )
+  // #38: whether round fromRound's metaSpeech findings were addressed (cut) or are still
+  // standing by round toRound. null when either round predates #38 or had no transcript to
+  // check that round — readMetaSpeech distinguishes that from an empty, checked-and-clean round.
+  const metaSpeechDiff = diffMetaSpeech(
+    readMetaSpeech(session.dir, fromRound),
+    readMetaSpeech(session.dir, toRound),
+  )
 
   if (mode === 'json') {
-    emitJson({ version: 1, input: resolvedMedia, sessionDir: session.dir, diff })
+    emitJson({
+      version: 1,
+      input: resolvedMedia,
+      sessionDir: session.dir,
+      diff: { ...diff, metaSpeech: metaSpeechDiff },
+    })
     return
   }
-  console.log(humanDiff(diff))
+  console.log(humanDiff(diff, metaSpeechDiff))
 }

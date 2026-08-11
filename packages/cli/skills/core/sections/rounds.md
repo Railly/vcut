@@ -48,3 +48,14 @@ session is done. It reads `'converged-pending-review'` at 2 or more, or
 `'acknowledged-single-round'` when `commit --single-round` recorded the deliberate override for
 this session. The second committed round has to contain a real propose pass against the first
 round's render transcript; verification of round 1's own output does not count.
+
+**`--diff` also reports whether round N's `metaSpeech` findings were addressed by round N+1
+(#38).** Each round `commit` writes carries its own `rounds/round-N/metaspeech.json` — the same
+`metaSpeech` field it emitted that round. `--diff` compares the earlier round's file against the
+later one's by span identity: a finding present in the earlier round and gone from the later one
+was cut (`addressed`); a finding present in both is `standing`, still unaddressed. `--human`
+lists every `standing` span with its text, since that is the one a caller reading the diff still
+has to act on. When either round predates #38 or had no transcript to check that round, the
+comparison is `null` rather than a misleadingly empty list — there is no prior finding set to
+diff against, and reading `null` as "nothing standing" would hide exactly the round that was
+never checked.

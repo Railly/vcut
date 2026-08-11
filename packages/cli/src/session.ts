@@ -40,7 +40,7 @@ import { join } from 'node:path'
 
 import type { DetectReport } from './detect.ts'
 import { packageVersion } from './output.ts'
-import type { Proposal } from './semantic.ts'
+import type { MetaSpeechSpan, Proposal } from './semantic.ts'
 
 export const sessionRoot = (): string =>
   process.env.VCUT_SESSIONS_DIR ?? join(homedir(), '.vcut', 'sessions')
@@ -449,6 +449,37 @@ export const readRound = (
     edl: JSON.parse(readFileSync(edlPath, 'utf8')),
     report: JSON.parse(readFileSync(reportPath, 'utf8')),
   }
+}
+
+// --- metaSpeech (#38) --------------------------------------------------------------------------
+//
+// commit runs `metaSpeech` (semantic.ts, born from #37) against the session's own cached
+// transcript on every round that has one, and records the result beside the round's EDL and
+// build report — the same directory, the same "the round's own history" the spike already
+// settled for those two. #36's retro named this placement directly: commit's output is the one
+// artefact a run reads in full every round, unprompted, so a finding-class that only exists
+// inside `semantic review` — a verb the session loop never forces — is optional by construction.
+// Recording it per round is what lets `rounds` answer whether a finding from round N was
+// addressed by round N+1, without re-deriving anything from the EDLs themselves.
+const metaSpeechPath = (roundDir: string): string => join(roundDir, 'metaspeech.json')
+
+export const writeMetaSpeech = (roundDir: string, spans: MetaSpeechSpan[]): string => {
+  const path = metaSpeechPath(roundDir)
+  writeFileSync(path, `${JSON.stringify(spans, null, 2)}\n`)
+  return path
+}
+
+/** A round's recorded metaSpeech spans. Null when the round predates #38 or had no transcript
+ * to check — distinct from `[]`, which means the check ran and found nothing. */
+export const readMetaSpeech = (
+  sessionDir: string,
+  roundNumber: number,
+): MetaSpeechSpan[] | null => {
+  const path = metaSpeechPath(join(roundsDir(sessionDir), `round-${roundNumber}`))
+  if (!existsSync(path)) {
+    return null
+  }
+  return JSON.parse(readFileSync(path, 'utf8')) as MetaSpeechSpan[]
 }
 
 // --- Commit marker -------------------------------------------------------------------------
