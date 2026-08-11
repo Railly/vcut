@@ -1,10 +1,12 @@
 import { describe, expect, test } from 'bun:test'
 import {
+  parseMsRangeArgs,
   parseSpanArg,
   quoteRemovedText,
   resolveRefsRange,
   validateKind,
   validateReason,
+  validateSpanBounds,
 } from '../src/cut.ts'
 import type { Word } from '../src/detect.ts'
 import { UsageError } from '../src/output.ts'
@@ -97,6 +99,44 @@ describe('parseSpanArg', () => {
   test('rejects malformed range syntax', () => {
     expect(() => parseSpanArg('10')).toThrow(UsageError)
     expect(() => parseSpanArg('10..20..30')).toThrow(UsageError)
+  })
+})
+
+describe('parseMsRangeArgs', () => {
+  test('reads raw milliseconds with no unit conversion', () => {
+    expect(parseMsRangeArgs('662400', '670600')).toEqual({ startMs: 662_400, endMs: 670_600 })
+  })
+
+  test('rejects an inverted or zero-length range', () => {
+    expect(() => parseMsRangeArgs('1000', '1000')).toThrow(UsageError)
+    expect(() => parseMsRangeArgs('1000', '500')).toThrow(UsageError)
+  })
+
+  test('rejects a negative start', () => {
+    expect(() => parseMsRangeArgs('-100', '500')).toThrow(UsageError)
+  })
+
+  test('rejects non-integer input', () => {
+    expect(() => parseMsRangeArgs('a', '500')).toThrow(UsageError)
+    expect(() => parseMsRangeArgs('100.5', '500')).toThrow(UsageError)
+  })
+})
+
+describe('validateSpanBounds', () => {
+  test('accepts a span within the source duration', () => {
+    expect(() => validateSpanBounds({ startMs: 0, endMs: 5_000 }, 10_000)).not.toThrow()
+  })
+
+  test('rejects a span running past the source duration', () => {
+    expect(() => validateSpanBounds({ startMs: 9_000, endMs: 11_000 }, 10_000)).toThrow(UsageError)
+    try {
+      validateSpanBounds({ startMs: 9_000, endMs: 11_000 }, 10_000)
+      throw new Error('expected validateSpanBounds to throw')
+    } catch (error) {
+      const message = (error as Error).message
+      expect(message).toContain('11000')
+      expect(message).toContain('10000ms source')
+    }
   })
 })
 

@@ -522,7 +522,8 @@ const CONTRACTS: Record<string, unknown> = {
     notes: [
       'The session must already exist: cut resolves refs against a session it does not create. Run vcut open first.',
       "--refs takes a single ref or an inclusive range (b042..b044): the span runs from the first ref's start to the second's end. Resolution reuses peek's resolveRef, so an unknown or stale-gen ref is a usage error naming the ref and the session's current gen, not a guess.",
-      '--span <startS>..<endS> is the escape hatch for a raw span when no ref fits. Mutually exclusive with --refs.',
+      '--span <startS>..<endS> is the escape hatch for a raw span when no ref fits. Mutually exclusive with --refs and --start-ms/--end-ms.',
+      "--start-ms <n> --end-ms <n> takes the same raw milliseconds say, silences, and semantic export already emit, so a finding from any of those needs no seconds conversion to reach a session. Same session-tracking benefits as --refs and --span: accumulates in proposals.json, shows in rounds --diff. Bounds are validated against the session's own detect report duration; an inverted range is a usage error. Mutually exclusive with --refs and --span.",
       "removedText is quoted from the session's cached transcript at propose time, before any build runs — the corrective for a cut whose span drifted onto the wrong words unnoticed until a render.",
       "Appends to the session's proposals.json (created on first cut). Proposing and --drop take the session's advisory lock for the write and release it after; --list never locks. A session already locked by a live process fails with an error naming its pid, verb, and age.",
     ],

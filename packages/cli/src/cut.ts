@@ -22,6 +22,14 @@
  * reach) — mutually exclusive with `--refs`, so a call is never ambiguous about which one is
  * driving the span.
  *
+ * `--start-ms <n> --end-ms <n>` is the same escape hatch in the unit `say`, `silences`, and
+ * `semantic export` (before this slice's nearestRef) actually emit: raw milliseconds, not
+ * seconds. Before this, a finding born from any of those three commands had no path into a
+ * session's coordinate system without a caller doing the ms-to-seconds conversion by hand for
+ * `--span`, which is exactly the gap issue #23 names. Mutually exclusive with both `--refs` and
+ * `--span`; validated against the session's own detect report duration the same way `edl build`
+ * validates a raw semantic proposal.
+ *
  * `removedText` is quoted from the session's cached transcript at propose time, which is the
  * whole point named in the shaping doc: this is what B-V2's honest-limits stance calls quoting,
  * not re-transcribing — the same words a human reading the proposal later would see if they ran
@@ -45,6 +53,7 @@ import type { Proposal } from './semantic.ts'
 import {
   acquireLock,
   appendProposal,
+  cachedDetect,
   cachedTranscriptPath,
   checkSession,
   dropProposal,
@@ -61,13 +70,18 @@ const HELP = `vcut cut - propose a semantic cut against block refs, see what it 
 Usage:
   vcut cut <media> --refs <ref>[..<ref>] --kind <kind> --reason "<text>" [--json|--human]
   vcut cut <media> --span <startS>..<endS> --kind <kind> --reason "<text>"
+  vcut cut <media> --start-ms <n> --end-ms <n> --kind <kind> --reason "<text>"
   vcut cut <media> --list
   vcut cut <media> --drop <index>
 
 Flags:
   --refs <ref[..ref]>   A block ref, or an inclusive range (b042..b044) from this session's
-                        refs.json. Mutually exclusive with --span.
-  --span <s..s>         A raw span in seconds when no ref fits. Mutually exclusive with --refs.
+                        refs.json. Mutually exclusive with --span and --start-ms/--end-ms.
+  --span <s..s>         A raw span in seconds when no ref fits. Mutually exclusive with --refs
+                        and --start-ms/--end-ms.
+  --start-ms <n>        Raw span start in milliseconds, the unit say/silences/semantic export
+                        emit. Requires --end-ms. Mutually exclusive with --refs and --span.
+  --end-ms <n>          Raw span end in milliseconds. Requires --start-ms.
   --kind <kind>         Required: false-start | repetition | tangent | filler
   --reason <text>       Required, non-empty. Read by a human deciding whether to approve.
   --list                Print the session's accumulated proposals with their removedText
@@ -79,6 +93,11 @@ The session must already exist (run vcut open first) — cutting against a sessi
 never opened is a caller mistake, not something this command creates on the fly. A ref from an
 earlier generation is a usage error naming the ref and the session's current gen, the same
 enforcement peek already applies.
+
+--start-ms/--end-ms take the same session-tracked path --refs and --span do: the proposal
+accumulates in proposals.json, shows in vcut rounds --diff, and needs no hand-typed detect or
+semantic file. Bounds are validated against the session's own source duration, and an inverted
+range (end at or before start) is a usage error rather than a silent swap.
 
 Appends the proposal to the session's proposals.json (created on first cut). Proposing and
 --drop take the session's advisory lock for the duration of the write and release it after;
@@ -161,6 +180,37 @@ export const parseSpanArg = (spanArg: string): Span => {
     throw new UsageError(`--span end must be after start, got ${spanArg}`)
   }
   return { startMs: Math.round(startS * 1000), endMs: Math.round(endS * 1000) }
+}
+
+/**
+ * `--start-ms <n> --end-ms <n>` read as a span with no unit conversion, since the values
+ * arriving here are already the millisecond ints `say`, `silences`, and `semantic export`
+ * emit — the whole point named in issue #23 is that a finding born from any of those never
+ * needs a seconds round-trip to reach a session.
+ */
+export const parseMsRangeArgs = (startMsArg: string, endMsArg: string): Span => {
+  const startMs = Number(startMsArg)
+  const endMs = Number(endMsArg)
+  if (!Number.isInteger(startMs) || !Number.isInteger(endMs)) {
+    throw new UsageError(
+      `--start-ms and --end-ms take whole milliseconds, got ${startMsArg}..${endMsArg}`,
+    )
+  }
+  if (startMs < 0) {
+    throw new UsageError(`--start-ms cannot be negative, got ${startMsArg}`)
+  }
+  if (endMs <= startMs) {
+    throw new UsageError(`--end-ms must be after --start-ms, got ${startMsArg}..${endMsArg}`)
+  }
+  return { startMs, endMs }
+}
+
+/** A span cannot run past the source it was measured against, the same bound edl build's
+ * validateProposals applies to a raw semantic proposal. */
+export const validateSpanBounds = (span: Span, durationMs: number): void => {
+  if (span.endMs > durationMs) {
+    throw new UsageError(`--end-ms ${span.endMs} runs past this session's ${durationMs}ms source`)
+  }
 }
 
 const KINDS = new Set(['false-start', 'repetition', 'tangent', 'filler'])
@@ -301,11 +351,22 @@ export const cutCommand = async (argv: string[]): Promise<void> => {
 
   const refsArg = flagValue(argv, '--refs')
   const spanArg = flagValue(argv, '--span')
-  if (refsArg === undefined && spanArg === undefined) {
-    throw new UsageError('cut needs --refs <ref[..ref]> or --span <startS>..<endS>')
+  const startMsArg = flagValue(argv, '--start-ms')
+  const endMsArg = flagValue(argv, '--end-ms')
+  if ((startMsArg !== undefined) !== (endMsArg !== undefined)) {
+    throw new UsageError('--start-ms and --end-ms must be given together')
   }
-  if (refsArg !== undefined && spanArg !== undefined) {
-    throw new UsageError('--refs and --span are mutually exclusive')
+  const msRangeGiven = startMsArg !== undefined && endMsArg !== undefined
+  const waysGiven = [refsArg !== undefined, spanArg !== undefined, msRangeGiven].filter(
+    Boolean,
+  ).length
+  if (waysGiven === 0) {
+    throw new UsageError(
+      'cut needs --refs <ref[..ref]>, --span <startS>..<endS>, or --start-ms <n> --end-ms <n>',
+    )
+  }
+  if (waysGiven > 1) {
+    throw new UsageError('--refs, --span, and --start-ms/--end-ms are mutually exclusive')
   }
 
   const kind = validateKind(flagValue(argv, '--kind'))
@@ -318,8 +379,14 @@ export const cutCommand = async (argv: string[]): Promise<void> => {
     const resolved = resolveRefsRange(refsArg, refsFile)
     span = resolved.span
     usedRefs = resolved.refs
+  } else if (spanArg !== undefined) {
+    span = parseSpanArg(spanArg)
   } else {
-    span = parseSpanArg(spanArg as string)
+    span = parseMsRangeArgs(startMsArg as string, endMsArg as string)
+    const report = cachedDetect(session.dir)
+    if (report !== null) {
+      validateSpanBounds(span, report.durationMs)
+    }
   }
 
   const transcriptPath = cachedTranscriptPath(session.dir)
