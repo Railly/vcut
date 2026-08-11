@@ -2,8 +2,8 @@ import { createHash } from 'node:crypto'
 import { createReadStream, existsSync, readFileSync, renameSync, rmSync } from 'node:fs'
 import { extname, resolve } from 'node:path'
 
-import { run, runInherit } from './exec.ts'
-import { emitJson } from './output.ts'
+import { run, runInherit, runWithProgress } from './exec.ts'
+import { duration, emitJson } from './output.ts'
 
 const HELP = `vcut render - render an EDL to video
 
@@ -16,6 +16,7 @@ Flags:
   --mode <name>         preview (default) | master
   --audio-only          Render the audio alone, for iterating on a cut
   --dry-run             Print the ffmpeg command without running it
+  --quiet               Skip the progress lines on stderr
   --help                Show this message
 
 Preview mode accepts proposed segments. Master mode requires an approved EDL,
@@ -29,7 +30,13 @@ Use it for the rounds where the questions are about sound, then render once.
 The audio-only verification loop: render --audio-only, then vcut audit and vcut nonspeech
 against that same .wav. Both read the waveform only and accept it wherever they accept a
 video render, so a full video mux is dead wall-clock for a round that never asked a
-question about frames. Render video once, at the end, for the master.`
+question about frames. Render video once, at the end, for the master.
+
+render blocks until ffmpeg exits and prints one progress line to stderr per
+report (time rendered, percent of the EDL's own duration, encode speed).
+stdout stays reserved for the result: nothing to poll, nothing to grep a
+process table for. --quiet drops the progress lines and keeps everything
+else the same.`
 
 type Source = {
   id: string
@@ -92,6 +99,7 @@ type CliOptions = {
   mode: Mode
   dryRun: boolean
   audioOnly: boolean
+  quiet: boolean
 }
 
 export type OutputProbe = {
@@ -683,6 +691,94 @@ export const outputErrors = (edl: Edl, probe: OutputProbe): string[] => {
   ]
 }
 
+// ffmpeg's own progress report (`-progress pipe:2`) is a run of key=value lines, one block
+// per report, terminated by the line `progress=continue` or `progress=end`. Parsed into a
+// map per block rather than read line by line, since a single field (out_time_ms) says
+// everything a caller here needs and the rest of the block arrives across several lines.
+export type FfmpegProgress = {
+  outTimeMs: number | null
+  speed: string | null
+  frame: string | null
+  done: boolean
+}
+
+const parseProgressBlock = (block: string): FfmpegProgress => {
+  const fields = new Map<string, string>()
+  for (const line of block.split('\n')) {
+    const separator = line.indexOf('=')
+    if (separator === -1) {
+      continue
+    }
+    fields.set(line.slice(0, separator).trim(), line.slice(separator + 1).trim())
+  }
+  // ffmpeg reports N/A on a report it could not measure this round (observed on a real render:
+  // the middle of three reports came back out_time_us=N/A, speed=N/A, bitrate=N/A, everything
+  // else in the same block still numeric) rather than skipping the report outright. Number('N/A')
+  // is NaN, which read straight through would have printed "NaN% (NaNs/6s)" — worse than the
+  // silence this feature exists to fix. Treated as absent, the same as the field never arriving.
+  const outTimeUs = fields.get('out_time_us')
+  const speed = fields.get('speed')
+  const frame = fields.get('frame')
+  return {
+    outTimeMs: outTimeUs === undefined || outTimeUs === 'N/A' ? null : Number(outTimeUs) / 1000,
+    speed: speed === undefined || speed === 'N/A' ? null : speed,
+    frame: frame === undefined || frame === 'N/A' ? null : frame,
+    done: fields.get('progress') === 'end',
+  }
+}
+
+// One human line per report: how far into the EDL's own duration ffmpeg has rendered, not
+// how far into the temp file's bytes — a caller watching stderr wants "58% of the cut", not
+// a number with no reference. expectedDurationMs is the same sum runRender already reports
+// in its --dry-run summary, so the percent here and the summary there read the same render
+// against the same total.
+export const formatProgressLine = (
+  progress: FfmpegProgress,
+  expectedDurationMs: number,
+): string | null => {
+  if (progress.outTimeMs === null) {
+    return null
+  }
+  const rendered = duration(progress.outTimeMs)
+  const total = duration(expectedDurationMs)
+  const percent =
+    expectedDurationMs > 0
+      ? Math.min(100, Math.round((progress.outTimeMs / expectedDurationMs) * 100))
+      : 0
+  const speed = progress.speed === null || progress.speed.length === 0 ? '' : ` ${progress.speed}`
+  return `render: ${percent}% (${rendered}/${total})${speed}`
+}
+
+// Splits a stream of stderr lines back into progress blocks (ffmpeg writes one field per
+// line, a block ends on the line naming `progress`) and turns each complete block into one
+// printed line. `-v error` keeps ffmpeg's own error lines mixed into the same stream, and
+// those never match `key=value` the way every progress field does, so a line that does not
+// parse as one is a real error line and passed through untouched rather than swallowed by a
+// progress reader that only recognises its own format.
+export const makeProgressWatcher = (
+  expectedDurationMs: number,
+  onLine: (line: string) => void,
+): ((line: string) => void) => {
+  let block: string[] = []
+  return (line: string) => {
+    if (line.indexOf('=') === -1) {
+      if (line.trim().length > 0) {
+        onLine(line)
+      }
+      return
+    }
+    block.push(line)
+    if (line.startsWith('progress=')) {
+      const progress = parseProgressBlock(block.join('\n'))
+      block = []
+      const formatted = formatProgressLine(progress, expectedDurationMs)
+      if (formatted !== null) {
+        onLine(formatted)
+      }
+    }
+  }
+}
+
 const probeOutput = async (path: string): Promise<OutputProbe> => {
   const { stdout, stderr, exitCode } = await run('ffprobe', [
     '-v',
@@ -734,6 +830,7 @@ const parseCli = (args: string[]): CliOptions => {
     mode: modeValue,
     dryRun: args.includes('--dry-run'),
     audioOnly,
+    quiet: args.includes('--quiet'),
   }
 }
 
@@ -752,6 +849,14 @@ export type RenderOptions = {
   mode: Mode
   dryRun: boolean
   audioOnly: boolean
+  // Skips the progress lines. Callers that already show their own progress (commit's render
+  // step, a future caller with its own UI) pass true; a bare CLI invocation defaults to false
+  // so a caller watching stderr always sees something during a render that can run minutes.
+  quiet?: boolean
+  // Where the progress lines actually go. Defaults to stderr, matching every other diagnostic
+  // this CLI prints; a test swaps this in to capture the lines instead of the process's own
+  // stderr.
+  onProgressLine?: (line: string) => void
 }
 
 export type RenderResult = {
@@ -803,6 +908,11 @@ export const runRender = async (edl: Edl, options: RenderOptions): Promise<Rende
     throw new Error(errors.join('\n'))
   }
 
+  const expectedDurationMs = edl.segments.reduce(
+    (total, segment) => total + segment.outMs - segment.inMs,
+    0,
+  )
+
   // ffmpeg writes straight to its target, so the target is a sibling temp file until the
   // render has proven itself. Same directory, so the rename stays on one filesystem.
   const pendingPath = `${outputPath}.partial-${process.pid}${extname(outputPath)}`
@@ -817,16 +927,27 @@ export const runRender = async (edl: Edl, options: RenderOptions): Promise<Rende
       ...(options.audioOnly ? { audioOnly: true } : {}),
       sources: edl.sources.length,
       segments: edl.segments.length,
-      expectedDurationMs: edl.segments.reduce(
-        (total, segment) => total + segment.outMs - segment.inMs,
-        0,
-      ),
+      expectedDurationMs,
       outputPath,
       command: ['ffmpeg', ...shown],
     }
   }
 
-  const exitCode = await runInherit('ffmpeg', ['-v', 'error', ...args])
+  // render already blocks in the foreground until ffmpeg exits; what it lacked was any signal
+  // while it does. --progress pipe:2 makes ffmpeg report frame/time/speed on its own stderr as
+  // it works, on top of the -v error that already keeps real problems on that same stream, so
+  // one caller-supplied sink sees both without vcut choosing between them.
+  const exitCode =
+    options.quiet === true
+      ? await runInherit('ffmpeg', ['-v', 'error', ...args])
+      : await runWithProgress(
+          'ffmpeg',
+          ['-v', 'error', '-progress', 'pipe:2', ...args],
+          makeProgressWatcher(
+            expectedDurationMs,
+            options.onProgressLine ?? ((line) => console.error(line)),
+          ),
+        )
   if (exitCode !== 0) {
     throw new Error(`ffmpeg exited with ${exitCode}`)
   }
