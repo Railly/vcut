@@ -15,6 +15,7 @@ vcut semantic export|check|review  Hand the transcript to a model, take proposal
 vcut render --edl <path> [flags]   Render an EDL to video
 vcut locate --edl <path> [flags]   Translate between master time and source time
 vcut audit --edl <path> --render <path>  Check a render against the EDL it came from
+vcut joins --edl <path> --render <path>  Verify every semantic join in one call
 vcut say <media> [flags]           Read back what is spoken at a position
 vcut silences <media> [flags]      Speech/silence blocks over a range, at a chosen resolution
 vcut converge <media> [flags]      Find where a repeated phrase stops coming back
@@ -400,6 +401,26 @@ audit  22 of 22 segments compared
 ```
 
 **A low score is a place to look, not a verdict.** Envelope correlation is weak over short or quiet windows, and loudness normalisation lifts quiet passages by several dB. On the run above, the segment that scored low was carrying exactly the right words. It reports rather than fails, and stays out of `render`, for that reason.
+
+### vcut joins
+
+```bash
+vcut joins --edl edl.json --render cut.mp4 --report report.json --lang es
+```
+
+The post-render twin of `edl build`'s `removedText`: one call that verifies every semantic join instead of `N x (locate + say --transcribe)`. On a real 11.7-minute run, verifying 9 joins by hand cost about 14 calls.
+
+Each join is the EDL segment that opens right after a semantic cut, derived the same way `edl build`'s own `boundariesAfterSpeech` finds it — by the kind of cut, not a distance. Runs on `--render`, never the source, checks the EDL's own master-time total against the render's measured duration first, then re-transcribes a window around each join and reports a `reading`: `lands`, `removed-text-leaked` (the window's carrying words majority-overlap the cut's removed text), or `check-by-ear` (the window carries too little to judge).
+
+```
+joins  cut.mp4
+  64.83s (segment-020)   lands  "Que haga lo que tú exactamente querías, pues entonces el workaround del"
+  160.18s (segment-047)  removed-text-leaked  "En este principio de agregar, agregar verificabilidad a los"
+```
+
+**`removed-text-leaked` is a place to look, not a verdict.** On the run above, that reading was a false positive: the cut's removed text was the speaker stumbling on the same phrase three times before landing it, and the surviving sentence legitimately reused that phrase as its real content. A wider `vcut say --transcribe --window 8` confirmed the join read clean — `joins` names that exact command in `next`.
+
+`--report <path>` (a build report from `edl build`, `commit`, or the `report.json` `commit` writes into `rounds/round-N/`, the default lookup beside `--edl`) adds `removedText`, `reason`, and `driftSuspect` to each join. Its absence is a supported state: `joins` still runs, with those three fields `null`.
 
 ### vcut say
 

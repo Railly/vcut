@@ -91,6 +91,7 @@ Piped or captured, the same command emits JSON. No flag needed.
 | `vcut render` | Renders an EDL; preview accepts proposals, master needs approval |
 | `vcut locate --edl` | Translates between master time and source time |
 | `vcut audit --edl --render` | Checks a render's audio against the EDL it came from |
+| `vcut joins --edl --render` | Verifies every semantic join in one call, the post-render twin of `edl build`'s `removedText` |
 | `vcut say <media>` | Reads back what is spoken at a position, from a transcript or by asking the audio |
 | `vcut silences <media>` | Speech/silence blocks over a range, at a threshold and minimum you choose |
 | `vcut converge <media>` | Finds where a repeated phrase stops coming back |
