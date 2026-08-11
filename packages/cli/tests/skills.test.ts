@@ -167,4 +167,12 @@ describe('the always-loaded core stays small', () => {
   test('points at the section command rather than assuming the reader has the whole manual', () => {
     expect(core).toContain('vcut skills get core --section')
   })
+
+  // The whole point of #29: a run burned about a third of its budget hand-bisecting one word
+  // boundary with shrinking windows. The fallback has to be findable in the file every session
+  // loads, not in a section reached only by knowing to ask for it — an agent that knew to ask
+  // would not have been bisecting.
+  test('carries the word-boundary arbiter, so a boundary is never hand-bisected first', () => {
+    expect(core).toContain('--transcribe --words')
+  })
 })

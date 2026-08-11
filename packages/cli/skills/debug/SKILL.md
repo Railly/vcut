@@ -231,6 +231,40 @@ miembros" parses, carries the fact, and passes every invariant in the manual. Th
 audible and only audible, which is why the last check before approval is a person listening
 rather than another measurement.
 
+**Do not hand-bisect the near edge.** `converge` gives you the far edge; the start of the line
+you are keeping is measured, in one call, over the span between its two edges:
+
+```bash
+vcut say source.mp4 --transcribe --words --at <lastWithPhraseMs/1000> --through <boundaryMs/1000> --lang es
+```
+
+Every word comes back with its absolute start and end in the source. `converge` prints this same
+call with its own numbers already filled in, so there is nothing to derive. The alternative is
+what one run did: six to eight `--transcribe` calls at shrinking windows, then a raw
+`ffmpeg -ss/-t` extraction plus a fresh transcription for ground truth, about a third of its
+budget for one boundary.
+
+## "The transcript and a re-transcribed window disagree about where a word is"
+
+They can both be wrong in the same direction and neither will say so. `--transcript` reports
+timings a whole-file pass averaged; measured on one run, a keeper's start came back at 550740ms
+when the true boundary sat at roughly 551300-551600ms. `--transcribe` at short windows made it
+worse, returning outright hallucinations ("Fíjole.", "Me siento muerto.") for real speech.
+
+```bash
+vcut say source.mp4 --transcribe --words --at 550.0 --through 553.0 --lang es
+```
+
+**This is the arbiter, and it is the only one.** It extracts exactly that span, re-transcribes
+it asking for word-level cues, and offsets every timing back to absolute source milliseconds.
+`wordsFrom: "fresh-transcription"` marks the answer as measured rather than read, so two
+contradictory numbers for one word stay distinguishable. It costs one transcription.
+
+**Trap: shrinking the window to close in.** It does not converge. A short window transcribes
+into the sentence it expects, so each smaller call reads more like a clean start and is no
+closer to the truth — that is what produced the hallucinations above. Widen to the span you
+doubt and ask once.
+
 ## "`converge` answered fast. Is the boundary real?"
 
 ```bash

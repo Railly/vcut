@@ -1,5 +1,6 @@
-import { describe, expect, test } from 'bun:test'
-import { readFileSync } from 'node:fs'
+import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { Word } from '../src/detect.ts'
@@ -87,6 +88,86 @@ describe('sayCommand --positions', () => {
     await expect(
       sayCommand(['media.mp4', '--transcript', 'x.srt', '--positions', '1,2', '--through', '5']),
     ).rejects.toThrow()
+  })
+})
+
+describe('sayCommand --words', () => {
+  // --words without --transcribe would silently answer with the transcript's own cues, which
+  // are exactly the numbers the flag exists to doubt. Answering a different question than the
+  // one asked is the failure mode this whole primitive was built against.
+  test('rejects --words without --transcribe', async () => {
+    await expect(
+      sayCommand(['media.mp4', '--transcript', 'x.srt', '--words', '--at', '5']),
+    ).rejects.toThrow(/--transcribe/)
+  })
+})
+
+// A transcript-only call is allowed to carry no media at all: there is nothing to measure a
+// level on and nothing to transcribe, so the answer comes entirely from the SRT. Caught as a
+// real regression while adding --words — hoisting the media resolve out of the transcribe
+// branch made `say --transcript x.srt --at 10` throw on resolve(undefined) before it read a
+// single cue, and nothing else in this suite passes a transcript without a media argument.
+describe('sayCommand with a transcript and no media', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'vcut-say-no-media-'))
+  const transcriptPath = join(dir, 'words.srt')
+
+  beforeAll(() => {
+    writeFileSync(
+      transcriptPath,
+      `1
+00:00:10,000 --> 00:00:10,400
+ uno
+
+2
+00:00:10,400 --> 00:00:10,900
+ dos
+`,
+    )
+  })
+
+  afterAll(() => {
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  test('answers from the transcript rather than throwing on a media path it was never given', async () => {
+    const printed: string[] = []
+    const original = console.log
+    console.log = (value: string) => {
+      printed.push(value)
+    }
+    try {
+      await sayCommand(['--transcript', transcriptPath, '--at', '10.2', '--json'])
+    } finally {
+      console.log = original
+    }
+    const answer = JSON.parse(printed.join('\n')) as {
+      words: Array<{ text: string }>
+      peakDb: number | null
+    }
+    expect(answer.words.map((word) => word.text)).toEqual(['uno', 'dos'])
+    // No media means no level to measure, which is a null rather than a failure.
+    expect(answer.peakDb).toBeNull()
+  })
+})
+
+// The seam --words rides on: one transcription answers both the text and the cues, so a
+// regression that transcribes twice (once for text, once for words) costs a caller double for
+// one question. Structural for the same reason the sequencing test below is: observing it
+// behaviourally needs a real transcriber to count calls against.
+describe('--words and --transcribe share one transcription', () => {
+  const source = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'say.ts'),
+    'utf8',
+  )
+
+  test('reads text off the word-level call rather than making a second one', () => {
+    expect(source).toContain('transcribeWindowWords')
+    // The plain call is reached only when the word-level one did not already answer.
+    expect(source).toMatch(/fresh !== null\s*\?\s*fresh\.text/)
+  })
+
+  test('marks fresh words as measured rather than read', () => {
+    expect(source).toContain("wordsFrom: 'fresh-transcription'")
   })
 })
 

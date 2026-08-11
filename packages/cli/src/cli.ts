@@ -594,19 +594,50 @@ const CONTRACTS: Record<string, unknown> = {
       atMs: 'integer, the position asked about. Absent when --positions is used',
       windowMs: 'integer, how much context was read',
       text: 'the words in the window, joined',
-      words: '[{ text, startMs, endMs }]',
+      words:
+        '[{ text, startMs, endMs }], in absolute source milliseconds. Read from the transcript by default; measured by a transcription made now with --transcribe --words',
+      wordsFrom:
+        '"fresh-transcription", present only with --transcribe --words. Absent means words came from the transcript passed to --transcript',
       peakDb: 'number|null, loudest sample in the window. null when no media was given',
       meanDb: 'number|null',
       segment: '{ id, sourceMs }|null, only with --edl',
-      warning: 'present when the transcript is not word-level',
+      warning:
+        'present when the transcript is not word-level. Never present with --words, whose cues do not come from that transcript',
       positions:
-        '[{ atMs, windowMs, text, words, peakDb, meanDb, segment?, warning? }], only with --positions: one object per position, same shape as a single call, in the order given',
+        '[{ atMs, windowMs, text, words, wordsFrom?, peakDb, meanDb, segment?, warning? }], only with --positions: one object per position, same shape as a single call, in the order given',
     },
     notes: [
-      'Reads an existing transcript. vcut never calls a model, here as everywhere else.',
+      'Reads an existing transcript. vcut never calls a model, here as everywhere else: --transcribe and --words run the trx already on the caller PATH, the same way every measurement here runs ffmpeg.',
       'Do not answer this by transcribing a short slice instead: a window under about two seconds returns noise whatever the audio contains, so the result cannot tell a real word from a guess.',
       'A window with no words but real level is the interesting case: something audible the transcript never saw. That is what the non-speech classifier is for.',
       '--positions answers several windows in one call instead of one --at call per position. Mutually exclusive with --at/--through. With --transcribe it transcribes strictly sequentially, never concurrently, since each call loads a Whisper model into memory.',
+      '--transcribe --words is THE arbiter when the two other modes disagree about where a word is. --transcript averages inside a fused region (measured: a keeper start placed at 550740ms against a true boundary of 551300-551600ms, an error large enough to ship a defect) and --transcribe alone returns prose with no timings, so neither can settle a boundary. This extracts exactly --at..--through, re-transcribes it with word-level cues, and offsets every timing back to absolute source ms.',
+      '--words costs one real transcription per call, the same price as --transcribe, and it needs --transcribe (without it, say already returns the transcript own words, which are the numbers --words exists to doubt). Ask it for the span you doubt, not for the whole file.',
+      'It is also the near-edge answer for a retake: converge reports the far edge (where the repeated wording stops), and this measures where the surviving telling starts. converge next carries the exact call with its own numbers filled in.',
+    ],
+  },
+  converge: {
+    version: SCHEMA_VERSION,
+    command: 'vcut converge',
+    output: {
+      input: 'absolute path to the media',
+      phrase: 'the wording searched for, as given',
+      windowMs: 'integer, how much audio each probe transcribed',
+      stepMs: 'integer, how far each probe moved',
+      boundaryMs:
+        'integer|null, the first offset whose transcript no longer carries the phrase. null (with exit 1) means it was still recurring at --to, which is a reason to widen the span rather than evidence there is nothing to cut',
+      lastWithPhraseMs: 'integer|null, the last probe that still carried the phrase',
+      lastWithPhraseText: 'string|null, what that probe transcribed to',
+      means: 'a one-line gloss of how to read the two numbers against each other',
+      next: '[{ question, verb }], the near-edge measurement with this run own numbers in it',
+      probes: '[{ atMs, text, contains }], every window read on the way, in order',
+    },
+    notes: [
+      'Steps a window forward from --from and stops at the first probe whose text lacks the phrase. Matching is on carrying words (4+ letters), not the phrase as typed: a short window transcribes without the context the rest of the file gives, so the same audio came back as "a la que conocemos" in one window and "ahora que conocemos" in the next.',
+      'boundaryMs is the FAR edge, past where the telling being kept begins: the last attempt starts before the previous one has finished being recognisable, so cutting to it beheads the surviving line. Measured: ending at 61192ms keeps the whole line, ending at 62000ms buys 0.7s and leaves it beheaded, and neither transcript reads as broken.',
+      'The NEAR edge, where the surviving telling starts, is not measured here and has no separate command: it is a word boundary, so vcut say --transcribe --words over the span between lastWithPhraseMs and boundaryMs answers it directly in one transcription. next carries that exact call. Do not estimate it from a probe atMs, which is where the stepping happened to open a window rather than where the speaker started.',
+      'The contract assumes contiguous retakes and stable transcription, and both can fail: a --from outside the recurring wording returns an immediate false clear, and one flaky short window that drops the phrase ends the search the same as a real boundary. Read probes, not just boundaryMs.',
+      'vcut calls no model of its own: trx is a binary on the caller PATH, exactly like ffmpeg.',
     ],
   },
   audit: {
