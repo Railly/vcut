@@ -4,7 +4,9 @@ import { resolve } from 'node:path'
 import type { DetectReport, Interval, Transcript, Word } from './detect.ts'
 import { parseSilenceLog, parseSrt } from './detect.ts'
 import { run } from './exec.ts'
+import { nearestRef } from './open.ts'
 import { emitJson, UsageError } from './output.ts'
+import { deriveRefs } from './session.ts'
 
 const HELP = `vcut semantic - hand the transcript to a model, take back cut proposals
 
@@ -29,9 +31,11 @@ Flags:
 
 Both subcommands emit JSON: the reader is an agent, not a terminal.
 
-vcut never calls a model. Export gives an agent numbered lines with timings; the
-agent writes proposals back as JSON, and 'vcut edl build --semantic <path>' folds
-them in. Every proposed cut lands as semanticRisk material and stays unapproved.
+vcut never calls a model. Export gives an agent numbered lines with timings and the
+block ref nearest each line (nearestRef); the agent writes proposals back as JSON, and
+'vcut edl build --semantic <path>' folds them in. A proposal born from export can also
+go straight into 'vcut cut --refs <nearestRef>' instead of retyping raw milliseconds.
+Every proposed cut lands as semanticRisk material and stays unapproved.
 
 review closes the loop: it reads an EDL back and returns the transcript as it
 survives the cuts, so the agent judges the result a viewer hears rather than the
@@ -73,6 +77,23 @@ export type Line = {
   endMs: number
   text: string
 }
+
+// `export`'s lines are proposals against the source, the same coordinate space refs.json
+// describes, so each one carries the block ref nearest its own startMs — the same field
+// `open` already attaches to suspects (OpenSuspect), reusing the identical nearestRef lookup
+// rather than a second definition of "closest ref" that could drift from the first. `review`'s
+// lines describe the rendered master instead, a different timeline refs do not cover, so this
+// stays specific to export rather than living on Line/buildLines itself.
+export type ExportedLine = Line & { nearestRef: string | null }
+
+export const withNearestRefs = (
+  lines: Line[],
+  blocks: Array<{ ref: string; startMs: number; endMs: number }>,
+): ExportedLine[] =>
+  lines.map((exportedLine) => ({
+    ...exportedLine,
+    nearestRef: nearestRef(exportedLine.startMs, blocks),
+  }))
 
 // Sentence-ish units, because a model asked to spot a false start needs to see the restart
 // next to it. Terminal punctuation alone is not enough: whisper leaves long unpunctuated
@@ -659,6 +680,7 @@ export const semanticCommand = async (argv: string[]): Promise<void> => {
   if (subcommand === 'export') {
     const report = readReport(value('--detect'))
     const lines = buildLines(joinWords(loadTranscript(report)), report.silences, LINE_BREAK_MS)
+    const blocks = deriveRefs(report.silences, report.durationMs)
     emitJson({
       status: 'exported',
       input: report.input,
@@ -667,7 +689,7 @@ export const semanticCommand = async (argv: string[]): Promise<void> => {
       ...(argv.includes('--terse')
         ? { instructionsOmitted: INSTRUCTIONS.length }
         : { instructions: INSTRUCTIONS }),
-      lines,
+      lines: withNearestRefs(lines, blocks),
     })
     return
   }

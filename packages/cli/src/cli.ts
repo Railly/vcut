@@ -419,13 +419,14 @@ const CONTRACTS: Record<string, unknown> = {
     command: 'vcut semantic export | vcut semantic check',
     output: {
       export:
-        '{ status: "exported", input, durationMs, lang, instructions: string[], lines: [{ index, startMs, endMs, text }] }',
+        '{ status: "exported", input, durationMs, lang, instructions: string[], lines: [{ index, startMs, endMs, text, nearestRef }] }',
       check: '{ status: "valid"|"rejected", accepted: integer, issues: [{ index, problem }] }',
     },
     notes: [
       'vcut never calls a model. Export hands over the lines; you write the proposals back.',
       'A proposal is { startMs, endMs, kind, reason }, kind being false-start | repetition | tangent | filler | non-speech.',
       'non-speech covers audible sound that is not language, which neither detect nor the transcript can see. skills/core/scripts/non-speech.py finds those with an audio classifier and prints them in this schema.',
+      "Each exported line carries nearestRef, the session's block ref closest to that line's own startMs, derived the same way vcut open attaches nearestRef to suspects. A proposal can carry that ref straight into vcut cut --refs instead of retyping the line's raw milliseconds.",
       'Feed accepted proposals to vcut edl build --semantic <path>. Each lands as semanticRisk material.',
       'check exits 1 when anything is malformed, and edl build refuses the whole file rather than skipping entries.',
     ],
