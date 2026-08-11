@@ -522,11 +522,11 @@ const CONTRACTS: Record<string, unknown> = {
     command: 'vcut cut',
     output: {
       default:
-        '{ version, input, sessionDir, refs: string[], accepted: Proposal & {removedText, proposedAt}, transcriptPresent, next }',
+        '{ version, input, sessionDir, refs: string[], accepted: Proposal & {removedText, proposedAt, driftSuspect?: true}, transcriptPresent, next }',
       '--list':
-        '{ version, input, sessionDir, proposals: (Proposal & {removedText, proposedAt})[] }',
+        '{ version, input, sessionDir, proposals: (Proposal & {removedText, proposedAt, driftSuspect?: true})[] }',
       '--drop':
-        '{ version, input, sessionDir, dropped: number, proposals: (Proposal & {removedText, proposedAt})[] }',
+        '{ version, input, sessionDir, dropped: number, proposals: (Proposal & {removedText, proposedAt, driftSuspect?: true})[] }',
     },
     notes: [
       'The session must already exist: cut resolves refs against a session it does not create. Run vcut open first.',
@@ -534,6 +534,8 @@ const CONTRACTS: Record<string, unknown> = {
       '--span <startS>..<endS> is the escape hatch for a raw span when no ref fits. Mutually exclusive with --refs and --start-ms/--end-ms.',
       "--start-ms <n> --end-ms <n> takes the same raw milliseconds say, silences, and semantic export already emit, so a finding from any of those needs no seconds conversion to reach a session. Same session-tracking benefits as --refs and --span: accumulates in proposals.json, shows in rounds --diff. Bounds are validated against the session's own detect report duration; an inverted range is a usage error. Mutually exclusive with --refs and --span.",
       "removedText is quoted from the session's cached transcript at propose time, before any build runs — the corrective for a cut whose span drifted onto the wrong words unnoticed until a render.",
+      "driftSuspect is present and true only when a proposal's own span is built from cues that claim a word starts inside the session's cached measured silence — the same driftSuspectSpan check edl build's driftSuspect runs, reused rather than duplicated. Absent (not false) when clean. Scoped to the proposal's own raw span, not the merged span commit checks: a clean read here does not guarantee a clean read once commit builds the merged span, only that this proposal's own claimed words do not already contradict the cached silences. --human prints it as a warning line, same convention edl build's own warnings use.",
+      "Appends to the session's proposals.json (created on first cut) without driftSuspect: the flag is derived fresh from the session's cached transcript and detect report every time a proposal is read back (default, --list, --drop), never persisted, so it can never go stale relative to the cache it is checked against.",
       "Appends to the session's proposals.json (created on first cut). Proposing and --drop take the session's advisory lock for the write and release it after; --list never locks. A session already locked by a live process fails with an error naming its pid, verb, and age.",
     ],
   },

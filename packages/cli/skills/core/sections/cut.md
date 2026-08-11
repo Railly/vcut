@@ -41,15 +41,32 @@ testing-10m.mp4  proposed
 class comes from the classifier, not a ref). `reason` is required and non-empty, read by a
 human deciding whether to approve, same as everywhere else in this manual.
 
-**This `removedText` carries no `driftSuspect` flag, unlike `edl build`'s.** It is read straight
-from the session's cached transcript at propose time, with no check against `detect`'s drift
-warning — `edl build`'s own `driftSuspect` computation runs later, at build time, on the merged
-span `commit` produces, not on what `cut` echoes here. On a recording with drifted cues, a
-proposal's `removedText` at propose time can read clean here and still turn out to sit on
-drifted words once `commit` builds it and reports `driftSuspect: true`. Trust the echoed text as
-a preview, not as the drift-checked final read; if `detect`'s own drift warning fired on this
-recording, confirm a specific span with `peek` before treating what `cut --list` shows as
-settled.
+**`cut --list` (and the accept response, and `--drop`'s echo) carry the same `driftSuspect` flag
+`edl build`'s report computes**, reusing its `driftSuspectSpan` check rather than a second
+implementation of it: present and `true` only when a proposal's own span is built from cues that
+claim a word starts inside the session's cached measured silence, absent when clean. `--human`
+prints it as a warning line under the proposal, same convention `edl build`'s own warnings use.
+
+```
+testing-10m.mp4  1 proposal(s)
+  [0] 660.93-670.37s        tangent: "que va a ser mucho mejor. Quiero estornudar."
+                            reason: sneeze aside
+  warning                   [660.93-670.37s] removedText is driftSuspect: built from cues that
+                            claim a word starts inside measured silence. Do not trust it without
+                            a check (vcut peek or say --transcribe over the span). This
+                            proposal's own span, not commit's merged one — a clean read here does
+                            not guarantee a clean read once commit builds it.
+```
+
+One scope limit remains, named in the warning itself: this checks each proposal's own raw span,
+not the merged span `commit` produces once it fuses a proposal with a neighbouring silence cut or
+another proposal touching the same place. A clean read here does not guarantee a clean read once
+`commit` builds it — only that the words this proposal itself claims to remove do not already
+contradict the session's cached silences. `driftSuspect` is never persisted to `proposals.json`;
+it is recomputed from the session's cached transcript and detect report every time a proposal is
+read back, so it can never go stale relative to the cache it is checked against. If `detect`'s own
+drift warning fired on this recording, confirm a specific span with `peek` before treating what
+`cut --list` shows as settled.
 
 **The session must already exist.** Unlike `open` and `peek`, `cut` never creates one: cutting
 against a session nobody opened is a caller mistake, not a flow this command smooths over. The

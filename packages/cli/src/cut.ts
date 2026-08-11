@@ -45,7 +45,8 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
-import { parseSrt, type Word } from './detect.ts'
+import { driftSuspectSpan } from './build-edl.ts'
+import { parseSrt, type SilenceCandidate, type Word } from './detect.ts'
 import { emitJson, heading, line, type Mode, nextStep, resolveMode, UsageError } from './output.ts'
 import { resolveRef } from './peek.ts'
 import { wordsInWindow } from './say.ts'
@@ -236,6 +237,34 @@ export const quoteRemovedText = (span: Span, words: Word[]): string =>
     .join(' ')
     .trim()
 
+/**
+ * Annotates each proposal with `driftSuspect`, reusing build-edl.ts's `driftSuspectSpan` — the
+ * same heuristic `commit` computes its report from — rather than a second copy of that check.
+ *
+ * Scoped to each proposal's own raw span, not the merged span `commit` checks: a proposal has
+ * not been merged with silence cuts or its neighbours yet, and that merge only exists once
+ * `commit` runs against the full accumulated set. This is the honest mid-round read named in
+ * the manual's own caveat — a clean read here does not guarantee a clean read once `commit`
+ * builds the merged span, only that the words this proposal itself claims to remove do not
+ * already contradict the session's measured silences.
+ *
+ * `words` and `silences` come from the same cached transcript and detect report every other
+ * proposal-time read in this file already uses, so this never re-transcribes or re-detects.
+ */
+export const annotateDriftSuspect = (
+  proposals: SessionProposal[],
+  words: Word[],
+  silences: SilenceCandidate[],
+): SessionProposal[] => {
+  if (words.length === 0 || silences.length === 0) {
+    return proposals
+  }
+  return proposals.map((proposal) => {
+    const span = { startMs: proposal.startMs, endMs: proposal.endMs }
+    return driftSuspectSpan(span, words, silences) ? { ...proposal, driftSuspect: true } : proposal
+  })
+}
+
 export const cutNext = (input: string, span: Span): Array<{ question: string; verb: string }> => [
   {
     question: 'hear the span before committing',
@@ -246,6 +275,11 @@ export const cutNext = (input: string, span: Span): Array<{ question: string; ve
     verb: `vcut commit ${input} --output <master path> --campaign <id>`,
   },
 ]
+
+// Same wording style as build-edl.ts's own driftSuspect warning line, scoped to a proposal's
+// own span rather than the merged one commit checks — see annotateDriftSuspect.
+const driftWarning = (proposal: SessionProposal): string =>
+  `[${(proposal.startMs / 1000).toFixed(2)}-${(proposal.endMs / 1000).toFixed(2)}s] removedText is driftSuspect: built from cues that claim a word starts inside measured silence. Do not trust it without a check (vcut peek or say --transcribe over the span). This proposal's own span, not commit's merged one — a clean read here does not guarantee a clean read once commit builds it.`
 
 const humanList = (input: string, proposals: SessionProposal[]): string => {
   if (proposals.length === 0) {
@@ -261,6 +295,11 @@ const humanList = (input: string, proposals: SessionProposal[]): string => {
     )
     lines.push(line('', `reason: ${proposal.reason}`))
   })
+  for (const proposal of proposals) {
+    if (proposal.driftSuspect === true) {
+      lines.push(line('warning', driftWarning(proposal)))
+    }
+  }
   return lines.join('\n')
 }
 
@@ -276,6 +315,9 @@ const humanAccepted = (
     line('reason', proposal.reason),
     line('removedText', proposal.removedText || '(no transcript cached in this session)'),
   ]
+  if (proposal.driftSuspect === true) {
+    lines.push(line('warning', driftWarning(proposal)))
+  }
   for (const hint of hints) {
     lines.push(nextStep(hint.verb))
   }
@@ -312,8 +354,21 @@ export const cutCommand = async (argv: string[]): Promise<void> => {
     )
   }
 
+  // Loaded once per invocation and reused across --list, --drop, and the accept path below:
+  // the same cached transcript and detect report every other proposal-time read here already
+  // draws from, never a re-transcription or re-detection.
+  const transcriptPathForDrift = cachedTranscriptPath(session.dir)
+  const wordsForDrift = existsSync(transcriptPathForDrift)
+    ? parseSrt(readFileSync(transcriptPathForDrift, 'utf8')).words
+    : []
+  const silencesForDrift = cachedDetect(session.dir)?.silences ?? []
+
   if (argv.includes('--list')) {
-    const proposals = readProposalsFile(session.dir)
+    const proposals = annotateDriftSuspect(
+      readProposalsFile(session.dir),
+      wordsForDrift,
+      silencesForDrift,
+    )
     if (mode === 'json') {
       emitJson({ version: 1, input: resolvedMedia, sessionDir: session.dir, proposals })
       return
@@ -335,6 +390,7 @@ export const cutCommand = async (argv: string[]): Promise<void> => {
     } finally {
       releaseLock(session.dir)
     }
+    remaining = annotateDriftSuspect(remaining, wordsForDrift, silencesForDrift)
     if (mode === 'json') {
       emitJson({
         version: 1,
@@ -389,11 +445,7 @@ export const cutCommand = async (argv: string[]): Promise<void> => {
     }
   }
 
-  const transcriptPath = cachedTranscriptPath(session.dir)
-  const removedText =
-    existsSync(transcriptPath) === false
-      ? ''
-      : quoteRemovedText(span, parseSrt(readFileSync(transcriptPath, 'utf8')).words)
+  const removedText = quoteRemovedText(span, wordsForDrift)
 
   const proposal: SessionProposal = {
     startMs: span.startMs,
@@ -409,6 +461,12 @@ export const cutCommand = async (argv: string[]): Promise<void> => {
   } finally {
     releaseLock(session.dir)
   }
+  const accepted: SessionProposal =
+    wordsForDrift.length > 0 &&
+    silencesForDrift.length > 0 &&
+    driftSuspectSpan(span, wordsForDrift, silencesForDrift)
+      ? { ...proposal, driftSuspect: true }
+      : proposal
 
   const hints = cutNext(resolvedMedia, span)
   if (mode === 'json') {
@@ -417,11 +475,11 @@ export const cutCommand = async (argv: string[]): Promise<void> => {
       input: resolvedMedia,
       sessionDir: session.dir,
       refs: usedRefs,
-      accepted: proposal,
-      transcriptPresent: existsSync(transcriptPath),
+      accepted,
+      transcriptPresent: existsSync(transcriptPathForDrift),
       next: hints,
     })
     return
   }
-  console.log(humanAccepted(resolvedMedia, proposal, hints))
+  console.log(humanAccepted(resolvedMedia, accepted, hints))
 }
