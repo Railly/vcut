@@ -21,9 +21,15 @@ Stopping after one round leaves work that looks like polish and is not.
 
 ### The round
 
-With a session open (`vcut open recording.mp4 --preset clean --lang es --transcript words.srt`,
-once), `cut` and `commit` are the round — no `proposals.json` to open and hand-edit, no
-`--detect`/`--semantic` paths to re-type each pass:
+A round starts with a session, opened once:
+
+```bash
+vcut open recording.mp4 --preset clean --lang es --transcript words.srt   # once
+```
+
+`open` caches the detect pass and turns its silences into stable block refs (`b001`, `b002`,
+...). From there, `cut` and `commit` are the round — no `proposals.json` to open and hand-edit,
+no `--detect`/`--semantic` paths to re-type each pass:
 
 ```bash
 vcut cut recording.mp4 --refs b042..b044 --kind repetition --reason "..."  # per finding
@@ -37,10 +43,37 @@ vcut semantic review --edl edl.json --detect detect.json --terse \
 vcut rounds recording.mp4 --diff   # what changed since the last round
 ```
 
-`commit` renders `--audio-only` by default, the same rule the stateless round below already
-follows, and records the round in the session's own `rounds/round-N/` — no `N=1` counter to
-bump by hand. Without a session, the same round is the stateless pipeline this replaces,
-calling the identical build seam directly:
+`commit` renders `--audio-only` by default and records the round in the session's own
+`rounds/round-N/` — no `N=1` counter to bump by hand, and `vcut rounds --diff` compares it
+against the previous round without you tracking which file was which.
+
+**A finding enters the session no matter which coordinate system it was born in.** That is the
+whole point of running the round through `cut` rather than hand-building an EDL: `--refs` takes
+a block ref, `--span` takes raw seconds, and `--start-ms`/`--end-ms` takes raw milliseconds — the
+unit `say`, `silences`, `peek`, and `semantic export` already emit. A line from `semantic export`
+carries its own `nearestRef` and goes straight to `vcut cut --refs <nearestRef>`; a boundary from
+`vcut converge` or `vcut silences` comes back in milliseconds and goes straight to `vcut cut
+--start-ms <n> --end-ms <n>`. Nothing you found has to be converted by hand or reasoned about in
+terms of which workflow "fits" it — every coordinate system has a direct path into `cut`.
+
+`vcut audit` and `vcut nonspeech --verify` belong inside this loop, against the same
+`--audio-only` `.wav` `commit` already rendered: neither reads a frame, `audit` correlates
+waveforms and `nonspeech` classifies audio, so holding them for a video render answers no
+question either one is asking. Render video once, at the end, for `vcut joins` and for the
+human who watches the file.
+
+`vcut joins --edl edl-$N.json --render cut-$N.mp4 --report report-$N.json --lang es` replaces the `locate` + `say --transcribe` round for every semantic cut in one call — a real 11.7-minute run verified 9 joins that way for about 14 calls, before `joins` existed. Each `reading` of `removed-text-leaked` or `check-by-ear` is a place to look, not a verdict: confirm with the wider `say --transcribe` window `next` names before folding anything back into a proposal.
+
+Close a `nonspeech` hit with `--verify`, not by reading the whole-file transcript. That transcript is exactly the instrument that could not see this class of sound in the first place, so checking a hit against it is circular: measured on a real 7.5-minute run, 18 spans closed that way were all read as breaths and seven were audible "eeeh" fillers a listener caught immediately. `--verify` re-transcribes a short window around each span instead and reports which are `vocalization-suspect`, `words-around`, or `empty`.
+
+**Read `semanticCuts[].removedText` in the build's own JSON before rendering.** Every accepted proposal reports the transcript text its final span actually removes, which can drift from what the proposal asked for once it merges with a neighbouring cut. A repetition cut once removed "todos estamos" instead of the intended "en nuestra propia" this way, invisible until a render and a re-transcription caught it — `removedText` makes that visible at build time. `edl build` also warns when a span's removed text and its own `reason` share too little in common.
+
+`--terse` drops the instructions block, which is identical every round and was 72% of one measured payload. Read it once on the first call, then leave it out.
+
+### The stateless pipeline is an escape hatch, not an alternative
+
+Before a session, the same round was `edl build` + `render` + hand-edited `proposals.json`,
+called directly:
 
 ```bash
 N=1   # bump every round: the renderer refuses to overwrite
@@ -58,20 +91,28 @@ vcut semantic check --proposals proposals.json --detect detect.json \
   --review review-$N.json          # exit 2 while a repeated phrase goes unnamed
 ```
 
-Then fold the findings into a proposal — `vcut cut` with a session, `proposals.json` by hand
-without one — and run it again. `vcut audit` and `vcut nonspeech --verify` belong inside this
-loop, against the same `cut-$N.wav` this round already rendered: neither reads a frame,
-`audit` correlates waveforms and `nonspeech` classifies audio, so holding them for a video
-render answers no question either one is asking. Render video once, at the end, for
-`vcut joins` and for the human who watches the file.
+This still works, `commit` calls the identical build seam internally, and it is not deprecated.
+But it is the exception, not the default: **use it for a one-off cut with no second round, or a
+script with no long-lived working directory** — a CI job that renders once and exits has nothing
+to gain from a session it will never revisit. Anything that expects more than one round should
+open a session and stay in it.
 
-`vcut joins --edl edl-$N.json --render cut-$N.mp4 --report report-$N.json --lang es` replaces the `locate` + `say --transcribe` round for every semantic cut in one call — a real 11.7-minute run verified 9 joins that way for about 14 calls, before `joins` existed. Each `reading` of `removed-text-leaked` or `check-by-ear` is a place to look, not a verdict: confirm with the wider `say --transcribe` window `next` names before folding anything back into a proposal.
+A fresh agent given the whole manual with no steer on this ran `vcut open` once, at the start,
+and then never called `peek`, `cut`, or `commit` again — it read the session's own JSON files
+under `~/.vcut/sessions/<id>/` directly and hand-built EDLs through the stateless path for every
+round after. Its own retro named the cause precisely: which path it took "is decided by which
+coordinate system your finding happens to be in, not by which workflow is actually better for
+the edit." A finding in milliseconds had an obvious raw-`--span` path and no obvious ref path, so
+it took the path that needed no lookup, one round at a time, until the session was doing nothing
+but sitting unused beside a hand-rolled pipeline that duplicated its job.
 
-Close a `nonspeech` hit with `--verify`, not by reading the whole-file transcript. That transcript is exactly the instrument that could not see this class of sound in the first place, so checking a hit against it is circular: measured on a real 7.5-minute run, 18 spans closed that way were all read as breaths and seven were audible "eeeh" fillers a listener caught immediately. `--verify` re-transcribes a short window around each span instead and reports which are `vocalization-suspect`, `words-around`, or `empty`.
-
-**Read `semanticCuts[].removedText` in the build's own JSON before rendering.** Every accepted proposal reports the transcript text its final span actually removes, which can drift from what the proposal asked for once it merges with a neighbouring cut. A repetition cut once removed "todos estamos" instead of the intended "en nuestra propia" this way, invisible until a render and a re-transcription caught it — `removedText` makes that visible at build time. `edl build` also warns when a span's removed text and its own `reason` share too little in common.
-
-`--terse` drops the instructions block, which is identical every round and was 72% of one measured payload. Read it once on the first call, then leave it out.
+**Reading `~/.vcut/sessions/<id>/` files directly is unsupported.** `cut`, `commit`, `peek`, and
+`rounds` are not a thin wrapper around that directory — they check the block generation (`gen`)
+against what a ref was resolved from, resolve stale refs as a named usage error instead of
+silently against boundaries that no longer exist, take the advisory lock before a write, and
+patch cached transcript paths so a moved file still resolves. None of that runs when a file
+under a session directory is opened and read by hand. The layout itself is free to change
+between releases precisely because the verbs are the contract, not the files backing them.
 
 ### Where to look first
 

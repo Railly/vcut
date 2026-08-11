@@ -15,12 +15,17 @@ Install: `npm install -g @crafter/vcut` (needs `ffmpeg` and `ffprobe` on PATH)
 This file is a discovery stub, not the usage guide. Before running any `vcut` command, load the real workflow content from the CLI:
 
 ```bash
-vcut skills get core        # the pipeline, presets, thresholds, approval boundary
+vcut skills get core        # the session flow, the round, presets, approval boundary
 ```
 
-The CLI serves skill content that always matches the installed version, so instructions never go stale. The content in this stub cannot change between releases, which is why it just points at `skills get core`.
+That is the whole always-loaded document, and it is deliberately small. The reasoning behind each command lives in sections you load only when the question comes up, so a two-minute clip does not pay for the deep dives an hour of footage needs:
 
-Run `vcut skills list` to see everything available on the installed version.
+```bash
+vcut skills list                          # every section, with what it answers
+vcut skills get core --section cut        # one section, on its own
+```
+
+The CLI serves skill content that always matches the installed version, so instructions never go stale. The content in this stub cannot change between releases, which is why it just points at `skills get core`. Do not assume the section list in an old copy of this stub is current either — `vcut skills list` is where it comes from.
 
 ## The shape of the work
 
@@ -28,11 +33,14 @@ Every edit ends at the same artifact: an EDL a human reads and can disagree with
 file is written. `vcut edl build` writes it as `draft`, every segment `proposed`; `vcut render`
 previews it freely and refuses a master until a human approves it.
 
-How you get from a raw recording to that EDL has more than one path — a single-pass
-`detect` -> `edl build` -> `render`, or a session opened with `vcut open` that a longer edit
-runs several rounds inside — and which one applies changes across releases faster than this
-stub does. `vcut skills get core` carries the current shape of the work, verb by verb; do not
-treat the command list in an old copy of this stub as current.
+How you get from a raw recording to that EDL is a session: `vcut open` once, then `peek`,
+`cut`, and `commit` per round, with `rounds --diff` saying what each round changed. Every
+finding reaches `cut` whatever coordinate system it arrived in — a transcript line by its
+`nearestRef`, a raw position by `--start-ms`/`--end-ms`. The stateless
+`detect` -> `edl build` -> `render` pipeline underneath it is an escape hatch for a one-off cut
+or a script with no working directory, not the default. `vcut skills get core` carries the
+current shape of the work, verb by verb; do not treat the command list in an old copy of this
+stub as current.
 
 ## Two rules that matter before you run anything
 

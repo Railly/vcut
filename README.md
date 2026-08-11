@@ -103,7 +103,7 @@ Piped or captured, the same command emits JSON. No flag needed.
 | `vcut rounds <media> [--diff N M]` | A session's committed rounds; `--diff` compares two build reports (removalPercent, segments, semantic cuts by span overlap) |
 | `vcut session list\|gc [flags]` | Lists sessions with size and lock state; `gc` clears disposable session cache (dry-run by default, `--apply` to delete) |
 | `vcut schema [name]` | The JSON contract per command, versioned |
-| `vcut skills get vcut` | The bundled agent manual, as markdown |
+| `vcut skills get core` | The bundled agent manual, as markdown. `--section <name>` serves one deep-dive section; `vcut skills list` shows what sections exist |
 | `vcut init` | Installs everything a first run needs, and reports what it could not |
 | `vcut doctor` | Checks external dependencies |
 | `vcut setup classifier` | Fetches the optional non-speech classifier |
@@ -182,10 +182,11 @@ The installed skill is a thin stub: it points at the CLI rather than copying its
 contents, so the guidance never drifts from the installed version.
 
 ```bash
-vcut skills list       # what the installed version ships
-vcut skills get core   # the usage guide, as raw markdown
-vcut skills get debug  # how to investigate a cut that came out wrong
-vcut schema detect     # the JSON contract, versioned
+vcut skills list                     # what the installed version ships, including core's sections
+vcut skills get core                 # the small, always-loaded usage guide, as raw markdown
+vcut skills get core --section cut   # one deep-dive section, loaded only when needed
+vcut skills get debug                # how to investigate a cut that came out wrong
+vcut schema detect                   # the JSON contract, versioned
 ```
 
 `debug` is worth reading before diagnosing anything. Every method in it is cheap; none of

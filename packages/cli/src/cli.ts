@@ -58,12 +58,12 @@ Usage:
   vcut nonspeech <render> [--verify] Find audible sound that is not language
   vcut open <media> [flags]          Open or resume a session, map its blocks with stable refs
   vcut peek <media> (--ref|--at)     The four views of a position, aligned, disagreement named
-  vcut cut <media> --refs|--span     Propose a semantic cut against a session, see what it removes
+  vcut cut <media> --refs|--start-ms|--span  Propose a semantic cut against a session, see what it removes
   vcut commit <media> [flags]        Build + render a session's proposals into a draft EDL
   vcut rounds <media> [--diff N M]   A session's committed rounds, diffed between two
   vcut session list|gc [flags]       See what a session store holds, and clear it explicitly
   vcut schema [name]                 Print the JSON contract for a command
-  vcut skills list|get [name]        Read the bundled agent manual
+  vcut skills list|get|path [name]   Read the bundled agent manual, or one section of it
   vcut doctor                        Check external dependencies
   vcut init [--no-skills]            Install everything a first run needs
   vcut setup classifier              Fetch the optional non-speech classifier
@@ -416,6 +416,7 @@ const CONTRACTS: Record<string, unknown> = {
       'The EDL itself validates against schemas/edl.schema.json.',
       'Every segment is written as proposed and the EDL as draft. Nothing is approved here.',
       'Read semanticCuts[].removedText before rendering: it is the transcript text the span actually removes, not the raw proposal. A warning fires when removedText and reason share fewer than half their carrying words and removedText has 4 or more of them, which is the corrective for a span drifting onto the wrong words unnoticed.',
+      '--report-json <path> writes this whole summary to that path regardless of stdout mode, so --human on stdout and the JSON report vcut joins --report reads come from one build rather than two. Same shape vcut commit writes as rounds/round-N/report.json.',
       'driftSuspect is present and true only when removedText is built from cues the same drift check detect runs would flag: a word claiming to start inside measured silence. Absent (not false) when the span is clean. Do not trust removedText on a driftSuspect span without a check (peek or say --transcribe over it); the field is never re-transcribed automatically.',
     ],
   },
@@ -710,6 +711,7 @@ const CONTRACTS: Record<string, unknown> = {
     },
     notes: [
       'Preview mode accepts proposed segments; master mode requires approval.',
+      'render blocks in the foreground until ffmpeg exits and streams one progress line to stderr per ffmpeg report. There is no background mode, so a caller never polls for the output file or greps a process table to learn a render is alive: when the command returns, the render is done. --quiet drops the progress lines and renders the same file.',
       'Audio is normalised to the EDL speechTargetLufs, on the concatenated result rather than per segment.',
       'The renderer validates its own output against the EDL and fails on a mismatch.',
       '--audio-only renders the audio alone for iterating, using the same audio graph as the video path. Measured at 0.25s against 31.8s on one 22-segment EDL. It writes lossless audio, defaults to the EDL output path with a .wav extension, and is refused in master mode.',
@@ -729,6 +731,83 @@ const schemaCommand = (argv: string[]): void => {
     throw new UsageError(`unknown schema: ${name}. Try one of ${Object.keys(CONTRACTS).join(', ')}`)
   }
   emitJson(contract)
+}
+
+// What each on-demand section of the core manual answers, in the order a reader meets them:
+// the flow first, then the methodology, then per-command detail. The blurb is the whole point
+// of the table — a section name alone ("detect", "joins") does not tell a caller whether the
+// question they have is in it, which is how an agent ends up loading all of them to find out.
+// Ordered rather than alphabetical because `skills list` prints it as a reading order.
+export const CORE_SECTIONS: { name: string; reads: string }[] = [
+  {
+    name: 'workflow',
+    reads: 'running a whole edit end to end, including the stateless path in full',
+  },
+  {
+    name: 'rounds-methodology',
+    reads: 'working a round: what to read, how to widen a span, when a boundary lies',
+  },
+  { name: 'invariants', reads: 'deciding whether the edit is done' },
+  { name: 'how-hard-to-cut', reads: 'deciding whether a cut is worth making' },
+  { name: 'semantic', reads: 'writing proposals against the exported lines' },
+  {
+    name: 'muletillas',
+    reads: 'a filler is audible in the render and invisible in every transcript',
+  },
+  { name: 'classifier', reads: 'wondering why non-speech needs a model and not a statistic' },
+  { name: 'eleven-runs', reads: 'about to run this for the first time: 7 habits, four failures' },
+  { name: 'detect', reads: 'picking a preset, or reading a drift warning' },
+  { name: 'open', reads: 'refs, gen, and what a session caches' },
+  { name: 'peek', reads: 'four views of a position and viewsDisagree' },
+  { name: 'cut', reads: 'ref ranges, --start-ms, --span, --list/--drop' },
+  { name: 'commit', reads: 'what a commit builds, renders, and records' },
+  { name: 'rounds', reads: 'comparing two committed rounds' },
+  { name: 'session', reads: 'the store, gc, and the advisory lock' },
+  { name: 'edl-build', reads: 'removedText, driftSuspect, boundary warnings, --crop' },
+  { name: 'render', reads: 'audio-only, progress, loudness, reproducibility' },
+  { name: 'silences', reads: 'placing a boundary at sub-second resolution' },
+  { name: 'suspects', reads: 'where to look first in a long file' },
+  { name: 'say', reads: 'reading versus re-transcribing a position' },
+  { name: 'converge', reads: 'finding where a repeated phrase stops coming back' },
+  { name: 'joins', reads: 'verifying every semantic join after a render' },
+  { name: 'audit', reads: 'checking a render carried the material the EDL named' },
+  { name: 'locate', reads: 'translating between master time and source time' },
+  { name: 'nonspeech', reads: 'the classifier, --verify, and its readings' },
+  { name: 'limits', reads: 'what vcut refuses to do' },
+]
+
+// Sections live beside the skill they belong to, as <skill>/sections/<name>.md. Only `core` has
+// any today; resolving through the skill name rather than hardcoding `core` means a second
+// skill growing sections needs no change here.
+export const sectionPath = (directory: string, skill: string, section: string): string =>
+  join(directory, skill, 'sections', `${section}.md`)
+
+// Split out of skillsCommand so the flag reading is testable without a filesystem: --section
+// <name> and --section=<name>, the same two forms --fields and --jq already accept. Returns
+// undefined when the flag is absent, and throws rather than guessing when it is present with
+// nothing usable after it — a bare `--section` is a caller who meant to name one.
+export const parseSection = (args: string[]): string | undefined => {
+  const index = args.indexOf('--section')
+  if (index !== -1) {
+    const value = args[index + 1]
+    if (value === undefined || value.startsWith('-')) {
+      throw new UsageError(
+        '--section needs a name, e.g. --section cut. Run vcut skills list for the sections.',
+      )
+    }
+    return value
+  }
+  const inline = args.find((arg) => arg.startsWith('--section='))
+  if (inline === undefined) {
+    return undefined
+  }
+  const value = inline.slice('--section='.length)
+  if (value.length === 0) {
+    throw new UsageError(
+      '--section needs a name, e.g. --section cut. Run vcut skills list for the sections.',
+    )
+  }
+  return value
 }
 
 const skillsCommand = (argv: string[]): void => {
@@ -751,8 +830,14 @@ const skillsCommand = (argv: string[]): void => {
         .filter((entry) => entry.isFile())
         .map((entry) => ({ skill: name, name: entry.name, path: join(dir, entry.name) }))
     })
+    // Only the sections that actually exist on disk, so a listing can never advertise a
+    // section `get --section` would then refuse. The registry is the order and the blurb; the
+    // filesystem is the authority on presence.
+    const sections = CORE_SECTIONS.filter((section) =>
+      existsSync(sectionPath(directory, 'core', section.name)),
+    )
     if (mode === 'json') {
-      emitJson({ skills: names, scripts })
+      emitJson({ skills: names, scripts, sections })
       return
     }
     console.log(
@@ -764,6 +849,12 @@ const skillsCommand = (argv: string[]): void => {
           : [
               heading('bundled scripts'),
               ...scripts.map((script) => line(`${script.skill}/${script.name}`, script.path)),
+            ]),
+        ...(sections.length === 0
+          ? []
+          : [
+              heading('core sections (vcut skills get core --section <name>)'),
+              ...sections.map((section) => line(section.name, section.reads)),
             ]),
       ].join('\n'),
     )
@@ -785,6 +876,33 @@ const skillsCommand = (argv: string[]): void => {
     // `core` is the usage guide. `vcut` is the discovery stub that points here,
     // so a bare `skills get` should serve the content, not the pointer.
     const name = positional(rest) ?? 'core'
+
+    const section = parseSection(rest)
+
+    if (section !== undefined) {
+      const file = sectionPath(directory, name, section)
+      if (!existsSync(file)) {
+        // Names the sections rather than only refusing: a caller guessing a section name is one
+        // list away from the right one, and making them run a second command to find out is the
+        // friction this whole split exists to remove.
+        const available = CORE_SECTIONS.filter((candidate) =>
+          existsSync(sectionPath(directory, name, candidate.name)),
+        ).map((candidate) => candidate.name)
+        throw new UsageError(
+          available.length === 0
+            ? `${name} has no sections. Run vcut skills get ${name} for the whole document.`
+            : `no section named ${section} in ${name}. Available: ${available.join(', ')}`,
+        )
+      }
+      process.stdout.write(readFileSync(file, 'utf8'))
+      return
+    }
+
+    // Without --section this serves the small always-loaded core, not every section
+    // concatenated. Backward compatible in the sense that matters: the caller that ran
+    // `skills get core` before still gets the document that tells it how to run an edit. Serving
+    // the full concatenation instead would keep the ~35-40k token tax this split exists to
+    // remove, and would do it to exactly the callers who never asked for a deep dive.
     const file = join(directory, name, 'SKILL.md')
     if (!existsSync(file)) {
       throw new UsageError(`no skill named ${name}. Run vcut skills list.`)
@@ -793,7 +911,7 @@ const skillsCommand = (argv: string[]): void => {
     return
   }
 
-  throw new UsageError('Usage: vcut skills list | get <name> | path [name]')
+  throw new UsageError('Usage: vcut skills list | get <name> [--section <name>] | path [name]')
 }
 
 const isPath = (value: string | undefined): boolean =>
