@@ -38,3 +38,35 @@ span regardless of which raw proposal edge produced it.
 
 `reason` is read by a human deciding whether to approve. Say what is lost, not what rule
 matched. Proposing nothing is a valid answer.
+
+## metaSpeech
+
+`review`'s output carries a `metaSpeech` field: spans of first-person editing verbs and
+self-directed commands ("rebobinando", "corta eso", "otra vez", "scratch that") that sit
+outside every span this EDL already cut. It exists because a run's candidate search was a grep
+over markers it had already seen: the recording carried five spoken self-directed edit markers,
+the agent cut four, and "ah, ok, otra, rebobinando" chained grammatically into the next clause
+and read straight past it. `metaSpeech` is checked structurally against every line instead,
+regardless of what a round already looked at.
+
+The lexicon is review vocabulary, not a detector run separately. Seeded from the issue: Spanish
+stems `rebobin-`, `corta-`, `borra-`, `olvid-`, `repit-`/`repetir`, plus the fixed phrases "eso
+no", "otra vez", "de nuevo", "mejor dicho", "no sirve"; English `rewind`, `again`, `redo`, plus
+"cut that", "delete that", "scratch that", "forget that", "take two". Stems match conjugated
+forms as a prefix of the folded, lowercased word, so "rebobinando", "rebobiné", and "córtalo"
+all fire from one entry. Diacritics fold the same way `foldDiacritics` already does for
+`repeated`.
+
+It is a candidate list, not a verdict, same as `repeated`. `corta` fires on the imperative
+("corta eso") and on the adjective ("una versión corta") alike: telling them apart needs
+grammar this word-level lexicon does not parse, and building that parser for one ambiguous stem
+was not worth it against reading the line (MSW). `REVIEW_INSTRUCTIONS` says so explicitly and
+requires every `metaSpeech` entry to be answered the same way every entry in `repeated` is:
+propose a cut, or say why it stays.
+
+A lexicon on its own is not the fix for the failure that motivated it. The agent's own retro on
+the run that shipped "rebobinando" put it plainly: a lexicon without the rounds gate just gives
+the next run a bigger list to skim past. The gate — refusing to call an edit converged on fewer
+than two committed rounds — is #36, in flight separately. `metaSpeech` makes the marker
+structurally visible in every round's output; #36 is what stops a round from reading past it
+anyway.
