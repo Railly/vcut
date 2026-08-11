@@ -611,6 +611,7 @@ const CONTRACTS: Record<string, unknown> = {
     },
     notes: [
       'Every check the renderer runs is an aggregate: dimensions, frame count, duration. A render whose segments carried the wrong material passes all of them. This compares the audio itself against the source span the EDL points at.',
+      '--render accepts an audio-only render. Every check here decodes a waveform, never a frame, so vcut render --audio-only is enough for every round; render video once, at the end, for the master.',
       'A low score is a place to look, not a verdict. Envelope correlation is weak over short or quiet windows, and loudness normalisation reshapes quiet passages further. Confirm with vcut say before acting on it.',
       'Measured on one 22-segment render: 21 boundaries scored above 0.85, and the one below was verified by transcription to carry the right words.',
     ],
@@ -679,6 +680,7 @@ const CONTRACTS: Record<string, unknown> = {
     },
     notes: [
       'Runs skills/core/scripts/non-speech.py against a rendered preview. Run it on the render, not the source: on raw footage every pause scores as non-speech, correctly and uselessly.',
+      '<render> accepts an audio-only render. The classifier and --verify both decode audio only, never a frame, so the .wav vcut render --audio-only writes is enough for every round; render video once, at the end, for the master.',
       'The classifier is optional (python3, panns-inference, and a ~320MB model under ~/.vcut/panns). Its absence is a supported state, reported as status "classifier-absent" with exit 0, the same policy vcut doctor already applies. Without it, invariant 7 needs a human ear.',
       "vcut calls no model of its own: python3 and trx are binaries on the caller's PATH, exactly like ffmpeg.",
       '--verify exists because reading the whole-file transcript to close a classifier hit is circular for this class of sound: the transcript is exactly what could not see it. It re-transcribes a window of the span plus 1.2s of context on each side and reports what that window actually says.',
@@ -701,6 +703,7 @@ const CONTRACTS: Record<string, unknown> = {
       'Audio is normalised to the EDL speechTargetLufs, on the concatenated result rather than per segment.',
       'The renderer validates its own output against the EDL and fails on a mismatch.',
       '--audio-only renders the audio alone for iterating, using the same audio graph as the video path. Measured at 0.25s against 31.8s on one 22-segment EDL. It writes lossless audio, defaults to the EDL output path with a .wav extension, and is refused in master mode.',
+      'The audio-only verification loop: render --audio-only, then vcut audit and vcut nonspeech against that same .wav — both read the waveform only and accept it wherever they accept a video render. Render video once, at the end, for the master.',
     ],
   },
 }

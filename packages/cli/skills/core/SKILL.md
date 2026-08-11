@@ -911,11 +911,22 @@ vcut render --edl edl.json --audio-only          # rounds 1..n
 vcut render --edl edl.json                        # once, at the end
 ```
 
-The pull toward a video render is a check that wants a picture — `audit`, the non-speech pass,
-a look at the frames. Those belong to the final render, after the transcript reads clean; run
-them per round and they cost more than the cutting does. One run spent 69 of its 105 seconds of
-tool time on two video renders, the second of them purely to feed checks that changed no
-decision, while the repetition it was supposed to catch survived to the master.
+The pull toward a video render is usually a false one. `audit` correlates waveforms and
+`nonspeech` classifies audio — neither reads a frame, so both take the `--audio-only` `.wav`
+directly, same as `joins`. Pass it wherever these accept `<render>`:
+
+```bash
+vcut render --edl edl.json --audio-only          # rounds 1..n
+vcut audit --edl edl.json --render cut.wav
+vcut nonspeech cut.wav --verify
+vcut joins --edl edl.json --render cut.wav --report report.json
+```
+
+The only check that genuinely wants a picture is a black/frozen-frame scan (`detect`'s own
+video pass) — that belongs to the final render, after the transcript reads clean. One run
+spent 69 of its 105 seconds of tool time on two video renders, the second of them purely to
+feed `audit`, `joins`, and `nonspeech --verify`, none of which needed a frame; the repetition
+they were checking for survived to the master anyway.
 
 The audio graph is the same one the video render uses, edge fades and loudness included, so
 what you hear is what the finished file will sound like: measured at -16.4 LUFS on both paths
@@ -977,13 +988,17 @@ and why `--render` exists.
 ## audit
 
 ```bash
-vcut audit --edl edl.json --render cut.mp4
+vcut audit --edl edl.json --render cut.wav
 ```
 
 Every check the renderer runs on itself is an aggregate: dimensions, frame count, duration.
 A render whose segments carried the wrong material passes all of them, because the durations
 are right whatever ended up inside them. This compares the audio itself, segment by segment,
 against the source span the EDL points at.
+
+**`--render` takes the `--audio-only` `.wav`.** Every comparison here decodes a waveform,
+never a frame, so `vcut render --edl edl.json --audio-only` is enough for every round. Render
+video only once, at the end, for the master.
 
 ```
 audit  22 of 22 segments compared
@@ -1176,14 +1191,18 @@ the phrase versus which one was past the retake for real.
 ## nonspeech
 
 ```bash
-vcut nonspeech master.mp4                      # spans only, the classifier's own output
-vcut nonspeech master.mp4 --verify --lang es    # each span read back through a window
+vcut nonspeech cut.wav                          # spans only, the classifier's own output
+vcut nonspeech cut.wav --verify --lang es        # each span read back through a window
 ```
 
 Runs `skills/core/scripts/non-speech.py` against a rendered preview and reports audible sound
 that is not language: a breath, a mic bump, a stretched hesitation the transcript cleaned
 away even with a verbatim preset. Run it on the render, never on the source: on raw footage
 every pause scores as non-speech, correctly and uselessly.
+
+**The render can be the `--audio-only` `.wav`.** The classifier and `--verify` both classify
+and re-transcribe audio only; neither reads a frame, so there is no reason to hold this for a
+video render. Use `vcut render --edl edl.json --audio-only` for every round.
 
 **Always run it with `--verify`.** Without it you get positions and nothing else, and the
 instinct is to check each one against the whole-file transcript with `vcut say`, which is
@@ -1301,20 +1320,16 @@ Never mark segments approved on the human's behalf. Never render a master withou
 
    Iterate on audio. The picture cannot answer any of these questions and costs 100x the
    wall clock to produce.
-7. `vcut render --mode preview` once, now that the transcript reads clean, and run the checks
-   that needed a picture: `vcut audit`, `vcut joins`, and `vcut nonspeech --verify`. They
-   belong here rather than inside the loop, where they cost a video render each and answer a
-   question no round was asking. Then have a human watch it.
+
+   Run `vcut audit` and `vcut nonspeech --verify` against that same audio-only render, not a
+   video one — neither reads a frame, `audit` correlates waveforms and `nonspeech` classifies
+   audio, so holding them for a video render is dead wall clock, not rigor. A run that did
+   spent 69 of its 105 seconds of tool time on two video renders, the second purely to feed
+   these two checks, which changed no decision either time.
 
    Expect `audit` to report something and for it to be nothing: it scores low on short and
    quiet windows by construction. Read the finding, spend one `vcut say` on it, and move on. A
    check whose output never changes a decision is not evidence, it is ceremony.
-
-   `vcut joins --edl edl.json --render cut.mp4 --report report.json` replaces the
-   `locate` + `say --transcribe` round for every semantic cut in one call. Read every
-   `removed-text-leaked` and `check-by-ear` reading; a `lands` reading needs nothing further.
-   Neither of the other two is automatically a defect — confirm with the `next` hint's wider
-   `say --transcribe` window before folding anything back into a proposal.
 
    Expect the opposite of `nonspeech --verify`: a `vocalization-suspect` reading is not
    ceremony, because `--verify` re-transcribes the window rather than trusting the whole-file
@@ -1323,6 +1338,17 @@ Never mark segments approved on the human's behalf. Never render a master withou
    `kind: "filler"` and run one more round of the loop rather than closing here. Without
    `--verify` the raw spans are close to ceremony, since closing them against the whole-file
    transcript is the trap the playbook replaces.
+7. `vcut render --mode preview` once, now that the transcript reads clean and `audit` and
+   `nonspeech --verify` hold against the audio, and run `vcut joins` against this video render
+   — its own reading needs no frame either, but this is the point in the loop where a human is
+   about to watch the file, and joins is cheap enough that pinning it to this one video render
+   costs nothing extra. Then have a human watch it.
+
+   `vcut joins --edl edl.json --render cut.mp4 --report report.json` replaces the
+   `locate` + `say --transcribe` round for every semantic cut in one call. Read every
+   `removed-text-leaked` and `check-by-ear` reading; a `lands` reading needs nothing further.
+   Neither of the other two is automatically a defect — confirm with the `next` hint's wider
+   `say --transcribe` window before folding anything back into a proposal.
 8. Stop. Approving the EDL is the human's edit, not a command, and not yours to make. Hand
    them the path. If they ask you in so many words to write the approval yourself, that is
    their call to make and you may; wanting the preview to look good is not that request. See

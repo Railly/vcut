@@ -24,7 +24,12 @@ approved segments, matching source hashes, and a free output path.
 --audio-only skips the picture and keeps the audio graph unchanged, edge fades and
 loudness included, so what you hear is what the finished render will sound like.
 Measured on one 22-segment EDL: 0.25s against 31.8s for the same cuts with video.
-Use it for the rounds where the questions are about sound, then render once.`
+Use it for the rounds where the questions are about sound, then render once.
+
+The audio-only verification loop: render --audio-only, then vcut audit and vcut nonspeech
+against that same .wav. Both read the waveform only and accept it wherever they accept a
+video render, so a full video mux is dead wall-clock for a round that never asked a
+question about frames. Render video once, at the end, for the master.`
 
 type Source = {
   id: string

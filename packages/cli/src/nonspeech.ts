@@ -42,6 +42,10 @@ Runs the bundled classifier (skills/core/scripts/non-speech.py) against a render
 Run it on the render, not the source: on raw footage every pause scores as non-speech,
 correctly and uselessly.
 
+Audio-only is enough. The classifier and --verify both work from audio alone, so <render>
+can be a video file or the .wav vcut render --audio-only writes. Use the audio-only render
+for every round; render video once, at the end, for the checks that genuinely need a picture.
+
 Needs python3 on PATH, the panns-inference/scipy/numpy packages, and the classifier model
 under ~/.vcut/panns (fetch it with vcut setup classifier). Absent is a supported state: this
 says so and exits 0, the same way vcut doctor treats a missing classifier, and the check

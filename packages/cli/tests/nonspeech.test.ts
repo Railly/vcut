@@ -1,9 +1,14 @@
-import { describe, expect, test } from 'bun:test'
+import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { run } from '../src/exec.ts'
 import {
   classifierMissing,
   classifyReading,
   hasHesitationToken,
   nonspeechNext,
+  runClassifier,
 } from '../src/nonspeech.ts'
 
 describe('hasHesitationToken', () => {
@@ -112,5 +117,82 @@ describe('nonspeechNext', () => {
       expect(hint.verb.length).toBeGreaterThan(0)
     }
     expect(hints.some((hint) => hint.verb.includes('--verify'))).toBe(true)
+  })
+})
+
+// runClassifier's own contract is "shell to python3, read back JSON": non-speech.py's real
+// decode step (load_audio) is itself a plain ffmpeg call with no video-specific flag, the same
+// -ac/-ar/-c:a decode every other measurement in this codebase runs against a render. A stub
+// script standing in for the real classifier (skipping the ~320MB panns model this suite has
+// no business downloading) proves that path end to end against a .wav render: if ffmpeg could
+// not read an audio-only render the same way it reads a video one, the stub's own decode would
+// fail before it ever got to emit a span.
+const hasFfmpeg = await run('ffmpeg', ['-version'])
+  .then((result) => result.exitCode === 0)
+  .catch(() => false)
+const hasPython3 = await run('python3', ['--version'])
+  .then((result) => result.exitCode === 0)
+  .catch(() => false)
+
+describe.if(hasFfmpeg && hasPython3)('runClassifier against an audio-only render', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'vcut-nonspeech-audio-only-'))
+  const audioOnlyRenderPath = join(dir, 'render.wav')
+  const stubScriptPath = join(dir, 'stub-classifier.py')
+
+  beforeAll(async () => {
+    const built = await run('ffmpeg', [
+      '-v',
+      'error',
+      '-f',
+      'lavfi',
+      '-i',
+      'sine=frequency=440:duration=2',
+      '-c:a',
+      'pcm_s16le',
+      '-y',
+      audioOnlyRenderPath,
+    ])
+    if (built.exitCode !== 0) {
+      throw new Error(built.stderr)
+    }
+
+    // Mirrors non-speech.py's load_audio: decode with ffmpeg into a mono 16kHz wav, no video
+    // flag either way, then report one span sized off the decoded sample count so a failed or
+    // truncated decode of an audio-only render would show up as a wrong span rather than a
+    // silently passing test.
+    writeFileSync(
+      stubScriptPath,
+      `import json, os, subprocess, sys, tempfile, wave
+with tempfile.TemporaryDirectory() as work:
+    wav_path = os.path.join(work, "audio.wav")
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-i", sys.argv[1], "-ac", "1", "-ar", "16000",
+         "-c:a", "pcm_s16le", "-y", wav_path],
+        check=True,
+    )
+    with wave.open(wav_path, "rb") as handle:
+        frames = handle.getnframes()
+        rate = handle.getframerate()
+durationMs = int(frames * 1000 / rate)
+json.dump([{"startMs": 0, "endMs": durationMs}], sys.stdout)
+`,
+    )
+  })
+
+  afterAll(() => {
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  test('reads the render and reports a span sized off the decoded audio', async () => {
+    const outcome = await runClassifier(stubScriptPath, audioOnlyRenderPath)
+    expect('spans' in outcome).toBe(true)
+    if ('spans' in outcome) {
+      expect(outcome.spans).toHaveLength(1)
+      expect(outcome.spans[0]?.startMs).toBe(0)
+      // The fixture is a 2s sine wave; a truncated or failed decode of the .wav render would
+      // report a duration far short of that instead.
+      expect(outcome.spans[0]?.endMs).toBeGreaterThan(1900)
+      expect(outcome.spans[0]?.endMs).toBeLessThanOrEqual(2000)
+    }
   })
 })

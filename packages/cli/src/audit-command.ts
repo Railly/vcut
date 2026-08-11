@@ -33,6 +33,11 @@ Every check the renderer already runs is an aggregate: dimensions, frame count, 
 A render whose segments carried the wrong material passes all of them. This compares the
 audio itself, segment by segment, against the source the EDL says each one came from.
 
+--render accepts an audio-only render. Every measurement here runs on the waveform, never
+the picture, so the .wav vcut render --audio-only writes checks exactly as well as a video
+render of the same cut, at a fraction of the wall clock. Use it for every round; render
+video once, at the end, for the master.
+
 A low score is a place to look, not a verdict. Correlation over a short window is weak on
 quiet passages, and loudness normalisation reshapes them further. Confirm with vcut say
 before believing a number here.`
