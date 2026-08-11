@@ -21,6 +21,27 @@ Stopping after one round leaves work that looks like polish and is not.
 
 ### The round
 
+With a session open (`vcut open recording.mp4 --preset clean --lang es --transcript words.srt`,
+once), `cut` and `commit` are the round — no `proposals.json` to open and hand-edit, no
+`--detect`/`--semantic` paths to re-type each pass:
+
+```bash
+vcut cut recording.mp4 --refs b042..b044 --kind repetition --reason "..."  # per finding
+vcut commit recording.mp4 --output master.mp4 --campaign my-video          # builds + renders
+
+trx transcribe master.wav --words --language es -m large-v3-turbo
+
+vcut semantic review --edl edl.json --detect detect.json --terse \
+  --master master.wav --master-transcript <the .srt trx wrote> > review.json
+
+vcut rounds recording.mp4 --diff   # what changed since the last round
+```
+
+`commit` renders `--audio-only` by default, the same rule the stateless round below already
+follows, and records the round in the session's own `rounds/round-N/` — no `N=1` counter to
+bump by hand. Without a session, the same round is the stateless pipeline this replaces,
+calling the identical build seam directly:
+
 ```bash
 N=1   # bump every round: the renderer refuses to overwrite
 
@@ -37,7 +58,10 @@ vcut semantic check --proposals proposals.json --detect detect.json \
   --review review-$N.json          # exit 2 while a repeated phrase goes unnamed
 ```
 
-Then fold the findings into `proposals.json`, bump `N`, and run it again. Render the video once, at the end, and run `vcut audit`, `vcut joins`, and `vcut nonspeech --verify` there — they need a picture and answer a question no round is asking.
+Then fold the findings into a proposal — `vcut cut` with a session, `proposals.json` by hand
+without one — and run it again. Render the video once, at the end, and run `vcut audit`,
+`vcut joins`, and `vcut nonspeech --verify` there — they need a picture and answer a question
+no round is asking.
 
 `vcut joins --edl edl-$N.json --render cut-$N.mp4 --report report-$N.json --lang es` replaces the `locate` + `say --transcribe` round for every semantic cut in one call — a real 11.7-minute run verified 9 joins that way for about 14 calls, before `joins` existed. Each `reading` of `removed-text-leaked` or `check-by-ear` is a place to look, not a verdict: confirm with the wider `say --transcribe` window `next` names before folding anything back into a proposal.
 

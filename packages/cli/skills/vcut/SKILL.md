@@ -24,32 +24,15 @@ Run `vcut skills list` to see everything available on the installed version.
 
 ## The shape of the work
 
-Three commands, and the middle one is not optional plumbing:
+Every edit ends at the same artifact: an EDL a human reads and can disagree with before any
+file is written. `vcut edl build` writes it as `draft`, every segment `proposed`; `vcut render`
+previews it freely and refuses a master until a human approves it.
 
-```bash
-vcut detect recording.mp4 > detect.json     # candidates, decides nothing
-vcut edl build --detect detect.json \
-  --output master.mp4 --campaign my-video   # draft EDL, every segment proposed
-vcut render --edl edl.json --mode preview   # watch it before approving
-```
-
-The EDL exists so a human can read and disagree with the edit before any file is written.
-
-Two commands sit beside that pipeline and matter most on anything longer than a couple of
-minutes, because they turn a file you have to read into a list you have to check:
-
-```bash
-vcut suspects --detect detect.json          # where to look, ranked, no transcript needed
-vcut say <media> --transcribe --at 57.5     # what is actually said there
-```
-
-`suspects` reports where, never what. `say --transcribe` asks the audio rather than a
-whole-file transcript, which is the only way to see a passage the transcript flattened, and
-`say --at X --through Y` reads a whole span rather than a window around a point.
-
-When a retake turns up, `vcut converge <media> --phrase "..." --from <sec>` finds where the
-wording stops recurring. That boundary went wrong in three separate runs by about 1772ms each,
-which is the reason it is a command rather than a technique.
+How you get from a raw recording to that EDL has more than one path — a single-pass
+`detect` -> `edl build` -> `render`, or a session opened with `vcut open` that a longer edit
+runs several rounds inside — and which one applies changes across releases faster than this
+stub does. `vcut skills get core` carries the current shape of the work, verb by verb; do not
+treat the command list in an old copy of this stub as current.
 
 ## Two rules that matter before you run anything
 
