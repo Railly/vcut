@@ -232,6 +232,32 @@ systematic rather than exceptional. There is no threshold to filter it: measured
 recording it ran from 1318ms down to a median of 246ms with no gap anywhere. That is why the
 warning names the worst case with its position instead of pretending a cut-off exists.
 
+**Soft trailing speech below the level floor is the other way a level-based instrument lies, and
+it is the opposite direction of the drift warning above.** Drift is a cue claiming speech where
+the waveform has none — silence measured correctly, transcript wrong. This class is speech
+sitting below both `silences`' and `detect`'s volume floor — level measured correctly (as
+silence), speech real and audible to a transcriber and a listener. Third case in one day on real
+material: a trailing first attempt ("Me siento muy...") sat glued to the previous phrase with no
+gap even at -36dB/0.08s, invisible to `detect` and `silences` alike. Same-day, earlier: "pero
+espero" sat below -30dB and was eaten whole by a silence cut, and the "eeeh" filler class
+`whisper` cleans away is the same shape at a smaller scale — see "The muletillas playbook"
+below. `peek`'s `viewsDisagree: "soft-speech-below-threshold"` (see `peek` below) is the
+instrument that now sees this class in one call: it fires when the fine-resolution `blocks`
+read silence for the whole span but `heard` — the span re-transcribed directly — still carries
+words. Neither a silence list nor a level threshold alone can see it, because both work from a
+volume floor a transcriber does not need.
+
+**The honest resolution when no boundary support exists: respect the block, never force a
+mid-speech boundary.** If the audio gives no measured silence to cut on, cut from the preceding
+silence instead and say so in the `reason` — name what is lost rather than inventing a boundary
+level never measured. `boundariesInSilence` is not gated on for a semantic cut chosen by meaning
+(see "Read `semanticCuts[].removedText` before rendering" under `edl build` below — a boundary
+landing in speech there is common and not itself wrong). This class is the other direction: a
+proposal with no silence anywhere to place it against, where `boundariesInSilence: [false, ...]`
+is worth reading as a caution specifically because there was nowhere quiet to land, not because
+the model chose meaning over pause. Read it before building rather than after a render says the
+cut clipped speech.
+
 **A word can also run long for the opposite reason, and that one is not benign.** Drift stretches
 a cue over *silence*. A transcript that fused several attempts at the same line stretches a cue
 over *speech*: the model heard the phrase three times, wrote it once, and the surviving word
@@ -851,6 +877,35 @@ Both cuts were rendered and listened to. Ending at 61192ms keeps "Y a la que con
 llegamos a mil miembros". Ending at 62000ms buys 0.7 seconds and leaves "Conocemos, ya llegamos
 a mil miembros" — the line beheaded, and audibly wrong. Neither transcript reads as broken; the
 difference only shows up in the ear, which is the reason the approval step is a human's.
+
+**Two contract assumptions, both found on real stumbled speech (2026-08-10 run).** `converge`
+steps forward from `--from` and reports the first window that lacks the phrase (`firstClear` in
+the source, `probes.find((probe) => !probe.contains)`). That is only the boundary you want when
+the retake is contiguous and the transcriber is stable window to window. Neither held on this
+run.
+
+- **`--from` starting outside the recurring wording returns an immediate false clear.** Probed
+  from 84.0s, where the phrase occurred at 84.0-84.5s and was followed by discard babble
+  ("perdón, crear, ok, eso no, básicamente era, ya") before the keeper attempt at 95s. The very
+  first window past the original attempt already lacked the phrase, so `converge` stopped there:
+  `boundaryMs` came back 84500 with `lastWithPhraseMs` at 84000. That looks exactly like an
+  answer and is useless — the babble between the attempts is not the boundary, it is filler the
+  loop still needs to name and cut on its own.
+- **A flaky short-window transcription drops the phrase for one window and triggers an early
+  first-clear.** Probing "agregar verificabilidad" from 204s, inside a quadruple retake, the
+  204.5s window's transcript happened to omit the phrase — a transcription miss, not the phrase
+  actually leaving — and `converge` stopped immediately, though the phrase recurs through 216s.
+  `firstClear` has no notion of a false negative: one bad window ends the search the same as a
+  clean one.
+
+**Both share a cause: `converge`'s contract assumes contiguous retakes and stable
+transcription.** It steps forward and trusts the first miss, whichever kind of miss it is. When
+discard babble separates the attempts, or a short window is likely to drop a word it should have
+kept, do not trust a single `converge` call. Use `silences` to see the shape of the gaps first,
+then `say --transcribe` at the specific windows you need an anchor on — that is what resolved
+both cases on the real run: `silences` showed where the babble sat apart from the attempts, and
+windowed `say --transcribe` calls at the suspect offsets confirmed which window actually dropped
+the phrase versus which one was past the retake for real.
 
 ## nonspeech
 

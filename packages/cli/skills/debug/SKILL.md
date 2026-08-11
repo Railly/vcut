@@ -208,6 +208,32 @@ miembros" parses, carries the fact, and passes every invariant in the manual. Th
 audible and only audible, which is why the last check before approval is a person listening
 rather than another measurement.
 
+## "`converge` answered fast. Is the boundary real?"
+
+```bash
+vcut converge source.mp4 --phrase "<the recurring words>" --from <sec> --lang es
+```
+
+**Trap: trusting the first window it reports as clear.** `converge` stops at the first window
+that lacks the phrase, and it has no way to tell a real end-of-retake from either of two things
+that look identical to it: discard babble sitting between two attempts, or a single window whose
+transcription happened to drop the phrase. Both produce a confident, fast `boundaryMs` that is
+wrong.
+
+Measured on real stumbled speech (2026-08-10): probing from 84.0s, where the phrase occurred at
+84.0-84.5s and was followed by babble ("perdón, crear, ok, eso no, básicamente era, ya") before
+the real keeper at 95s, `converge` stopped at the very next window and returned `boundaryMs:
+84500` — an answer that looked exactly like the others and was useless. Separately, probing
+"agregar verificabilidad" from 204s inside a quadruple retake, the 204.5s window's transcript
+happened to omit the phrase — a transcription miss — and `converge` stopped immediately, though
+the phrase recurs through 216s.
+
+Read the trace, not just `boundaryMs`: if the window right past the answer has a gap in content
+that reads like babble rather than a clean retake edge, or the phrase's disappearance looks like
+a one-window fluke against everything around it, do not trust a single call. Check the shape of
+the gaps with `vcut silences`, then anchor specific offsets with `vcut say --transcribe` — both
+resolved on the real run above.
+
 ## "The tool did the wrong thing with my input"
 
 **Check your own input first.** Before reporting that a tool mishandled a file or ignored a
