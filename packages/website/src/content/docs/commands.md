@@ -364,6 +364,8 @@ After rendering, vcut probes the file it produced and validates it against the E
 
 The result runs a few tens of milliseconds short of the segment sum (31ms on a 54.6s cut). That is `loudnorm` latency draining trailing decay, not missing material; a video render hides it because the picture sets the container duration.
 
+**The audio-only verification loop**: render `--audio-only`, then run `vcut audit` and `vcut nonspeech` against that same `.wav`. Both read the waveform only and accept it wherever they accept a video render, so a full video mux per round is dead wall clock. Render video once, at the end, for the master.
+
 ### vcut locate
 
 ```bash
@@ -396,7 +398,7 @@ Asking `--source` about material that was cut reports it as removed with the nex
 ### vcut audit
 
 ```bash
-vcut audit --edl edl.json --render cut.mp4
+vcut audit --edl edl.json --render cut.wav
 ```
 
 Every check the renderer runs on itself is an aggregate: dimensions, frame count, duration. A render whose segments carried the wrong material passes all of them, because the durations are right whatever ended up inside them. This compares the audio itself, segment by segment, against the source span the EDL points at.
@@ -406,6 +408,8 @@ audit  22 of 22 segments compared
   agreeing         21 at or above 0.8 correlation
   segment-022      correlation 0.330 at master 52.186 (source 86.842)
 ```
+
+**`--render` accepts an audio-only render.** Every comparison decodes a waveform, never a frame, so the `.wav` `vcut render --audio-only` writes is enough for every round — no reason to hold this check for a video render.
 
 **A low score is a place to look, not a verdict.** Envelope correlation is weak over short or quiet windows, and loudness normalisation lifts quiet passages by several dB. On the run above, the segment that scored low was carrying exactly the right words. It reports rather than fails, and stays out of `render`, for that reason.
 
@@ -490,11 +494,13 @@ Exit 1 with a null `boundaryMs` means the phrase was still recurring at `--to`, 
 ### vcut nonspeech
 
 ```bash
-vcut nonspeech master.mp4                       # spans only, the classifier's own output
-vcut nonspeech master.mp4 --verify --lang es     # each span read back through a window
+vcut nonspeech cut.wav                           # spans only, the classifier's own output
+vcut nonspeech cut.wav --verify --lang es         # each span read back through a window
 ```
 
 Runs the bundled classifier (`skills/core/scripts/non-speech.py`) against a rendered preview and reports audible sound that is not language: a breath, a mic bump, a stretched hesitation the transcript cleans away even with a verbatim preset. Run it on the render, not the source: on raw footage every pause scores as non-speech, correctly and uselessly.
+
+**The render can be the `--audio-only` `.wav`.** The classifier and `--verify` both work from audio alone, so there is no reason to hold this check for a video render — use it every round.
 
 | Flag | What it does |
 | --- | --- |

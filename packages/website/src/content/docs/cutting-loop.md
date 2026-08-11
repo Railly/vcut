@@ -59,9 +59,11 @@ vcut semantic check --proposals proposals.json --detect detect.json \
 ```
 
 Then fold the findings into a proposal — `vcut cut` with a session, `proposals.json` by hand
-without one — and run it again. Render the video once, at the end, and run `vcut audit`,
-`vcut joins`, and `vcut nonspeech --verify` there — they need a picture and answer a question
-no round is asking.
+without one — and run it again. `vcut audit` and `vcut nonspeech --verify` belong inside this
+loop, against the same `cut-$N.wav` this round already rendered: neither reads a frame,
+`audit` correlates waveforms and `nonspeech` classifies audio, so holding them for a video
+render answers no question either one is asking. Render video once, at the end, for
+`vcut joins` and for the human who watches the file.
 
 `vcut joins --edl edl-$N.json --render cut-$N.mp4 --report report-$N.json --lang es` replaces the `locate` + `say --transcribe` round for every semantic cut in one call — a real 11.7-minute run verified 9 joins that way for about 14 calls, before `joins` existed. Each `reading` of `removed-text-leaked` or `check-by-ear` is a place to look, not a verdict: confirm with the wider `say --transcribe` window `next` names before folding anything back into a proposal.
 
@@ -113,10 +115,12 @@ Check the transcript path `trx` reports rather than assuming it: it names the fi
 ### Audit the render before you call it done
 
 ```bash
-vcut audit --edl edl-$N.json --render cut-$N.mp4
+vcut audit --edl edl-$N.json --render cut-$N.wav
 ```
 
 Everything the renderer validates about itself is an aggregate, so a render whose segments carried the wrong material passes every one of those checks. `audit` compares the audio segment by segment against the source the EDL points at, and names what to inspect. Read the words at any position it flags before believing the number.
+
+`--render` takes the `--audio-only` `.wav` directly — the comparison decodes a waveform on both sides, never a frame, so there is nothing a video render would add here.
 
 ### Verify every semantic join in one call
 
