@@ -62,9 +62,10 @@ Usage:
   vcut version                       Print the version
 
 Global flags:
-  --json     Force JSON output (the default when stdout is not a TTY)
-  --human    Force the human summary
-  --help     Show help for a command
+  --json             Force JSON output (the default when stdout is not a TTY)
+  --human            Force the human summary
+  --fields <paths>   Project JSON output to these dot paths, comma separated. Implies --json.
+  --help             Show help for a command
 
 Every command writes data to stdout and diagnostics to stderr. Exit code 2 means
 the invocation was wrong, 1 means the run failed.`
@@ -355,13 +356,14 @@ const CONTRACTS: Record<string, unknown> = {
       removalPercent: 'number, 0-100',
       wordBoundaryClamping: 'boolean, whether cuts were clamped to word edges',
       semanticCuts:
-        '[{ startMs, endMs, kind, reason, removedText, boundariesInSilence: [bool, bool] }], one per accepted semantic proposal, span already merged with whatever else lands in the same place',
+        '[{ startMs, endMs, kind, reason, removedText, boundariesInSilence: [bool, bool], driftSuspect?: true }], one per accepted semantic proposal, span already merged with whatever else lands in the same place',
       warnings: 'string[]',
     },
     notes: [
       'The EDL itself validates against schemas/edl.schema.json.',
       'Every segment is written as proposed and the EDL as draft. Nothing is approved here.',
       'Read semanticCuts[].removedText before rendering: it is the transcript text the span actually removes, not the raw proposal. A warning fires when removedText and reason share fewer than half their carrying words and removedText has 4 or more of them, which is the corrective for a span drifting onto the wrong words unnoticed.',
+      'driftSuspect is present and true only when removedText is built from cues the same drift check detect runs would flag: a word claiming to start inside measured silence. Absent (not false) when the span is clean. Do not trust removedText on a driftSuspect span without a check (peek or say --transcribe over it); the field is never re-transcribed automatically.',
     ],
   },
   semantic: {

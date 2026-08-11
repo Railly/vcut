@@ -4,6 +4,8 @@ import { fileURLToPath } from 'node:url'
 
 export type Mode = 'json' | 'human'
 
+// --fields asks for machine output by construction: a caller naming dot paths to extract wants
+// the extraction, not a human summary those paths do not exist in.
 export const resolveMode = (args: string[], isTty: boolean): Mode => {
   if (args.includes('--json')) {
     return 'json'
@@ -11,7 +13,35 @@ export const resolveMode = (args: string[], isTty: boolean): Mode => {
   if (args.includes('--human')) {
     return 'human'
   }
+  if (args.some((arg) => arg === '--fields' || arg.startsWith('--fields='))) {
+    return 'json'
+  }
   return isTty ? 'human' : 'json'
+}
+
+// --fields <a.b,c,d> alongside --fields=<a.b,c,d>, matching how every other flag in this CLI
+// is read. Comma-separated, each a dot path; whitespace around a path is trimmed so
+// "--fields a, b" does not silently ask for " b".
+export const parseFields = (args: string[]): string[] | null => {
+  const index = args.indexOf('--fields')
+  if (index !== -1) {
+    const raw = args[index + 1]
+    return raw === undefined
+      ? []
+      : raw
+          .split(',')
+          .map((path) => path.trim())
+          .filter((path) => path.length > 0)
+  }
+  const inline = args.find((arg) => arg.startsWith('--fields='))
+  if (inline === undefined) {
+    return null
+  }
+  return inline
+    .slice('--fields='.length)
+    .split(',')
+    .map((path) => path.trim())
+    .filter((path) => path.length > 0)
 }
 
 export const EXIT_USAGE = 2
@@ -45,12 +75,80 @@ export const packageVersion = (): string => {
 
 const VCUT_VERSION = packageVersion()
 
+// Walks a dot path from a value. An array segment projects the rest of the path over every
+// element rather than indexing into the array itself, since that is the shape a caller wants
+// when a path crosses a list field ("semanticCuts.removedText" over an array of cuts): the
+// array of that field, not one element's field. Returns { found: false } rather than undefined
+// so a path that legitimately resolves to undefined is not confused with one that never
+// existed — the caller decides what "unknown path" means from that.
+const walkPath = (value: unknown, segments: string[]): { found: boolean; value: unknown } => {
+  if (segments.length === 0) {
+    return { found: true, value }
+  }
+  if (Array.isArray(value)) {
+    const results = value.map((item) => walkPath(item, segments))
+    if (results.some((result) => !result.found)) {
+      return { found: false, value: undefined }
+    }
+    return { found: true, value: results.map((result) => result.value) }
+  }
+  if (value === null || typeof value !== 'object') {
+    return { found: false, value: undefined }
+  }
+  const [head, ...rest] = segments
+  const record = value as Record<string, unknown>
+  if (!(head in record)) {
+    return { found: false, value: undefined }
+  }
+  return walkPath(record[head], rest)
+}
+
+// The result of --fields: only the requested paths, keyed by the path string itself so a
+// caller reads back exactly what it asked for rather than a reconstructed nested shape it has
+// to re-derive. An unknown path becomes a fieldErrors entry naming it rather than failing the
+// whole call — an agent asking for a field that moved should learn that, not lose the call.
+export const projectFields = (
+  value: unknown,
+  paths: string[],
+): { projected: Record<string, unknown>; fieldErrors: string[] } => {
+  const projected: Record<string, unknown> = {}
+  const fieldErrors: string[] = []
+  for (const path of paths) {
+    const segments = path.split('.').filter((segment) => segment.length > 0)
+    if (segments.length === 0) {
+      continue
+    }
+    const result = walkPath(value, segments)
+    if (result.found) {
+      projected[path] = result.value
+    } else {
+      fieldErrors.push(path)
+    }
+  }
+  return { projected, fieldErrors }
+}
+
 // Every JSON output carries the version of the binary that produced it. The manual is read
 // once and cached in an agent's context while the CLI can change underneath it: one session
 // upgraded mid-run, kept hand-rolling an 18-call window loop for a question `converge`
 // (shipped an hour earlier) already answered in one call, because nothing in the output said
 // the tool had moved. This is the one place that stamp is added, so no command can forget it.
-export const emitJson = (value: unknown): void => {
+//
+// `--fields` reads the same way: rather than every one of the 30-odd call sites across every
+// command parsing its own argv for the flag, emitJson reads process.argv directly, the same
+// precedent packageVersion already set by reading package.json unprompted. `fields` stays as an
+// explicit second argument only so a test (or a future caller with its own argv) can drive the
+// projection without shelling out. When given, the object is projected down to those dot paths
+// before the stamp is added, so vcutVersion always rides along regardless of what was
+// selected — it is the version stamp, not a field a caller could ask away.
+export const emitJson = (value: unknown, fields?: string[]): void => {
+  const requested = fields ?? parseFields(process.argv.slice(2)) ?? []
+  if (requested.length > 0 && value !== null && typeof value === 'object') {
+    const { projected, fieldErrors } = projectFields(value, requested)
+    const withErrors = fieldErrors.length > 0 ? { ...projected, fieldErrors } : projected
+    console.log(JSON.stringify({ ...withErrors, vcutVersion: VCUT_VERSION }, null, 2))
+    return
+  }
   const stamped =
     value !== null && typeof value === 'object' && !Array.isArray(value)
       ? { ...(value as Record<string, unknown>), vcutVersion: VCUT_VERSION }
