@@ -583,7 +583,9 @@ const CONTRACTS: Record<string, unknown> = {
       build:
         'the same BuildSummary shape edl build emits (segments, removalPercent, semanticCuts with removedText, warnings, ...)',
       render: 'the same shape render emits (status, outputPath, sha256, duration, ...)',
-      next: '[{ question, verb }]',
+      roundsGate:
+        '{ status: "insufficient-rounds"|"converged-pending-review"|"acknowledged-single-round", committedRounds, message, next? }',
+      next: '[{ question, verb }] — below 2 committed rounds this IS roundsGate.next (render/transcribe/review/cut/commit), never the approve-shaped hints',
     },
     notes: [
       "Builds from the session's cached detect report and its accumulated proposals.json, through the same runBuild seam vcut edl build --semantic <path> uses — byte-identical output given the same inputs.",
@@ -591,17 +593,18 @@ const CONTRACTS: Record<string, unknown> = {
       "--audio-only is the default render (matching the manual's per-round rule); --video renders the preview instead. Master mode never happens here.",
       'Approval is a human edit to the EDL followed by vcut render --edl <path> --mode master. This command drafts and previews only; it never writes approval.status.',
       "Takes the session's advisory lock (pid+startedAt+verb in lock.json) for the build+render, released after. A second writer on a session already locked by a live process gets a non-usage error naming the holder's pid, verb, and age. On success the session is marked committed, which vcut session gc reads as a candidate — nothing is deleted here or automatically.",
+      "The rounds gate (#36): below 2 committed rounds, roundsGate.status is insufficient-rounds and refuses the converged framing — the second committed round must contain a real propose pass against this round's render transcript, verification of round 1's own output does not count. --single-round records a deliberate override (single-round-ack.json in the session) for a genuine one-round edit, after which roundsGate.status reads acknowledged-single-round instead.",
     ],
   },
   rounds: {
     version: SCHEMA_VERSION,
     command: 'vcut rounds',
     output: {
-      default: '{ version, input, sessionDir, rounds: number[] }',
+      default: '{ version, input, sessionDir, rounds: number[], roundsGate }',
       '--diff': '{ version, input, sessionDir, diff: RoundsDiff }',
     },
     notes: [
-      'Without --diff, lists every round number this session has committed, ascending. With --diff <N> <M>, compares round N against round M; omitting N and M diffs the latest two.',
+      'Without --diff, lists every round number this session has committed, ascending, plus the same roundsGate object vcut commit emits (status/committedRounds/message/next) — the other surface an agent reads to decide a session is done. With --diff <N> <M>, compares round N against round M; omitting N and M diffs the latest two.',
       'RoundsDiff: { fromRound, toRound, removalPercentDelta, segmentCountDelta, semanticCuts: [{status: "added"|"removed"|"changed"|"unchanged", from?, to?}] }. semanticCuts entries are matched between rounds by span overlap, not by array position, since a proposal\'s exact edges can shift slightly between rounds without being a different decision.',
       "This diffs each round's build report (removalPercent, segments, semanticCuts — the same data vcut commit already writes to rounds/round-N/report.json), not either round's actual render: a text-level diff of what a render says needs a transcript of it, and vcut does not store renders or their transcripts in a session. Confirm a semantic diff with vcut peek or say --transcribe on the renders themselves.",
       "The session must already exist with at least 2 committed rounds for --diff; like cut and commit, this reads a session's history rather than creating one.",

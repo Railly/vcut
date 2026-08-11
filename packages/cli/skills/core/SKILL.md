@@ -128,6 +128,15 @@ The exception is the empty round that ends the loop, and only when the round bef
 nothing either: an unchanged file re-rendered and re-transcribed to confirm it is unchanged
 buys nothing.
 
+**This is enforced, not just stated (#36).** Below two committed rounds, `commit`'s `next`
+hints and `rounds`'s summary refuse the converged framing and name the missing pass instead of
+suggesting approval — `roundsGate.status: 'insufficient-rounds'` in both. **The second
+committed round must contain a real propose pass against this round's render transcript;
+verification of round 1's own output does not count.** `--single-round` on `commit` is the
+deliberate override for a genuine one-round edit (a trivial clip), recorded in the session, not
+inferred from a clean-looking run. Preview renders and the human approval boundary are
+untouched by this — it is a framing gate on what the CLI calls "done," not a lock on rendering.
+
 Method, invariants, and the full stopping condition:
 `vcut skills get core --section rounds-methodology`, `--section invariants`.
 

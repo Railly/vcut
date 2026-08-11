@@ -326,6 +326,19 @@ A round is: build, render `--audio-only`, transcribe that render, `semantic revi
 propose. Anything short of the full sequence does not count as one, because the reading is the
 part that finds things.
 
+**The rounds gate enforces this in the CLI, not only in prose (#36).** A third agnostic run
+committed exactly one round, then ran joins, audit, and semantic review as verification of
+round 1's own output, and declared convergence — the retro that followed named the actual
+failure: "a soft rule I can rationalize past on a good first pass isn't enough." `commit`'s
+`next` hints and `rounds`'s summary now refuse the converged framing below two committed
+rounds, on `roundsGate.status: 'insufficient-rounds'`, and name the missing pass instead of a
+next step that reads like polish. **The second committed round must contain a real propose
+pass; verification of round 1's own output does not count.** This is a framing gate, not a
+render lock — preview renders stay allowed at any point, and the human approval boundary is
+unchanged. `--single-round` on `commit` is the deliberate override for a genuine one-round edit
+(a trivial clip), recorded in the session as `single-round-ack.json` rather than inferred from
+how clean the run looked.
+
 The exception is the empty round that ends the loop, and only when the round before it proposed
 nothing either. A round that proposed cuts changed the file, so the next one has new text to
 read and has to run in full. A round that proposed nothing did not, so re-rendering and
