@@ -68,6 +68,12 @@ cut proposed either way accumulates in the same `proposals.json`, shows up the s
 So the choice of workflow is never decided by which coordinate system a finding happens to be
 in. Every one of them ends at `vcut cut`.
 
+Pick the grain by the defect, not by preference: refs are block-grain, right when the cut is a
+whole silence-bounded block (dead air, a fumble between pauses); `--start-ms/--end-ms` is
+word-grain, right when the cut lives inside a block (a retake mid-sentence, a filler between
+words). Both are first-class. A run whose defects are mostly mid-block retakes will correctly
+use ms for nearly every cut, and that is the design working, not the session flow failing.
+
 ### Do not read `~/.vcut/sessions/` directly
 
 The session directory is not an interface. Reading `detect.json`, `refs.json`, or
@@ -146,10 +152,23 @@ and prints a progress line to stderr per report. There is nothing to poll a file
 nothing to grep a process table for; when the command returns, the render is done. `--quiet`
 drops the progress lines and renders the same file.
 
+Know the cost before you call it: a video render runs roughly real time per minute of source
+— a 10-minute source is a multi-minute foreground call — while `--audio-only` is near instant.
+If your harness caps tool calls at a default timeout, raise the timeout for that one call
+instead of backgrounding it. One run read this exact rule, hit a 180-second default timeout on
+a 9-minute render, and spiraled into the poll-loop behavior the rule forbids; a 600-second
+timeout on the same call finishes in the foreground with no ceremony.
+
 **`--jq <expr>` filters and reshapes, so never reach for `python3 -c`.** `--fields` projects to
 dot paths; `--jq` does the structural work — filter a `nonspeech` list to the
 `vocalization-suspect` spans, sort by `startMs`, pull the spans past a position. Both imply
 `--json` and are mutually exclusive. `vcut --help` carries the supported subset.
+
+The habit this exists to break, measured: one run wrote `python3 -c` forty-five times and used
+`--jq` once, and its own retro found no missing operation — pure habit. The rule: if the JSON
+came out of a vcut command, the filter goes on that same command as `--jq`, not on a file you
+saved and re-parsed. Piping to a file first is how vcut output stops looking like vcut output.
+Python is for what genuinely is not vcut JSON (an SRT is text, not JSON), nothing else.
 
 ```bash
 vcut nonspeech cut.wav --verify --jq '.spans[] | select(.reading == "vocalization-suspect")'

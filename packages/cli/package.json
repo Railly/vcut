@@ -38,7 +38,7 @@
     "build": "bun build src/cli.ts --target=node --outdir=dist --banner='#!/usr/bin/env node' && chmod +x dist/cli.js",
     "dev": "bun run src/cli.ts",
     "test": "bun test",
-    "check": "biome check --write .",
+    "check": "bun x @biomejs/biome@2.4.13 check --write .",
     "prepublishOnly": "cp ../../README.md ./README.md && cp ../../LICENSE ./LICENSE && bun run build"
   },
   "devDependencies": {

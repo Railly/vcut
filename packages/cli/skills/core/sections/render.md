@@ -7,6 +7,12 @@ vcut render --edl edl.json --mode preview
 
 Preview mode accepts proposed segments. Master mode requires an approved EDL, approved segments, matching source hashes, and a free output path; it refuses to overwrite.
 
+Render blocks in the foreground and streams progress to stderr; there is nothing to poll. A
+video render runs roughly real time per minute of source, so budget the call accordingly: if
+your harness enforces a default tool timeout shorter than the render, raise the timeout for
+that call rather than backgrounding it. `--audio-only` is near instant and is the mode every
+round before the last one should be using anyway.
+
 **Render `--audio-only` for every round. Render video once, at the end, and not before.** This
 is the default, not an optimisation to remember: every question a round asks is about sound —
 whether a filler survived, whether a boundary clipped a word, whether an idea is still said
