@@ -1024,3 +1024,203 @@ describe.if(hasFfmpeg)(
     })
   },
 )
+
+// Issue #27: joins --report needs the JSON build report, which --human does not print to
+// stdout. --report-json writes it to a file regardless of stdout mode, so a caller reading
+// the human summary still gets a report joins can read without a second edl build run.
+describe.if(hasFfmpeg)('edl build --report-json', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'vcut-report-json-'))
+  const mediaPath = join(dir, 'source.mp4')
+
+  beforeAll(async () => {
+    const built = await run('ffmpeg', [
+      '-y',
+      '-f',
+      'lavfi',
+      '-i',
+      'testsrc=duration=6:size=320x240:rate=10',
+      '-f',
+      'lavfi',
+      '-i',
+      'anullsrc=r=48000:cl=stereo',
+      '-t',
+      '6',
+      '-c:v',
+      'libx264',
+      '-pix_fmt',
+      'yuv420p',
+      '-c:a',
+      'aac',
+      mediaPath,
+    ])
+    if (built.exitCode !== 0) {
+      throw new Error(`fixture generation failed: ${built.stderr}`)
+    }
+  })
+
+  afterAll(() => {
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  const detectReport = (): DetectReport => ({
+    version: 1,
+    input: mediaPath,
+    durationMs: 6000,
+    preset: 'noisy',
+    thresholdDb: -20,
+    minSilenceMs: 300,
+    marginMs: 100,
+    lang: 'es',
+    transcript: { path: null, wordLevel: false, words: 0 },
+    audioPath: null,
+    silences: [{ kind: 'silence', startMs: 1000, endMs: 1500, durationMs: 500 }],
+    review: [],
+    warnings: [],
+  })
+
+  const proposals = [
+    { startMs: 3000, endMs: 3800, kind: 'tangent' as const, reason: 'test aside, cut it' },
+  ]
+
+  test('writes the full report to disk while --human keeps printing the human summary', async () => {
+    const detectPath = join(dir, 'detect-human.json')
+    writeFileSync(detectPath, JSON.stringify(detectReport()))
+    const semanticPath = join(dir, 'proposals-human.json')
+    writeFileSync(semanticPath, JSON.stringify(proposals))
+    const edlPath = join(dir, 'edl-human.json')
+    const reportPath = join(dir, 'report-human.json')
+
+    const originalLog = console.log
+    let stdout = ''
+    console.log = (...args: unknown[]) => {
+      stdout += args.join(' ')
+    }
+    try {
+      await buildEdlCommand([
+        '--detect',
+        detectPath,
+        '--output',
+        join(dir, 'master-human.mp4'),
+        '--campaign',
+        'report-json-test',
+        '--edl',
+        edlPath,
+        '--semantic',
+        semanticPath,
+        '--report-json',
+        reportPath,
+        '--human',
+      ])
+    } finally {
+      console.log = originalLog
+    }
+
+    // --human's own contract: a human summary on stdout, not JSON.
+    expect(stdout).toContain('segments drafted')
+    expect(() => JSON.parse(stdout)).toThrow()
+
+    // The file --report-json named carries the full report regardless.
+    expect(existsSync(reportPath)).toBe(true)
+    const report = JSON.parse(readFileSync(reportPath, 'utf8')) as {
+      semanticCuts: Array<{ removedText: string; driftSuspect?: true }>
+    }
+    expect(report.semanticCuts.length).toBe(1)
+    expect(report.semanticCuts[0]?.removedText).toBeDefined()
+  })
+
+  test('the report matches the summary emitted on stdout in --json mode', async () => {
+    const detectPath = join(dir, 'detect-json.json')
+    writeFileSync(detectPath, JSON.stringify(detectReport()))
+    const semanticPath = join(dir, 'proposals-json.json')
+    writeFileSync(semanticPath, JSON.stringify(proposals))
+    const edlPath = join(dir, 'edl-json.json')
+    const reportPath = join(dir, 'report-json.json')
+
+    const originalLog = console.log
+    let stdout = ''
+    console.log = (...args: unknown[]) => {
+      stdout += args.join(' ')
+    }
+    try {
+      await buildEdlCommand([
+        '--detect',
+        detectPath,
+        '--output',
+        join(dir, 'master-json.mp4'),
+        '--campaign',
+        'report-json-test',
+        '--edl',
+        edlPath,
+        '--semantic',
+        semanticPath,
+        '--report-json',
+        reportPath,
+        '--json',
+      ])
+    } finally {
+      console.log = originalLog
+    }
+
+    const stdoutSummary = JSON.parse(stdout) as Record<string, unknown>
+    const fileReport = JSON.parse(readFileSync(reportPath, 'utf8')) as Record<string, unknown>
+
+    // The file is the same report the CLI already prints, minus the stdout-only fields
+    // (next/vcutVersion) that emitJson adds on top of the summary.
+    const { next: _next, vcutVersion: _v, ...stdoutRest } = stdoutSummary
+    expect(fileReport).toEqual(stdoutRest)
+  })
+
+  test('composes with --semantic omitted: an empty semanticCuts array still lands on disk', async () => {
+    const detectPath = join(dir, 'detect-empty.json')
+    writeFileSync(detectPath, JSON.stringify(detectReport()))
+    const edlPath = join(dir, 'edl-empty.json')
+    const reportPath = join(dir, 'report-empty.json')
+
+    await buildEdlCommand([
+      '--detect',
+      detectPath,
+      '--output',
+      join(dir, 'master-empty.mp4'),
+      '--campaign',
+      'report-json-test',
+      '--edl',
+      edlPath,
+      '--report-json',
+      reportPath,
+      '--json',
+    ])
+
+    const report = JSON.parse(readFileSync(reportPath, 'utf8')) as { semanticCuts: unknown[] }
+    expect(report.semanticCuts).toEqual([])
+  })
+
+  test('omitting --report-json writes no file and leaves stdout unchanged', async () => {
+    const detectPath = join(dir, 'detect-noreport.json')
+    writeFileSync(detectPath, JSON.stringify(detectReport()))
+    const edlPath = join(dir, 'edl-noreport.json')
+
+    const originalLog = console.log
+    let stdout = ''
+    console.log = (...args: unknown[]) => {
+      stdout += args.join(' ')
+    }
+    try {
+      await buildEdlCommand([
+        '--detect',
+        detectPath,
+        '--output',
+        join(dir, 'master-noreport.mp4'),
+        '--campaign',
+        'report-json-test',
+        '--edl',
+        edlPath,
+        '--json',
+      ])
+    } finally {
+      console.log = originalLog
+    }
+
+    const summary = JSON.parse(stdout) as { status: string }
+    expect(summary.status).toBe('drafted')
+  })
+})

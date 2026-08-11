@@ -36,6 +36,9 @@ Flags:
   --crop <spec>         top|bottom|left|right:<fraction>, or x,y,width,height
   --audio-offset <ms>   Shift the separate audio; positive delays it (default 0)
   --semantic <path>     Model proposals from 'vcut semantic'; each lands as material risk
+  --report-json <path>  Write the full JSON build report to this path regardless of stdout
+                         mode. Same shape 'vcut commit' writes as rounds/round-N/report.json,
+                         the report 'vcut joins --report' reads for removedText/driftSuspect.
   --json                Force JSON (default when stdout is not a TTY)
   --human               Force the human summary
   --help                Show this message
@@ -630,6 +633,7 @@ type CliOptions = {
   semanticPath: string | null
   crop: Crop | null
   syncOffsetMs: number
+  reportJsonPath: string | null
 }
 
 // What `runBuild` needs once the detect report is already in hand and proposals are already
@@ -677,6 +681,8 @@ const parseCli = (args: string[]): CliOptions => {
     semanticPath: value('--semantic') === undefined ? null : resolve(value('--semantic') as string),
     crop: value('--crop') === undefined ? null : parseCrop(value('--crop') as string),
     syncOffsetMs: syncOffset(numeric('--audio-offset')),
+    reportJsonPath:
+      value('--report-json') === undefined ? null : resolve(value('--report-json') as string),
   }
 }
 
@@ -966,6 +972,13 @@ export const buildEdlCommand = async (argv: string[]): Promise<void> => {
   })
 
   writeFileSync(options.edlPath, `${JSON.stringify(edl, null, 2)}\n`)
+
+  // Written regardless of --human/--json: the flag exists so a caller reading the human
+  // summary on stdout still gets the full report on disk, the same shape 'vcut commit' writes
+  // and 'vcut joins --report' reads, without a second 'edl build' run purely to flip format.
+  if (options.reportJsonPath !== null) {
+    writeFileSync(options.reportJsonPath, `${JSON.stringify(summary, null, 2)}\n`)
+  }
 
   if (mode === 'json') {
     emitJson({ ...summary, next: buildEdlNext(summary.edlPath) })
