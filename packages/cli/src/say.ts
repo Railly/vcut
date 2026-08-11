@@ -80,8 +80,11 @@ const seconds = (ms: number): string => (ms / 1000).toFixed(3)
 /**
  * Level over the window. Peak is what separates "nothing was said here" from "something was
  * said and the transcript missed it", which is the distinction a silent span needs.
+ *
+ * Exported for `peek` (B-V2), which needs the same measurement over the same kind of span and
+ * would otherwise be the third copy of this ffmpeg invocation after `nonspeech.ts` grew its own.
  */
-const measureLevel = async (
+export const measureLevel = async (
   path: string,
   startMs: number,
   endMs: number,

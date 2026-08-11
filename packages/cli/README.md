@@ -96,6 +96,7 @@ Piped or captured, the same command emits JSON. No flag needed.
 | `vcut converge <media>` | Finds where a repeated phrase stops coming back |
 | `vcut nonspeech <render> [--verify]` | Finds audible sound that is not language; `--verify` reads a window around each span instead of the whole-file transcript |
 | `vcut open <media>` | Opens or resumes a content-addressed session, maps its blocks with stable refs, caches detection across calls |
+| `vcut peek <media> (--ref \| --at)` | The four views of a position aligned in one call: cached transcript, re-transcribed audio, fine-resolution speech/silence blocks, level, and their disagreement named |
 | `vcut schema [name]` | The JSON contract per command, versioned |
 | `vcut skills get vcut` | The bundled agent manual, as markdown |
 | `vcut init` | Installs everything a first run needs, and reports what it could not |
