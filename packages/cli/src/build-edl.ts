@@ -576,16 +576,22 @@ type ProbeStream = {
   avg_frame_rate?: string
   sample_rate?: string
   channels?: number
+  duration?: string
 }
 
+// format.duration is the container's: the longest of its streams, audio included. A screen
+// recording's audio device keeps running a beat after the capture stops drawing frames, so
+// the container reports that longer audio tail as its own duration. A segment trimmed to
+// that number asks ffmpeg's video trim filter for frames the stream does not have, and the
+// filter clamps silently rather than erroring — the render comes out short, not the EDL.
 const probeSource = async (
   path: string,
-): Promise<{ streams: ProbeStream[]; durationMs: number }> => {
+): Promise<{ streams: ProbeStream[]; durationMs: number; videoDurationMs: number }> => {
   const { stdout, stderr, exitCode } = await run('ffprobe', [
     '-v',
     'error',
     '-show_entries',
-    'format=duration:stream=codec_type,width,height,r_frame_rate,avg_frame_rate,sample_rate,channels',
+    'format=duration:stream=codec_type,width,height,r_frame_rate,avg_frame_rate,sample_rate,channels,duration',
     '-of',
     'json',
     path,
@@ -594,7 +600,13 @@ const probeSource = async (
     throw new Error(stderr.trim() || `ffprobe exited with ${exitCode}`)
   }
   const parsed = JSON.parse(stdout) as { streams: ProbeStream[]; format: { duration: string } }
-  return { streams: parsed.streams, durationMs: Math.round(Number(parsed.format.duration) * 1000) }
+  const durationMs = Math.round(Number(parsed.format.duration) * 1000)
+  const video = parsed.streams.find((stream) => stream.codec_type === 'video')
+  // A container that omits stream-level duration (some do) still deserves a bound rather
+  // than a thrown error here, so it falls back to the container figure it already had.
+  const videoDurationMs =
+    video?.duration === undefined ? durationMs : Math.round(Number(video.duration) * 1000)
+  return { streams: parsed.streams, durationMs, videoDurationMs }
 }
 
 const slug = (value: string): string =>
@@ -813,10 +825,13 @@ export const runBuild = async (
     report.audioPath === null || report.audioPath === undefined
       ? null
       : await describeAudioSource(report.audioPath, sourceId)
+  // Segments are trimmed from this source's video stream, so what bounds a kept span is the
+  // video stream's own duration, not the container's — the container reports the longest of
+  // its streams, and a screen recording's audio device commonly outlives the last frame.
   const segments = markSemanticRisk(
     invertToSegments(
       allCuts,
-      probe.durationMs,
+      probe.videoDurationMs,
       sourceId,
       report.marginMs,
       outputFps,
@@ -830,7 +845,7 @@ export const runBuild = async (
   assertSegmentCount(segments.length)
 
   const keptMs = segments.reduce((total, segment) => total + segment.outMs - segment.inMs, 0)
-  const removalPercent = ((probe.durationMs - keptMs) / probe.durationMs) * 100
+  const removalPercent = ((probe.videoDurationMs - keptMs) / probe.videoDurationMs) * 100
 
   const edl = {
     version: 1,
@@ -842,7 +857,10 @@ export const runBuild = async (
         id: sourceId,
         path: report.input,
         sha256: await sha256(report.input),
-        durationMs: probe.durationMs,
+        // The renderer bounds every segment against this number. It has to be the video
+        // stream's own duration: segments are trimmed from the picture, and the picture is
+        // what runs out first when the container's duration comes from a longer audio track.
+        durationMs: probe.videoDurationMs,
         hasVideo: true,
         hasAudio: audio !== undefined,
         averageFrameRate: video.avg_frame_rate ?? frameRate,

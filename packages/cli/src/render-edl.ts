@@ -33,6 +33,7 @@ type Source = {
   durationMs: number
   hasVideo: boolean
   hasAudio: boolean
+  averageFrameRate?: string | null
 }
 
 type Segment = {
@@ -295,11 +296,25 @@ export const buildFfmpegArgs = (
   const audioOnly = options.audioOnly === true
   const sourceIndex = new Map(edl.sources.map((source, index) => [source.id, index]))
   const filters: string[] = []
-  const concatInputs: string[] = []
+  // fpsConverting keeps its video and audio labels in two separate arrays and feeds them to
+  // two separate concat calls (why: convertsFps's own comment). The native-rate path keeps
+  // the single combined concat call it has always used, with labels interleaved per segment
+  // in the order the concat filter's own spec requires (v then a, repeated per segment) —
+  // legacyConcatInputs is that combined array, populated alongside the split ones so either
+  // path can read from the one it needs without re-deriving label order.
+  const videoConcatInputs: string[] = []
+  const audioConcatInputs: string[] = []
+  const legacyConcatInputs: string[] = []
   const width = edl.output.width
   const height = edl.output.height
   const fps = edl.output.fps
   const policy = edl.output.audioTrackPolicy
+  // A many-segment render whose output fps differs from a source's own rate needs fps=
+  // to run once, after concat, against a video PTS clock nothing but trim has touched —
+  // see the note above the video filter below for why. A render where every source
+  // already plays at the output rate does not have that problem and keeps the graph
+  // shape it has always had, so its output stays byte-identical to every prior render.
+  const fpsConverting = convertsFps(edl)
   // Undefined when every segment reads its own audio, which is the single-source case and has
   // to keep rendering exactly as it did.
   const audioInput =
@@ -315,10 +330,22 @@ export const buildFfmpegArgs = (
     const crop = segment.crop ?? { x: 0, y: 0, width: 1, height: 1 }
     const duration = seconds(segment.outMs - segment.inMs)
     if (!audioOnly) {
+      // fps-converting: fps= does not run here. A segment's own trim already lands on the
+      // nearest source-rate frame, and the video and audio branches below do not land on
+      // exactly the same instant (video quantises to a whole frame, audio does not) — concat
+      // pads the shorter of the two per segment when both feed one combined concat call,
+      // which nudges every later segment's start off the source's frame grid before fps ever
+      // sees it. Splitting video and audio into their own concat filters (below) removes that
+      // cross-talk, so fps can run once, after concat, against a video PTS clock nothing but
+      // trim has touched. Measured on a 60fps-to-30fps synthetic render: per-segment fps=
+      // landed +16 frames over 20 irregular segments and +51 over 176; fps after a decoupled
+      // concat landed 0 at every segment count tried, both directions.
+      const fpsSegment = fpsConverting ? '' : `,fps=${fps}`
       filters.push(
-        `[${input}:v]trim=start=${seconds(segment.inMs)}:end=${seconds(segment.outMs)},setpts=PTS-STARTPTS,crop=trunc(iw*${crop.width}/2)*2:trunc(ih*${crop.height}/2)*2:trunc(iw*${crop.x}/2)*2:trunc(ih*${crop.y}/2)*2,scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:black,fps=${fps},format=${edl.output.pixelFormat}[v${index}]`,
+        `[${input}:v]trim=start=${seconds(segment.inMs)}:end=${seconds(segment.outMs)},setpts=PTS-STARTPTS,crop=trunc(iw*${crop.width}/2)*2:trunc(ih*${crop.height}/2)*2:trunc(iw*${crop.x}/2)*2:trunc(ih*${crop.y}/2)*2,scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:black${fpsSegment},format=${edl.output.pixelFormat}[v${index}]`,
       )
-      concatInputs.push(`[v${index}]`)
+      videoConcatInputs.push(`[v${index}]`)
+      legacyConcatInputs.push(`[v${index}]`)
     }
 
     if (policy === 'required') {
@@ -331,11 +358,13 @@ export const buildFfmpegArgs = (
       filters.push(
         `[${audioIn}:a]atrim=start=${seconds(Math.max(0, segment.inMs + shift))}:end=${seconds(Math.max(0, segment.outMs + shift))},asetpts=PTS-STARTPTS,aresample=48000,aformat=channel_layouts=stereo${audioEdgeFade(segment, edl.audio.edgeFadeMs)}[a${index}]`,
       )
-      concatInputs.push(`[a${index}]`)
+      audioConcatInputs.push(`[a${index}]`)
+      legacyConcatInputs.push(`[a${index}]`)
     }
     if (policy === 'explicit-silence') {
       filters.push(`anullsrc=r=48000:cl=stereo,atrim=duration=${duration}[a${index}]`)
-      concatInputs.push(`[a${index}]`)
+      audioConcatInputs.push(`[a${index}]`)
+      legacyConcatInputs.push(`[a${index}]`)
     }
   }
 
@@ -343,13 +372,25 @@ export const buildFfmpegArgs = (
   if (audioOnly && !hasAudio) {
     throw new Error('--audio-only needs an EDL that carries audio, and this one forbids it')
   }
-  const concatOut = audioOnly ? '[acat]' : hasAudio ? '[vcat][acat]' : '[v]'
-  filters.push(
-    `${concatInputs.join('')}concat=n=${edl.segments.length}:v=${audioOnly ? 0 : 1}:a=${hasAudio ? 1 : 0}${concatOut}`,
-  )
+  if (!audioOnly) {
+    if (fpsConverting) {
+      filters.push(
+        `${videoConcatInputs.join('')}concat=n=${edl.segments.length}:v=1:a=0[vcat]`,
+        `[vcat]fps=${fps}[v]`,
+      )
+    } else {
+      const concatOut = hasAudio ? '[vcat][acat]' : '[v]'
+      filters.push(
+        `${legacyConcatInputs.join('')}concat=n=${edl.segments.length}:v=1:a=${hasAudio ? 1 : 0}${concatOut}`,
+      )
+      if (hasAudio) {
+        filters.push(`[vcat]null[v]`)
+      }
+    }
+  }
   if (hasAudio) {
-    if (!audioOnly) {
-      filters.push(`[vcat]null[v]`)
+    if (fpsConverting || audioOnly) {
+      filters.push(`${audioConcatInputs.join('')}concat=n=${edl.segments.length}:v=0:a=1[acat]`)
     }
     const totalMs = edl.segments.reduce(
       (total, segment) => total + (segment.outMs - segment.inMs),
@@ -425,19 +466,113 @@ const parseRate = (rate: string): number => {
   return denominator === 0 ? 0 : numerator / denominator
 }
 
+// True only when at least one segment's own source runs at a different rate than the
+// output asks for. An EDL with no averageFrameRate on any of its sources (written before
+// that field existed, or by hand) cannot be told apart from a native-rate one here, so it
+// reads as native and keeps the graph shape that has always rendered it — the byte-identical
+// guarantee for every EDL already on disk depends on that default.
+export const convertsFps = (edl: Edl): boolean =>
+  edl.segments.some((segment) => {
+    const source = edl.sources.find((candidate) => candidate.id === segment.sourceId)
+    if (source?.averageFrameRate === undefined || source.averageFrameRate === null) {
+      return false
+    }
+    return Math.abs(parseRate(source.averageFrameRate) - edl.output.fps) > 0.001
+  })
+
+// The frame rate the video trim filter actually quantises each segment's edges against.
+// Reads the first source with video; v1 renders from one video source's segments, so there
+// is only ever one rate to find.
+const dominantSourceFps = (edl: Edl): number | null => {
+  const withVideo = edl.sources.find((source) => source.hasVideo)
+  const rate = withVideo?.averageFrameRate
+  return rate === undefined || rate === null ? null : parseRate(rate)
+}
+
+// ffmpeg's trim filter does not round a segment's edges to the nearest source frame: its own
+// documented semantics keep every frame whose PTS satisfies start <= PTS < end (`ffmpeg -h
+// filter=trim`), which is start rounded UP to the next frame and end rounded DOWN, exclusive
+// — never rounded to nearest. A segment cut between two source frames therefore always keeps
+// at least as much picture as its millisecond span asks for, never less, and a many-segment
+// EDL compounds that one-sided bias: measured on the real 176-segment, 60fps-to-30fps EDL
+// this issue was filed against, the segment sum asks for 551406ms but the source's own 60fps
+// grid can only deliver 551566.67ms of it (a segment's boundary lands between frames on 175
+// of 176 joints), 160ms more than the naive sum — which is +5 real frames at 30fps once
+// converted, not rounding noise.
+//
+// Frame count in a half-open interval [start, end) at a given fps is ceil(end*fps) -
+// ceil(start*fps); summing that per segment against the source's own rate, then scaling by
+// outputFps/sourceFps and rounding once (the same round(near) fps= itself applies), matched
+// the real render exactly (16547 predicted, 16547 observed) and matched every synthetic
+// fixture measured for this fix: contiguous segments at 5/20/60/176 (60->30) and 5/20/60
+// (30->60); gapped segments (the shape every real detect/semantic-cut EDL actually has) at
+// 5/20/60 (60->30), where a plain millisecond-sum formula was off by 1-5 frames and this one
+// was exact at every count.
+//
+// Deliberately not the general answer: at a native rate (sourceFps === outputFps, or no
+// averageFrameRate on record) this same ceil-based arithmetic disagrees with the plain sum
+// on roughly a quarter of single-segment cases and by 1-2 frames on many-segment ones,
+// measured against the same fixtures — small enough that the existing 1-frame tolerance has
+// always absorbed it, but changing what every already-passing native EDL is checked against
+// is a second fix this issue did not ask for. sourceFps is therefore required, not defaulted
+// here; the caller decides whether an EDL is fps-converting before reaching for this formula
+// and falls back to the plain sum otherwise (mirrors convertsFps's own scope).
+export const expectedFramesForConcat = (
+  segments: Array<{ inMs: number; outMs: number }>,
+  sourceFps: number,
+  outputFps: number,
+): number => {
+  const frameCount = (startMs: number, endMs: number): number => {
+    const epsilon = 1e-9
+    return (
+      Math.ceil((endMs / 1000) * sourceFps - epsilon) -
+      Math.ceil((startMs / 1000) * sourceFps - epsilon)
+    )
+  }
+  const sourceFrames = segments.reduce(
+    (total, segment) => total + frameCount(segment.inMs, segment.outMs),
+    0,
+  )
+  return Math.round((sourceFrames * outputFps) / sourceFps)
+}
+
+// The plain millisecond-sum formula videoOutputErrors always used before this fix. Kept as
+// its own named function (not folded into a single conditional inline) so a native-rate
+// EDL's expected-frames arithmetic reads exactly as it did before this fix touched the file.
+const expectedFramesNaive = (
+  segments: Array<{ inMs: number; outMs: number }>,
+  outputFps: number,
+): number => {
+  const totalMs = segments.reduce((total, segment) => total + (segment.outMs - segment.inMs), 0)
+  return Math.round((totalMs / 1000) * outputFps)
+}
+
 const videoOutputErrors = (
   edl: Edl,
   video: OutputProbe['streams'][number],
   duration: string,
 ): string[] => {
   const errors: string[] = []
-  const expectedDuration = edl.segments.reduce(
-    (total, segment) => total + segment.outMs - segment.inMs,
-    0,
-  )
+  const sourceFps = dominantSourceFps(edl)
+  // fps-converting: expectedFrames comes from the ceil-based derivation (why: the export's
+  // own comment), and expectedDuration follows from it rather than from the plain millisecond
+  // sum, since that many-source-frame figure is what the video stream actually measures.
+  // Native-rate (sourceFps unknown, or equal to the output rate): both stay exactly the
+  // formulas this function used before the fix, unchanged for every EDL already on disk.
+  // convertsFps is the same scope test buildFfmpegArgs uses to choose its graph shape, so
+  // the validator's arithmetic and the render it is checking never disagree about which
+  // render this EDL produced.
+  const isFpsConverting = convertsFps(edl)
+  const expectedFrames =
+    isFpsConverting && sourceFps !== null
+      ? expectedFramesForConcat(edl.segments, sourceFps, edl.output.fps)
+      : expectedFramesNaive(edl.segments, edl.output.fps)
+  const expectedDuration =
+    isFpsConverting && sourceFps !== null
+      ? (expectedFrames / edl.output.fps) * 1000
+      : edl.segments.reduce((total, segment) => total + segment.outMs - segment.inMs, 0)
   const observedDuration = Number(duration) * 1000
   const toleranceMs = 2000 / edl.output.fps + 20
-  const expectedFrames = Math.round((expectedDuration / 1000) * edl.output.fps)
   const observedFrames = Number(video.nb_read_frames)
 
   if (video.width !== edl.output.width || video.height !== edl.output.height) {
@@ -461,13 +596,21 @@ const videoOutputErrors = (
     errors.push('render frame rate differs from EDL')
   }
   if (!Number.isFinite(observedFrames) || Math.abs(observedFrames - expectedFrames) > 1) {
-    errors.push('render frame count differs from EDL duration')
+    errors.push(
+      `render frame count differs from EDL duration: expected ${expectedFrames} frames, got ${
+        Number.isFinite(observedFrames) ? observedFrames : 'unknown'
+      } (tolerance 1 frame)`,
+    )
   }
   if (
     !Number.isFinite(observedDuration) ||
     Math.abs(observedDuration - expectedDuration) > toleranceMs
   ) {
-    errors.push('render duration differs from EDL')
+    errors.push(
+      `render duration differs from EDL: expected ${Math.round(expectedDuration)}ms, got ${
+        Number.isFinite(observedDuration) ? Math.round(observedDuration) : 'unknown'
+      }ms (tolerance ${Math.round(toleranceMs)}ms)`,
+    )
   }
   return errors
 }
