@@ -420,6 +420,11 @@ describe('gapsBetween', () => {
 // Five runs of one recording shipped a repetition, and not one of them missed seeing it: the
 // reading that kept it was always "this one is deliberate". Naming the phrase is what turns
 // that into a claim about something specific rather than an impression of the whole.
+//
+// repeatedPhrases now splits into { repeated, discounted }: a run whose content-word count
+// falls below MIN_CONTENT_WORDS is connective tissue, not a candidate retake, and lands in
+// discounted instead of repeated. See the 'stopword-dominated phrases' describe block below for
+// that split; these tests use phrases dense enough in content words to survive either way.
 describe('repeatedPhrases', () => {
   const line = (index: number, text: string) => ({
     index,
@@ -429,26 +434,26 @@ describe('repeatedPhrases', () => {
   })
 
   test('names wording that occurs in more than one line', () => {
-    const found = repeatedPhrases([
-      line(0, 'hubiera tenido una forma muy distinta a la que conocemos hoy en dia'),
-      line(1, 'Y a la que conocemos, ya llegamos a mil miembros'),
+    const { repeated } = repeatedPhrases([
+      line(0, 'hubiera tenido una forma muy distinta a construimos esta comunidad hoy en dia'),
+      line(1, 'Y construimos esta comunidad, ya llegamos a mil miembros'),
     ])
     // Reported as word runs rather than as the longest repeat, so the phrase a reader has to
     // account for arrives as its overlapping parts: enough to name what recurs and where.
-    expect(found.map((entry) => entry.phrase)).toContain('la que conocemos')
-    const entry = found.find((item) => item.phrase === 'la que conocemos')
+    expect(repeated.map((entry) => entry.phrase)).toContain('construimos esta comunidad')
+    const entry = repeated.find((item) => item.phrase === 'construimos esta comunidad')
     expect(entry?.count).toBe(2)
     expect(entry?.lineIndexes).toEqual([0, 1])
   })
 
   test('catches the retake a run kept as a rhetorical beat', () => {
-    const found = repeatedPhrases([
-      line(0, 'Es un honor? No, no, no, otra vez.'),
-      line(1, 'Es un honor.'),
+    const { repeated } = repeatedPhrases([
+      line(0, 'Es un honor grande? No, no, no, otra vez.'),
+      line(1, 'Es un honor grande.'),
       line(2, 'No, eso es muy fake.'),
-      line(3, 'Es un honor la verdad.'),
+      line(3, 'Es un honor grande la verdad.'),
     ])
-    const entry = found.find((item) => item.phrase === 'es un honor')
+    const entry = repeated.find((item) => item.phrase === 'un honor grande')
     expect(entry?.count).toBe(3)
   })
 
@@ -457,21 +462,141 @@ describe('repeatedPhrases', () => {
       repeatedPhrases([
         line(0, 'Hola a todos, hoy quiero contarles una reflexion.'),
         line(1, 'Venimos construyendo bien duro y son los frutos.'),
-      ]),
+      ]).repeated,
     ).toEqual([])
   })
 
   // Punctuation and case are the speaker's delivery, not their words: a run that reports
-  // "es un honor" and "Es un honor?" as different phrases finds nothing worth reporting.
+  // "un honor grande" and "Un Honor Grande?" as different phrases finds nothing worth reporting.
   test('reads through case and punctuation', () => {
-    const found = repeatedPhrases([line(0, 'Es un honor?'), line(1, 'es, un honor')])
-    expect(found.map((entry) => entry.phrase)).toContain('es un honor')
+    const { repeated } = repeatedPhrases([line(0, 'Un honor grande?'), line(1, 'un, honor grande')])
+    expect(repeated.map((entry) => entry.phrase)).toContain('un honor grande')
   })
 
   // A stutter the transcript kept is one line saying a thing once, badly. Counting it as a
   // repetition would put an entry in front of a reader for every hesitation in the file.
   test('does not report a line as repeating itself', () => {
-    expect(repeatedPhrases([line(0, 'y a la que y a la que conocemos')])).toEqual([])
+    expect(repeatedPhrases([line(0, 'un honor grande un honor grande')]).repeated).toEqual([])
+  })
+})
+
+// The gate that made check exit 2 on ~32 ordinary Spanish connectives ("que la gente", "va a
+// ser", "qué sé yo") reused across unrelated sentences: an agent read every one in context and
+// found zero real retakes, but the invariant required a human decision on each. A repeated
+// 3-word run with too few content words is discounted instead of gating.
+describe('repeatedPhrases: stopword-dominated phrases are discounted, not gated', () => {
+  const line = (index: number, text: string) => ({
+    index,
+    startMs: index * 1000,
+    endMs: index * 1000 + 900,
+    text,
+  })
+
+  test('discounts "que la gente", one content word, reused across unrelated sentences', () => {
+    const { repeated, discounted } = repeatedPhrases([
+      line(0, 'y yo creo que la gente ya sabe lo que quiere'),
+      line(1, 'pero resulta que la gente prefiere algo mas simple'),
+    ])
+    expect(repeated).toEqual([])
+    expect(discounted.map((entry) => entry.phrase)).toContain('que la gente')
+    expect(discounted.find((entry) => entry.phrase === 'que la gente')?.reason).toContain(
+      '1 content word',
+    )
+  })
+
+  test('discounts "va a ser" with zero content words', () => {
+    const { repeated, discounted } = repeatedPhrases([
+      line(0, 'entonces eso va a ser lo primero que hagamos'),
+      line(1, 'y despues va a ser mucho mas facil'),
+    ])
+    expect(repeated).toEqual([])
+    expect(discounted.map((entry) => entry.phrase)).toContain('va a ser')
+  })
+
+  test('discounts "qué sé yo", the idiomatic filler, not a retake', () => {
+    const { repeated, discounted } = repeatedPhrases([
+      line(0, 'capaz cambio de opinion, que se yo, no tengo idea'),
+      line(1, 'y despues, que se yo, terminamos haciendo otra cosa'),
+    ])
+    expect(repeated).toEqual([])
+    expect(discounted.map((entry) => entry.phrase)).toContain('que se yo')
+  })
+
+  // "puedo automatizar mis skills" from the issue: a real retake candidate, 4 content words
+  // spread across two overlapping 3-word windows, each carrying 2. Confirms the threshold does
+  // not gut the detector it exists to keep working.
+  test('keeps a real retake candidate: "puedo automatizar mis skills"', () => {
+    const { repeated, discounted } = repeatedPhrases([
+      line(0, 'siento que ya puedo automatizar mis skills sin problema'),
+      line(1, 'osea que puedo automatizar mis skills todo el dia'),
+    ])
+    expect(repeated.map((entry) => entry.phrase)).toEqual(
+      expect.arrayContaining(['puedo automatizar mis', 'automatizar mis skills']),
+    )
+    expect(discounted).toEqual([])
+  })
+
+  // report.lang defaults to 'es' everywhere else in the CLI (open, detect), so no lang at all
+  // reads as Spanish, same as an explicit 'es'.
+  test('defaults to Spanish stopwords when no lang is given', () => {
+    const { discounted } = repeatedPhrases([
+      line(0, 'entonces eso va a ser lo primero'),
+      line(1, 'y despues va a ser mucho mas facil'),
+    ])
+    expect(discounted.map((entry) => entry.phrase)).toContain('va a ser')
+  })
+
+  test('discounts the English equivalent: "kind of like"', () => {
+    const { repeated, discounted } = repeatedPhrases(
+      [
+        line(0, 'it was kind of like a weird moment for everyone'),
+        line(1, 'and that was kind of like the whole point'),
+      ],
+      'en',
+    )
+    expect(repeated).toEqual([])
+    expect(discounted.map((entry) => entry.phrase)).toContain('kind of like')
+  })
+
+  test('keeps an English real retake candidate with lang="en"', () => {
+    const { repeated, discounted } = repeatedPhrases(
+      [
+        line(0, 'I think I can automate my workflow today'),
+        line(1, 'honestly I can automate my workflow easily'),
+      ],
+      'en',
+    )
+    // "automate my workflow" carries 2 content words and survives; the overlapping windows on
+    // either side of it ("i can automate", "can automate my") are pronoun-and-modal tissue and
+    // land in discounted instead, the same split a real retake produces in Spanish.
+    expect(repeated.map((entry) => entry.phrase)).toContain('automate my workflow')
+    expect(discounted.map((entry) => entry.phrase)).toEqual(
+      expect.arrayContaining(['i can automate', 'can automate my']),
+    )
+  })
+
+  // 'en-US', 'eng', 'English' all read as English: report.lang is free-form, not a closed enum,
+  // so this only has to recognise the front of the string rather than an exact match.
+  test('reads a lang tag other than the bare "en" code as English', () => {
+    const { discounted } = repeatedPhrases(
+      [
+        line(0, 'it was kind of like a weird moment for everyone'),
+        line(1, 'and that was kind of like the whole point'),
+      ],
+      'en-US',
+    )
+    expect(discounted.map((entry) => entry.phrase)).toContain('kind of like')
+  })
+
+  // The phrase in discounted keeps its diacritics ("qué" survives in the raw text before
+  // lowercasing strips punctuation but not accents), while the stopword match that decided it
+  // is discounted goes through foldDiacritics so "qué" still matches the "que" entry.
+  test('reads diacritics on the stopword side without needing them on the phrase side', () => {
+    const { discounted } = repeatedPhrases([
+      line(0, 'entonces, qué sé yo, seguimos con el plan'),
+      line(1, 'y despues, qué sé yo, cambiamos de idea'),
+    ])
+    expect(discounted.map((entry) => entry.phrase)).toContain('qué sé yo')
   })
 })
 
@@ -888,5 +1013,149 @@ describe('semanticCommand merge', () => {
     }
     expect(output.status).toBe('merged')
     expect(output.files).toEqual([a, b])
+  })
+})
+
+// End to end: check --review reads exactly what review would have written. Before this fix,
+// review's own repeatedPhrases put every stopword-dominated 3-gram into `repeated`, so a round
+// of ordinary conversational Spanish hit unaddressed-repeats and exited 2 on connectives nobody
+// could act on. Now review's `repeated` already excludes them (they move to discountedRepeats
+// instead), so check --review sees fewer entries to answer and only gates on a real signal.
+describe('semanticCommand check --review: the exit-2 gate only fires on real signals', () => {
+  let workDir: string
+
+  beforeAll(() => {
+    workDir = mkdtempSync(join(tmpdir(), 'vcut-semantic-check-review-'))
+  })
+
+  afterAll(() => {
+    rmSync(workDir, { recursive: true, force: true })
+  })
+
+  const capture = async (
+    argv: string[],
+  ): Promise<{ output: unknown; exitCode: number | undefined }> => {
+    const originalLog = console.log
+    const originalExitCode = process.exitCode
+    process.exitCode = undefined
+    let printed = ''
+    console.log = (text: string) => {
+      printed = text
+    }
+    try {
+      await semanticCommand(argv)
+    } finally {
+      console.log = originalLog
+    }
+    const exitCode = process.exitCode
+    // Bun 1.3.11 ignores `process.exitCode = undefined`; only a number clears a set code.
+    process.exitCode = originalExitCode ?? 0
+    return { output: JSON.parse(printed), exitCode }
+  }
+
+  const writeDetect = (name: string): string => {
+    const path = join(workDir, name)
+    writeFileSync(path, JSON.stringify({ durationMs: 60_000 }))
+    return path
+  }
+
+  const line = (index: number, text: string) => ({
+    index,
+    startMs: index * 1000,
+    endMs: index * 1000 + 900,
+    text,
+  })
+
+  test('exit 0: a review built from only connective repeats gates on nothing', async () => {
+    const detectPath = writeDetect('detect-noise.json')
+    // The exact shape `semantic review` writes: repeated already excludes the discounted noise
+    // repeatedPhrases found in these lines, so nothing here needs a proposal to answer it.
+    const { repeated } = repeatedPhrases([
+      line(0, 'y yo creo que la gente ya sabe lo que quiere'),
+      line(1, 'pero resulta que la gente prefiere algo mas simple'),
+    ])
+    expect(repeated).toEqual([])
+    const reviewPath = join(workDir, 'review-noise.json')
+    writeFileSync(reviewPath, JSON.stringify({ repeated, lines: [] }))
+    const proposalsPath = join(workDir, 'proposals-empty.json')
+    writeFileSync(proposalsPath, JSON.stringify([]))
+
+    const { output, exitCode } = (await capture([
+      'check',
+      '--detect',
+      detectPath,
+      '--proposals',
+      proposalsPath,
+      '--review',
+      reviewPath,
+    ])) as { output: { status: string }; exitCode: number | undefined }
+    expect(output.status).toBe('valid')
+    expect(exitCode).toBe(0)
+  })
+
+  test('exit 2: a real retake left unanswered still gates the round', async () => {
+    const detectPath = writeDetect('detect-real.json')
+    const retakeLines = [
+      line(0, 'siento que ya puedo automatizar mis skills sin problema'),
+      line(1, 'osea que puedo automatizar mis skills todo el dia'),
+    ]
+    const { repeated, discounted } = repeatedPhrases(retakeLines)
+    expect(repeated.length).toBeGreaterThan(0)
+    const reviewPath = join(workDir, 'review-real.json')
+    writeFileSync(reviewPath, JSON.stringify({ repeated, lines: retakeLines }))
+    const proposalsPath = join(workDir, 'proposals-empty-2.json')
+    writeFileSync(proposalsPath, JSON.stringify([]))
+
+    const { output, exitCode } = (await capture([
+      'check',
+      '--detect',
+      detectPath,
+      '--proposals',
+      proposalsPath,
+      '--review',
+      reviewPath,
+    ])) as {
+      output: { status: string; unaddressedRepeats: unknown[] }
+      exitCode: number | undefined
+    }
+    expect(output.status).toBe('unaddressed-repeats')
+    expect(output.unaddressedRepeats.length).toBe(repeated.length)
+    expect(exitCode).toBe(2)
+    expect(discounted).toEqual([])
+  })
+
+  test('exit 0: the real retake closes once a proposal names it', async () => {
+    const detectPath = writeDetect('detect-named.json')
+    const retakeLines = [
+      line(0, 'siento que ya puedo automatizar mis skills sin problema'),
+      line(1, 'osea que puedo automatizar mis skills todo el dia'),
+    ]
+    const { repeated } = repeatedPhrases(retakeLines)
+    const reviewPath = join(workDir, 'review-named.json')
+    writeFileSync(reviewPath, JSON.stringify({ repeated, lines: retakeLines }))
+    const proposalsPath = join(workDir, 'proposals-named.json')
+    writeFileSync(
+      proposalsPath,
+      JSON.stringify([
+        proposal(
+          0,
+          900,
+          'repetition',
+          'keeping the second telling of "puedo automatizar mis skills"',
+        ),
+      ]),
+    )
+
+    const { output, exitCode } = (await capture([
+      'check',
+      '--detect',
+      detectPath,
+      '--proposals',
+      proposalsPath,
+      '--review',
+      reviewPath,
+    ])) as { output: { status: string }; exitCode: number | undefined }
+    expect(output.status).not.toBe('unaddressed-repeats')
+    expect(exitCode).toBe(0)
   })
 })

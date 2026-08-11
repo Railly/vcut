@@ -476,9 +476,253 @@ export const gapsBetween = (segments: Interval[]): Interval[] => {
 // matter of degree, and a speaker restating a line reuses the words rather than paraphrasing.
 const RUN_LENGTH = 3
 
+// Articles, prepositions, conjunctions, pronouns, and the copula/auxiliary forms a speaker
+// leans on to connect two unrelated sentences. Curated rather than pulled from a package: this
+// is the same house style as the rest of the CLI (no dependency for a list this short), and the
+// set only has to cover what a 3-word run built from RUN_LENGTH actually produces, not general
+// NLP stopword removal.
+const STOPWORDS_ES = new Set([
+  'a',
+  'al',
+  'algo',
+  'algun',
+  'alguna',
+  'algunas',
+  'algunos',
+  'ante',
+  'asi',
+  'aun',
+  'bien',
+  'cada',
+  'como',
+  'con',
+  'cual',
+  'cuando',
+  'de',
+  'del',
+  'donde',
+  'e',
+  'el',
+  'ella',
+  'ellas',
+  'ello',
+  'ellos',
+  'en',
+  'era',
+  'eran',
+  'eres',
+  'es',
+  'esa',
+  'esas',
+  'ese',
+  'eso',
+  'esos',
+  'esta',
+  'estan',
+  'estas',
+  'este',
+  'esto',
+  'estos',
+  'fue',
+  'fueron',
+  'ha',
+  'han',
+  'hay',
+  'la',
+  'las',
+  'le',
+  'les',
+  'lo',
+  'los',
+  'mas',
+  'me',
+  'mi',
+  'mis',
+  'mucho',
+  'muy',
+  'nada',
+  'ni',
+  'no',
+  'nos',
+  'nosotros',
+  'nuestra',
+  'nuestro',
+  'o',
+  'os',
+  'para',
+  'pero',
+  'poco',
+  'por',
+  'porque',
+  'pues',
+  'que',
+  'quien',
+  'se',
+  'segun',
+  'ser',
+  'si',
+  'sin',
+  'sobre',
+  'solo',
+  'somos',
+  'son',
+  'soy',
+  'su',
+  'sus',
+  'tal',
+  'tambien',
+  'tan',
+  'te',
+  'ti',
+  'tu',
+  'tus',
+  'un',
+  'una',
+  'unas',
+  'uno',
+  'unos',
+  'va',
+  'vamos',
+  'ya',
+  'yo',
+])
+
+const STOPWORDS_EN = new Set([
+  'a',
+  'about',
+  'after',
+  'again',
+  'all',
+  'am',
+  'an',
+  'and',
+  'any',
+  'are',
+  'as',
+  'at',
+  'be',
+  'been',
+  'being',
+  'but',
+  'by',
+  'can',
+  'did',
+  'do',
+  'does',
+  'doing',
+  'for',
+  'from',
+  'gonna',
+  'got',
+  'had',
+  'has',
+  'have',
+  'having',
+  'he',
+  'her',
+  'here',
+  'hers',
+  'him',
+  'his',
+  'how',
+  'i',
+  'if',
+  'in',
+  'into',
+  'is',
+  'it',
+  'its',
+  'just',
+  'like',
+  'me',
+  'more',
+  'my',
+  'no',
+  'nor',
+  'not',
+  'of',
+  'on',
+  'or',
+  'our',
+  'out',
+  'over',
+  'own',
+  's',
+  'same',
+  'she',
+  'so',
+  'some',
+  'such',
+  't',
+  'than',
+  'that',
+  'the',
+  'their',
+  'them',
+  'then',
+  'there',
+  'these',
+  'they',
+  'this',
+  'those',
+  'to',
+  'too',
+  'up',
+  'very',
+  'was',
+  'we',
+  'were',
+  'what',
+  'when',
+  'where',
+  'which',
+  'who',
+  'why',
+  'will',
+  'with',
+  'would',
+  'you',
+  'your',
+  'yours',
+])
+
+// report.lang is free-form (open/detect default it to 'es'), not a closed enum, so this reads
+// the front of whatever string arrives rather than requiring an exact match: 'en', 'eng',
+// 'english', and 'en-US' all land on the English list the same way. Anything else, including no
+// lang at all, gets Spanish, matching the CLI's own default everywhere else --lang appears.
+const stopwordsFor = (lang: string | undefined): Set<string> =>
+  lang !== undefined && foldDiacritics(lang).toLowerCase().startsWith('en')
+    ? STOPWORDS_EN
+    : STOPWORDS_ES
+
+// Below this many content words, a repeated 3-word run is ordinary connective tissue rather
+// than a candidate retake: "que la gente" (1 content word) and "va a ser" (0) were 2 of the ~32
+// phrases one run's check gate made a human clear by hand, none a real repetition. A 2-content-
+// word floor keeps both out while a real retake's overlapping windows ("puedo automatizar mis" /
+// "automatizar mis skills") each carry 2, so it still triggers. Not "content words == RUN_LENGTH"
+// (3): a run built from one connective and two content words, e.g. a name repeated with "de" or
+// "the" beside it, is still worth a human's eyes, and RUN_LENGTH itself may change independently
+// of where noise starts.
+const MIN_CONTENT_WORDS = 2
+
+const contentWordCount = (run: string, stopwords: Set<string>): number =>
+  run.split(' ').filter((word) => !stopwords.has(foldDiacritics(word))).length
+
+export type DiscountedRepeat = {
+  phrase: string
+  count: number
+  lineIndexes: number[]
+  reason: string
+}
+
 export const repeatedPhrases = (
   lines: Line[],
-): Array<{ phrase: string; count: number; lineIndexes: number[] }> => {
+  lang?: string,
+): {
+  repeated: Array<{ phrase: string; count: number; lineIndexes: number[] }>
+  discounted: DiscountedRepeat[]
+} => {
+  const stopwords = stopwordsFor(lang)
   const seen = new Map<string, number[]>()
   lines.forEach((line, index) => {
     const words = line.text
@@ -500,10 +744,28 @@ export const repeatedPhrases = (
       seen.set(run, where)
     }
   })
-  return [...seen.entries()]
+  const entries = [...seen.entries()]
     .filter(([, where]) => where.length > 1)
-    .map(([phrase, where]) => ({ phrase, count: where.length, lineIndexes: where }))
-    .sort((left, right) => right.count - left.count || left.phrase.localeCompare(right.phrase))
+    .sort(
+      ([leftPhrase, left], [rightPhrase, right]) =>
+        right.length - left.length || leftPhrase.localeCompare(rightPhrase),
+    )
+  const repeated: Array<{ phrase: string; count: number; lineIndexes: number[] }> = []
+  const discounted: DiscountedRepeat[] = []
+  for (const [phrase, where] of entries) {
+    const contentWords = contentWordCount(phrase, stopwords)
+    if (contentWords < MIN_CONTENT_WORDS) {
+      discounted.push({
+        phrase,
+        count: where.length,
+        lineIndexes: where,
+        reason: `${contentWords} content word${contentWords === 1 ? '' : 's'}, below the ${MIN_CONTENT_WORDS} needed to read as a candidate retake rather than connective tissue`,
+      })
+      continue
+    }
+    repeated.push({ phrase, count: where.length, lineIndexes: where })
+  }
+  return { repeated, discounted }
 }
 
 // Lowercasing alone leaves an accent standing between a repeated phrase and the reason that
@@ -651,6 +913,7 @@ export const REVIEW_INSTRUCTIONS = [
   'A converted timestamp looks as confident as a measured one. When a finding contradicts your mapping between the source and the master, check the mapping first, since it is the newer claim.',
   'unreviewed lists the stretches between two cuts that no proposal ever touched. They look reviewed because their neighbours were cut, and that is where a marker survives round after round. Read those first and apply the deletion test to every span in them.',
   'repeated lists wording that occurs more than once in the text above, with the lines it occurs in. It is not a verdict: a name, a term the subject is about, and a deliberate echo all repeat legitimately. It is the list of places where "I read this and it is fine" has to be a decision about a specific phrase rather than an impression of the whole.',
+  'discountedRepeats lists wording that also repeated but read as connective tissue rather than a candidate retake ("que la gente", "va a ser"): too few content words in the run for a repeat to mean anything on its own. Nothing here needs a proposal or a reason. It is shown so a repeat that was filtered is visible, not silently dropped, in case one reads wrong for a recording this list was not built against.',
   'Answer every entry in repeated before reporting nothing. Say which telling you are keeping and why the others are not tellings of the same thing. A retake reads as a coherent scene, which is why a comprehension check clears it and a deletion test does not: delete each occurrence in turn and see whether the passage still says everything it said.',
   'A speaker judging their own take is a cut, whatever it sounds like. "otra vez", "no, asi no", "again", "scratch that" are stage directions that reached the microphone, and they are followed by another attempt at the same line. One run cut such a retake correctly and kept a second one in the same master, calling it a rhetorical beat, because it judged the delivery rather than the words.',
   'Reporting nothing is a claim to verify, not a way to finish. Save this output and run `vcut semantic check --proposals <yours> --detect <detect.json> --review <this file>`: it exits 2 while a repeated phrase is unnamed by any reason or still present in these lines, and an empty round that has not passed it is a round that stopped without checking. Every run that shipped a repetition reported nothing first.',
@@ -857,6 +1120,7 @@ export const semanticCommand = async (argv: string[]): Promise<void> => {
             masterSilences,
             LINE_BREAK_MS,
           )
+    const { repeated, discounted } = repeatedPhrases(lines, report.lang)
     emitJson({
       status: 'exported',
       input: report.input,
@@ -871,7 +1135,12 @@ export const semanticCommand = async (argv: string[]): Promise<void> => {
       masterMeasured: masterPath !== undefined,
       linesFrom: masterTranscript === undefined ? 'source' : 'master',
       unreviewed: unreviewedStretches(lines, gapsBetween(segments), UNREVIEWED_MS),
-      repeated: repeatedPhrases(lines),
+      repeated,
+      // Not gated on and not part of what a round has to answer: these are stopword-dominated
+      // runs (below MIN_CONTENT_WORDS) that repeatedPhrases already decided read as connective
+      // tissue, not candidate retakes. Carried here so a caller can see what was filtered and
+      // why, rather than the filtering happening silently between this output and the gate.
+      discountedRepeats: discounted,
       deadAir,
       lines,
       next: semanticReviewNext(value('--detect') as string, masterPath),
