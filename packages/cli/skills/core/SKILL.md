@@ -1441,6 +1441,13 @@ not remove that step, it removes the ceremony around steps 1 and 4: no proposals
 and hand-edit, no re-typed `--detect`/`--semantic` paths per round, and `removedText` is quoted
 back at propose time instead of only appearing after a build.
 
+A finding never has to leave the session's coordinate system to become a `cut`. `semantic
+export` lines carry `nearestRef`, so a proposal you write from export goes straight into
+`--refs <nearestRef>`. `say` and `silences` emit raw milliseconds instead — `atMs`, `startMs`,
+`endMs` — and `--start-ms <n> --end-ms <n>` takes those directly, no seconds conversion, with
+the same accumulation into `proposals.json` and the same visibility in `rounds --diff` that
+`--refs` and `--span` already have.
+
 ```bash
 vcut open recording.mp4 --preset clean --lang es --transcript words.srt   # once
 vcut cut recording.mp4 --refs b042..b044 --kind repetition --reason "..."  # per finding

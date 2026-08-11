@@ -20,6 +20,7 @@ import {
   unaddressedRepeats,
   unreviewedStretches,
   validateProposals,
+  withNearestRefs,
 } from '../src/semantic.ts'
 
 // A real file, because renderedGaps runs ffmpeg: a fixture path would only test the error
@@ -116,6 +117,43 @@ describe('buildLines', () => {
 
   test('numbers lines from one so a model can refer to them', () => {
     expect(buildLines(words, [], 700).map((line) => line.index)).toEqual([1, 2])
+  })
+})
+
+// The same lookup open.ts attaches to suspects (nearestRef), reused here so an export line's
+// finding carries the same block ref a session's cut --refs already resolves against, instead
+// of a second "closest ref" definition that could drift from the first.
+describe('withNearestRefs', () => {
+  const blocks = [
+    { ref: 'b1', startMs: 0, endMs: 2000 },
+    { ref: 'b2', startMs: 2500, endMs: 6000 },
+  ]
+
+  test('attaches the ref whose span contains the line start', () => {
+    const lines = [{ index: 1, startMs: 1000, endMs: 1800, text: 'hola' }]
+    expect(withNearestRefs(lines, blocks)).toEqual([{ ...lines[0], nearestRef: 'b1' }])
+  })
+
+  test('attaches the closest ref when the line starts inside a silence gap', () => {
+    const lines = [{ index: 1, startMs: 2200, endMs: 2400, text: 'entre medio' }]
+    expect(withNearestRefs(lines, blocks)[0].nearestRef).toBe('b1')
+  })
+
+  test('anchors on startMs, not endMs', () => {
+    // Starts inside b1 and runs into b2's territory; the ref follows where the line begins.
+    const lines = [{ index: 1, startMs: 1900, endMs: 2600, text: 'cruza el silencio' }]
+    expect(withNearestRefs(lines, blocks)[0].nearestRef).toBe('b1')
+  })
+
+  test('null when there are no blocks to compare against', () => {
+    const lines = [{ index: 1, startMs: 500, endMs: 900, text: 'sola' }]
+    expect(withNearestRefs(lines, [])[0].nearestRef).toBeNull()
+  })
+
+  test('preserves every original line field', () => {
+    const lines = [{ index: 3, startMs: 3000, endMs: 3500, text: 'contenido' }]
+    const [withRef] = withNearestRefs(lines, blocks)
+    expect(withRef).toMatchObject(lines[0])
   })
 })
 

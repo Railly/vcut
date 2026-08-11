@@ -419,13 +419,14 @@ const CONTRACTS: Record<string, unknown> = {
     command: 'vcut semantic export | vcut semantic check',
     output: {
       export:
-        '{ status: "exported", input, durationMs, lang, instructions: string[], lines: [{ index, startMs, endMs, text }] }',
+        '{ status: "exported", input, durationMs, lang, instructions: string[], lines: [{ index, startMs, endMs, text, nearestRef }] }',
       check: '{ status: "valid"|"rejected", accepted: integer, issues: [{ index, problem }] }',
     },
     notes: [
       'vcut never calls a model. Export hands over the lines; you write the proposals back.',
       'A proposal is { startMs, endMs, kind, reason }, kind being false-start | repetition | tangent | filler | non-speech.',
       'non-speech covers audible sound that is not language, which neither detect nor the transcript can see. skills/core/scripts/non-speech.py finds those with an audio classifier and prints them in this schema.',
+      "Each exported line carries nearestRef, the session's block ref closest to that line's own startMs, derived the same way vcut open attaches nearestRef to suspects. A proposal can carry that ref straight into vcut cut --refs instead of retyping the line's raw milliseconds.",
       'Feed accepted proposals to vcut edl build --semantic <path>. Each lands as semanticRisk material.',
       'check exits 1 when anything is malformed, and edl build refuses the whole file rather than skipping entries.',
     ],
@@ -521,7 +522,8 @@ const CONTRACTS: Record<string, unknown> = {
     notes: [
       'The session must already exist: cut resolves refs against a session it does not create. Run vcut open first.',
       "--refs takes a single ref or an inclusive range (b042..b044): the span runs from the first ref's start to the second's end. Resolution reuses peek's resolveRef, so an unknown or stale-gen ref is a usage error naming the ref and the session's current gen, not a guess.",
-      '--span <startS>..<endS> is the escape hatch for a raw span when no ref fits. Mutually exclusive with --refs.',
+      '--span <startS>..<endS> is the escape hatch for a raw span when no ref fits. Mutually exclusive with --refs and --start-ms/--end-ms.',
+      "--start-ms <n> --end-ms <n> takes the same raw milliseconds say, silences, and semantic export already emit, so a finding from any of those needs no seconds conversion to reach a session. Same session-tracking benefits as --refs and --span: accumulates in proposals.json, shows in rounds --diff. Bounds are validated against the session's own detect report duration; an inverted range is a usage error. Mutually exclusive with --refs and --span.",
       "removedText is quoted from the session's cached transcript at propose time, before any build runs — the corrective for a cut whose span drifted onto the wrong words unnoticed until a render.",
       "Appends to the session's proposals.json (created on first cut). Proposing and --drop take the session's advisory lock for the write and release it after; --list never locks. A session already locked by a live process fails with an error naming its pid, verb, and age.",
     ],
