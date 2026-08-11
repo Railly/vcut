@@ -20,6 +20,7 @@ vcut silences <media> [flags]      Speech/silence blocks over a range, at a chos
 vcut converge <media> [flags]      Find where a repeated phrase stops coming back
 vcut nonspeech <render> [--verify] Find audible sound that is not language
 vcut open <media> [flags]          Open or resume a session, map its blocks with stable refs
+vcut peek <media> (--ref|--at)     The four views of a position, aligned, disagreement named
 vcut schema [name]                 Print the JSON contract for a command
 vcut skills list|get [name]        Read the bundled agent manual
 vcut doctor                        Check external dependencies
@@ -161,6 +162,24 @@ Those silences become **refs**: the speech blocks between them, numbered `b001`,
 | `--transcript <path>` | Caches an SRT into the session. Without it, `open` still works — refs come from silences, not words |
 
 `open`'s output is counts, not content: duration, preset, gen, silence and block counts, whether a transcript is cached, and the top 10 suspects (same ranking as `suspects`, each with the nearest block ref). No spoken text appears anywhere in it. Reading what a ref actually says, and cutting against refs, are later verbs.
+
+### vcut peek
+
+```bash
+vcut peek recording.mp4 --ref b042
+vcut peek recording.mp4 --at 550.0 --window 5 --lang es
+```
+
+The four views of one position, aligned in a single call: what the session's cached transcript claims is there (`transcript`), what the audio actually says when asked again over the span (`heard`), the speech/silence shape at fine resolution (`blocks`, -33dB/0.08s min over the span padded by a second either side), and the level (`level`). Resolves the session for `<media>` the way `open` does, creating it if none exists.
+
+| Flag | What it does |
+| --- | --- |
+| `--ref <ref>` | A block ref from this session's `refs.json` (from `vcut open`) |
+| `--at <sec>` | A position in seconds, instead of a ref |
+| `--window <sec>` | Width of the span when using `--at` (default 4, centred on `--at`) |
+| `--lang <code>` | Language passed to the transcriber |
+
+`viewsDisagree` compares `transcript` against `heard` on carrying words (4+ letters, the same comparison `converge` uses) and names `transcript-claims-more`, `heard-more`, `aligned`, or `soft-speech-below-threshold` — the last one firing when the fine-resolution `blocks` read silence for the whole span but `heard` still carries words: speech under the level threshold that neither `silences` nor `detect` alone can see. A disagreement is a place to look, not a verdict — a short window transcribes noisily, the same caveat `say --transcribe` already carries.
 
 ### vcut semantic
 

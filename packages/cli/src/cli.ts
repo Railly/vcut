@@ -20,6 +20,7 @@ import {
   resolveMode,
   UsageError,
 } from './output.ts'
+import { peekCommand } from './peek.ts'
 import { renderCommand } from './render-edl.ts'
 import { sayCommand } from './say.ts'
 import { semanticCommand } from './semantic.ts'
@@ -48,6 +49,7 @@ Usage:
   vcut converge <media> [flags]      Find where a repeated phrase stops coming back
   vcut nonspeech <render> [--verify] Find audible sound that is not language
   vcut open <media> [flags]          Open or resume a session, map its blocks with stable refs
+  vcut peek <media> (--ref|--at)     The four views of a position, aligned, disagreement named
   vcut schema [name]                 Print the JSON contract for a command
   vcut skills list|get [name]        Read the bundled agent manual
   vcut doctor                        Check external dependencies
@@ -423,6 +425,33 @@ const CONTRACTS: Record<string, unknown> = {
       'video scan (black/frozen frame detection) is skipped: refs and the suspects ranking only need silences, and the scan is real ffmpeg time this command has no use for.',
     ],
   },
+  peek: {
+    version: SCHEMA_VERSION,
+    command: 'vcut peek',
+    output: {
+      version: 'number, always 1',
+      input: 'absolute path to the source',
+      sessionDir: 'absolute path to this session',
+      ref: 'the ref this peek resolved, or null when --at was used',
+      atMs: 'integer, the centre of the span',
+      spanStartMs: 'integer',
+      spanEndMs: 'integer',
+      transcript:
+        '{ words: [{text, startMs, endMs}], note? }. Words the cached transcript claims inside the span; note explains an empty result when no transcript is cached',
+      heard: '{ text: string }. The span re-transcribed just now, verbatim preset',
+      blocks:
+        '[{ kind: "speech"|"silence", startMs, endMs, durationMs }], fine resolution (-33dB, 0.08s min) over span ± 1s',
+      level: '{ peakDb: number|null, meanDb: number|null }, over the span itself',
+      viewsDisagree:
+        '{ disagree: boolean, kind: "transcript-claims-more"|"heard-more"|"aligned"|"soft-speech-below-threshold" }',
+    },
+    notes: [
+      "Resolves the session for <media> the way open does (creates it if absent, reuses checkSession's cheap path otherwise). --ref resolves a block from this session's refs.json; --at takes a raw position and derives a span --window seconds wide (default 4), centred on --at.",
+      'viewsDisagree compares transcript against heard on carrying words (4+ letters), the same comparison converge uses for the same reason: short words drift between two transcriptions of the same audio and comparing them reports noise, not disagreement.',
+      'soft-speech-below-threshold fires when the fine-resolution blocks read silence for the whole span but heard still carries words: speech under the level threshold that neither silences nor detect can see, but a transcriber hears plainly.',
+      'A disagreement is a place to look, not a verdict. Short-window transcription is itself noisy; treat viewsDisagree as a pointer, confirm with a wider window before acting on it.',
+    ],
+  },
   say: {
     version: SCHEMA_VERSION,
     command: 'vcut say',
@@ -655,6 +684,9 @@ export const route = async (argv: string[]): Promise<void> => {
   }
   if (command === 'open') {
     return openCommand(rest)
+  }
+  if (command === 'peek') {
+    return peekCommand(rest)
   }
   if (command === 'schema') {
     return schemaCommand(rest)
