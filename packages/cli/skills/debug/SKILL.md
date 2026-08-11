@@ -69,6 +69,29 @@ candidate positions afterwards scored **0.975** for the position the EDL named a
 
 `audit` marks where to look. Reading the words at that position settles it in seconds.
 
+## "Did every semantic join land clean?"
+
+```bash
+vcut joins --edl edl.json --render cut.mp4 --report report.json --lang es
+```
+
+**Trap: believing a `removed-text-leaked` reading.** It fires when the re-transcribed window
+around a join shares a majority of carrying words with the cut's own `removedText` — real
+signal for a leaked tail, but a false-start's removed text is often the speaker repeating the
+same phrase before landing it, and the sentence that survives can legitimately reuse that
+phrase as its real content. Carrying-word overlap cannot tell the two apart; both are, by
+construction, about the same words.
+
+Verified on real material: a cut removed three stumbled attempts at "agregar
+verificabilidad", and the surviving sentence used "agregar verificabilidad" as its subject.
+`joins` read it as leaked. `vcut say cut.mp4 --transcribe --at <s> --window 8`, the exact
+command `next` names on that reading, returned "nos basamos mucho en este principio de
+agregar verificabilidad a los instrumentos de los agentes, porque los agentes necesitan..." —
+a clean sentence, no leaked tail.
+
+`removed-text-leaked` and `check-by-ear` are both places to look, not verdicts. Confirm with
+the wider window before folding anything back into a proposal.
+
 ## "Was a word cut in half?"
 
 ```bash

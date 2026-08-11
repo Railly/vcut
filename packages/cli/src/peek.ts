@@ -142,7 +142,9 @@ export type ViewsDisagree = {
 
 const CARRIES_MEANING = 4
 
-const carryingWords = (text: string): string[] =>
+// Exported for `joins`, which needs the identical comparison against a cut's removedText
+// rather than a second definition of what counts as a carrying word.
+export const carryingWords = (text: string): string[] =>
   normalise(text)
     .split(' ')
     .filter((word) => word.length >= CARRIES_MEANING)

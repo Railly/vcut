@@ -8,6 +8,7 @@ import { convergeCommand } from './converge.ts'
 import { cutCommand } from './cut.ts'
 import { detectCommand, positional } from './detect.ts'
 import { run, runInherit } from './exec.ts'
+import { joinsCommand } from './joins.ts'
 import { locateCommand } from './locate.ts'
 import { nonspeechCommand } from './nonspeech.ts'
 import { openCommand } from './open.ts'
@@ -49,6 +50,7 @@ Usage:
   vcut render --edl <path> [flags]   Render an EDL to video
   vcut locate --edl <path> [flags]   Translate between master time and source time
   vcut audit --edl <path> --render <path>  Check a render against the EDL it came from
+  vcut joins --edl <path> --render <path>  Verify every semantic join in one call
   vcut say <media> [flags]           Read back what is spoken at a position
   vcut silences <media> [flags]      Speech/silence blocks over a range, at a chosen resolution
   vcut converge <media> [flags]      Find where a repeated phrase stops coming back
@@ -635,6 +637,34 @@ const CONTRACTS: Record<string, unknown> = {
       'A --source position that was cut is reported as removed with the next surviving segment, not as an error.',
     ],
   },
+  joins: {
+    version: SCHEMA_VERSION,
+    command: 'vcut joins',
+    output: {
+      version: 'number, always 1',
+      edl: 'absolute path to the EDL',
+      render: 'absolute path to the rendered file',
+      renderCheck:
+        '{ agrees, expectedMs, observedMs, deltaMs }, the EDL map checked against the measured render, same shape as locate --render',
+      joins:
+        '[{ segmentId, joinMasterMs, windowStartMs, windowEndMs, windowText, removedText, reason, driftSuspect, reading, next }], one per semantic cut that has a following segment',
+      'joins[].reading': '"lands" | "removed-text-leaked" | "check-by-ear"',
+      'joins[].removedText':
+        'string|null. null when no --report (or sibling report.json) carries semanticCuts for this EDL',
+      'joins[].reason': 'string|null, the semantic proposal reason, same source as removedText',
+      'joins[].driftSuspect':
+        'boolean|null, from the build report entry when present, null otherwise',
+    },
+    notes: [
+      "The post-render twin of edl build's removedText: one call verifies every semantic join instead of N x (locate + say --transcribe). On a real 11.7-minute run, verifying 9 joins by hand cost ~14 calls.",
+      "Each join is the EDL segment that opens right after a semantic cut, derived the same way build-edl.ts's boundariesAfterSpeech finds it (by the kind of cut, not a distance) — reused directly rather than re-derived, so this can never disagree with the warning edl build already writes about the same boundary. A semantic cut that opens the file (nothing precedes it) has no join and is silently absent.",
+      "Runs on --render, never the source: the EDL is intent, the render is what happened. renderCheck compares the EDL's own master-time total against the render's measured duration before any window is read, the same numeric style locate --render already uses.",
+      '--report points at a build report (vcut edl build or vcut commit JSON, or rounds/round-N/report.json which is the default sibling lookup next to --edl) for removedText/reason/driftSuspect. Absent is a supported state: joins still runs and reports reading from the window alone, with those three fields null.',
+      'reading is "lands" when the window\'s carrying words do not majority-overlap the cut\'s removedText, "removed-text-leaked" when they do (the tail of removed speech survived the join), and "check-by-ear" when the window carries no words worth judging — the same honest-limits stance peek\'s viewsDisagree and nonspeech --verify already take rather than reading silence as a verdict.',
+      '"removed-text-leaked" is a place to look, not a verdict, same as every other disagreement reading in this codebase. Verified false positive on real material: a false-start whose removedText was the speaker stumbling on the same phrase before landing it, followed by a surviving sentence that legitimately reuses that phrase as its real content — carrying-word overlap cannot tell a leaked tail from a kept sentence sharing vocabulary with its own discarded false starts. Confirm with a wider say --transcribe window before acting on it, the next hint this reading carries.',
+      "Transcribes strictly sequentially, one trx call at a time, never Promise.all — the same reasoning nonspeech.ts's verifySpansSequentially and say --positions --transcribe already apply.",
+    ],
+  },
   nonspeech: {
     version: SCHEMA_VERSION,
     command: 'vcut nonspeech',
@@ -794,6 +824,9 @@ export const route = async (argv: string[]): Promise<void> => {
   }
   if (command === 'locate') {
     return locateCommand(rest)
+  }
+  if (command === 'joins') {
+    return joinsCommand(rest)
   }
   if (command === 'say') {
     return sayCommand(rest)

@@ -51,6 +51,7 @@ ran.
 | Did a proposed cut survive into the render? | `semantic review` (what remains), then `semantic check --review` (exit 2 if a named repeat is unanswered) |
 | Where in the master does a source position land, or the reverse? | `locate --master <s>` / `locate --source <s>` |
 | Did the render carry the wrong material at a join? | `audit --edl <path> --render <path>` |
+| Did every semantic cut's join land clean, in one call instead of N? | `joins --edl <path> --render <path> [--report <path>]` |
 | Is the cut ready to watch or ship? | `render --mode preview` for every round, `render --mode master` only after human approval |
 | Is this machine ready to run vcut at all? | `doctor`, or `init` on a machine that has not run it before |
 | What is the field-by-field shape of a command's output? | `schema <name>` |
@@ -70,6 +71,7 @@ ran.
 | comparing what two committed rounds actually changed | **rounds** |
 | seeing what a session store holds, or clearing it | **session** |
 | checking a breath or a filler the transcript cannot see | **Non-verbal sound needs a classifier, not a statistic**, **The muletillas playbook** |
+| verifying every semantic join in one call instead of locate + say per cut | **joins** |
 | placing a boundary at sub-second resolution | **silences** |
 | deciding whether a cut is worth making | **semantic → How hard to cut** |
 | trying to stop the loop | **semantic → Before calling it done** |
@@ -986,6 +988,50 @@ confident, wrong finding: it reported a boundary leaking half a second of remove
 correlating the same window against both candidate positions afterwards scored 0.975 for the
 one the EDL named against 0.485 for the supposed leak. Use it to pick where to listen.
 
+## joins
+
+```bash
+vcut joins --edl edl.json --render cut.mp4 --report report.json --lang es
+```
+
+The post-render twin of `edl build`'s `removedText`: one call that verifies every semantic
+join instead of `N x (locate + say --transcribe)`. On a real 11.7-minute run (2026-08-10,
+testing-10m.mp4), verifying 9 joins by hand cost about 14 calls — this collapses that whole
+round to one, at 8 joins re-transcribed in ~15 seconds wall time.
+
+Each **join** is the EDL segment that opens right after a semantic cut, derived the same way
+`edl build`'s own `boundariesAfterSpeech` finds it: by the *kind* of cut, not a distance, so
+this can never disagree with the "opens right after a semantic cut" warning `edl build`
+already writes about the same boundary. A semantic cut at the very start of the file has
+nothing before it to join, and is silently absent from the result.
+
+`joins` runs on `--render`, never the source — the EDL says what was asked for, only the
+render says what happened, the same stance `locate --render` takes. It checks the EDL's own
+master-time total against the render's measured duration before reading a single window
+(`renderCheck`, same shape as `locate --render`), then re-transcribes a window around each
+join (default 4s) and reports a `reading`:
+
+- `lands` — the window's carrying words do not majority-overlap the cut's `removedText`. The
+  join connects to whatever comes next.
+- `removed-text-leaked` — the window shares a majority of carrying words with `removedText`.
+  The tail of the removed speech may have survived into the render.
+- `check-by-ear` — the window carries no words worth judging, same honest-limits stance
+  `peek`'s `viewsDisagree` and `nonspeech --verify` already take rather than reading silence
+  as success.
+
+**`removed-text-leaked` is a place to look, not a verdict.** Verified false positive on real
+material: a false-start's `removedText` was the speaker stumbling on "agregar
+verificabilidad" three times before landing it, and the surviving sentence legitimately used
+"agregar verificabilidad" as its real content — carrying-word overlap cannot tell a leaked
+tail from a kept sentence that shares vocabulary with its own discarded false starts by
+construction. A wider `say --transcribe --window 8` confirmed the join read clean; `joins`
+names that exact call in `next` on a leaked or check-by-ear reading.
+
+`--report <path>` points at a build report (`vcut edl build`'s own JSON, `vcut commit`'s, or
+`rounds/round-N/report.json`, the default sibling lookup next to `--edl`) for
+`removedText`/`reason`/`driftSuspect` on each join. Its absence is a supported state: `joins`
+still runs and reports `reading` from the window alone, with those three fields `null`.
+
 ## say
 
 ```bash
@@ -1216,13 +1262,19 @@ Never mark segments approved on the human's behalf. Never render a master withou
    Iterate on audio. The picture cannot answer any of these questions and costs 100x the
    wall clock to produce.
 7. `vcut render --mode preview` once, now that the transcript reads clean, and run the checks
-   that needed a picture: `vcut audit` and `vcut nonspeech --verify`. They belong here rather
-   than inside the loop, where they cost a video render each and answer a question no round
-   was asking. Then have a human watch it.
+   that needed a picture: `vcut audit`, `vcut joins`, and `vcut nonspeech --verify`. They
+   belong here rather than inside the loop, where they cost a video render each and answer a
+   question no round was asking. Then have a human watch it.
 
    Expect `audit` to report something and for it to be nothing: it scores low on short and
    quiet windows by construction. Read the finding, spend one `vcut say` on it, and move on. A
    check whose output never changes a decision is not evidence, it is ceremony.
+
+   `vcut joins --edl edl.json --render cut.mp4 --report report.json` replaces the
+   `locate` + `say --transcribe` round for every semantic cut in one call. Read every
+   `removed-text-leaked` and `check-by-ear` reading; a `lands` reading needs nothing further.
+   Neither of the other two is automatically a defect — confirm with the `next` hint's wider
+   `say --transcribe` window before folding anything back into a proposal.
 
    Expect the opposite of `nonspeech --verify`: a `vocalization-suspect` reading is not
    ceremony, because `--verify` re-transcribes the window rather than trusting the whole-file
