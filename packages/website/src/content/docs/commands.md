@@ -101,6 +101,8 @@ Review candidates are never cut automatically. They exist so a human looks.
 vcut detect screen.mp4 --audio mic.wav --preset clean
 ```
 
+**A source with no video stream is a legal source (#42), and the black/frozen-frame scan skips it automatically.** A meeting-recorder mic track, a podcast export, an m4a in an mp4 container — `detect` probes for a video stream once, and a source without one gets `hasVideo: false` on the report and a distinct warning (`no video stream on this source; black and frozen frame candidates not collected`) instead of attempting a scan that has no frame to read. This is separate from `--skip-video-scan`, which still carries its own wording for the case where a video stream exists but the scan was explicitly skipped. Silence detection, clipping, and word clamping are unaffected.
+
 ### vcut silences
 
 ```bash
@@ -146,6 +148,8 @@ vcut edl build --detect detect.json --output master.mp4 --campaign my-video
 **`--crop` frames the whole edit at once**, which is why it lives here and not per segment. A traditional editor makes you set the frame per clip, so remembering the menu bar after cutting means redoing every segment by hand. Here the crop is one decision applied to all of them, and changing it never touches a cut boundary. Fractions, not pixels, so the same EDL survives a source at another resolution.
 
 The command inverts the cut intervals into the spans worth **keeping**, so the EDL always describes surviving material rather than deleted material.
+
+**A source with no video stream builds a legal, video-less EDL (#42).** This used to hard-fail with `source has no video stream`, which forced every audio-only source through a fake black-video mux just to reach the rest of the pipeline. It no longer does: the built source carries `hasVideo: false`, `output` omits width/height/fps/videoCodec/pixelFormat/colorSpace entirely (there is no picture for the V1 contract to describe), and segments are bounded by the audio stream's own duration. `--crop` is refused outright on a video-less source rather than silently doing nothing.
 
 **The build report includes `semanticCuts`, one entry per accepted semantic proposal**: `removedText`, the transcript words that fall inside its final span, and `boundariesInSilence`, whether each edge lands inside a silence `detect` measured. Read `removedText` before rendering — it is the corrective for a span drifting onto the wrong words unnoticed, which happened on a real cut: a repetition proposal removed "todos estamos" instead of the stutter "en nuestra propia" because measured blocks were mis-assigned, invisible until a render and a windowed re-transcription caught it. A warning fires when `removedText` shares fewer than half its carrying words (4+ letters) with the proposal's `reason` and has 4 or more of them itself, the same threshold that keeps a short filler cut from firing on a reason that never repeats it word for word.
 
@@ -270,6 +274,8 @@ Builds the EDL from a session's cached detect report and its accumulated proposa
 | `--fps`, `--width`, `--height`, `--edge-fade`, `--crop` | Passed through to the build, same as `edl build` |
 
 Records the round in the session (`rounds/round-N/`: the EDL copy and the build report); renders and wavs stay out of it. **Master mode never happens here.** Approval is a human edit to the EDL followed by the existing `vcut render --edl <path> --mode master` — this command only ever drafts and previews.
+
+**On a session opened from a source with no video stream (#42), `--video` still renders audio.** There is no picture to render, so `render`'s own implied-`--audio-only` behaviour applies underneath `commit` the same way it would to a standalone `render` call — a stderr note, not an error.
 
 Takes the session's advisory lock for the whole build+render, released in a `finally`. **On success, marks the session `committed`** — the signal `vcut session gc` reads as a candidate to clear, never a trigger that deletes anything itself.
 
@@ -400,6 +406,8 @@ After rendering, vcut probes the file it produced and validates it against the E
 The result runs a few tens of milliseconds short of the segment sum (31ms on a 54.6s cut). That is `loudnorm` latency draining trailing decay, not missing material; a video render hides it because the picture sets the container duration.
 
 **The audio-only verification loop**: render `--audio-only`, then run `vcut audit` and `vcut nonspeech` against that same `.wav`. Both read the waveform only and accept it wherever they accept a video render, so a full video mux per round is dead wall clock. Render video once, at the end, for the master.
+
+**A source with no video stream is a first-class source (#42).** A meeting-recorder mic track, a podcast export, an m4a in an mp4 container — anything `edl build` built without a video stream — renders `--audio-only` by implication, not by requirement: the flag's absence produces a stderr note (`this EDL has no video source; --audio-only is implied`) rather than an error, since there is no picture to render. `--mode master` on a video-less EDL produces an audio master (AAC, the same codec the video path's own audio track already uses) instead of a video; the "refused in `master` mode" rule above is specific to a video-bearing EDL, where a scratch render and a finished video really are two different things. Approval semantics are unchanged.
 
 ### vcut locate
 

@@ -39,6 +39,7 @@ describe('openNext', () => {
     transcriptPresent: true,
     suspects: [],
     fresh: true,
+    hasVideo: true,
   }
 
   test('hints a transcript when none is cached', () => {

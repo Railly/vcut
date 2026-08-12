@@ -69,6 +69,32 @@ It describes the material that **survives**, not the material that gets deleted.
 
 The full JSON Schema ships in the package under `schemas/edl.schema.json`.
 
+### Audio-only sources
+
+A source with no video stream — a meeting-recorder mic track, a podcast export, an m4a in an mp4 container — produces a legal EDL, not an error. Its source entry carries `"hasVideo": false`, and `output` carries only `path`, `audioTrackPolicy`, and `overwrite`: `width`, `height`, `fps`, `videoCodec`, `pixelFormat`, and `colorSpace` are all absent, since the V1 video contract they describe has no picture to apply to on this EDL. `durationMs` on the source is the audio stream's own duration, since that is what segments are actually trimmed against.
+
+```json
+{
+  "sources": [
+    {
+      "id": "meeting-mp4",
+      "path": "/absolute/path/meeting.mp4",
+      "sha256": "…",
+      "durationMs": 1_145_000,
+      "hasVideo": false,
+      "hasAudio": true
+    }
+  ],
+  "output": {
+    "path": "/absolute/path/master.m4a",
+    "audioTrackPolicy": "required",
+    "overwrite": false
+  }
+}
+```
+
+`render` reads the absence of a video source and implies `--audio-only` rather than requiring it; `--mode master` on an EDL shaped this way produces an AAC audio master instead of a video. `--crop` is refused at build time on a video-less source rather than silently accepted and ignored.
+
 ### Approval
 
 Two levels, and both start closed.

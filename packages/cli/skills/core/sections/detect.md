@@ -49,6 +49,15 @@ from; positive means the audio file is ahead of the picture.
 
 Other flags: `--min-silence` (seconds, default 0.3), `--margin` (seconds, default 0.10), `--skip-video-scan` to skip black and frozen frame detection on long sources.
 
+**A source with no video stream skips the black/frozen-frame scan automatically (#42).** A
+meeting-recorder mic track, a podcast export, an m4a in an mp4 container — `detect` probes for
+a video stream once, reports `hasVideo: false` on a source without one, and never attempts the
+scan: there is no frame to read. The report says so with its own wording (`no video stream on
+this source; black and frozen frame candidates not collected`), distinct from the
+`--skip-video-scan` flag's own warning, so a caller can tell "nothing here to scan" from "asked
+to skip a scan that could have run." Silence detection, clipping, and word clamping are
+unaffected — they read the audio stream, which is present.
+
 **Word clamping needs word-level timestamps**, meaning one cue per word. A sentence-level SRT turns clamping off, with a warning rather than a guess. Generate a usable transcript with either:
 
 ```bash

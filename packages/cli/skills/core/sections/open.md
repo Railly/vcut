@@ -46,3 +46,10 @@ ranking as `suspects`, each with the block ref nearest it) — never any spoken 
 what is actually said at a ref is `peek`; cutting against refs (`cut`) and committing a
 session to a render (`commit`) are later still. `open` only opens the session and draws the
 map.
+
+**Audio-only sources are first-class (#42).** A meeting-recorder mic track, a podcast export, an
+m4a in an mp4 container — anything with no video stream — opens exactly the same way. The
+report carries `hasVideo: false`, and the human summary says so directly: `audio-only, no video
+stream — render implies --audio-only, master is audio, frame checks skipped`. Nothing about
+detect, refs, or suspects changes; the difference only shows up once `render`/`commit` reach the
+picture-specific parts of the pipeline (see `--section render`).

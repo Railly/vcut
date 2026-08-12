@@ -40,6 +40,9 @@ against that same .wav. Both read the waveform only and accept it wherever they 
 video render, so a full video mux is dead wall-clock for a round that never asked a
 question about frames. Render video once, at the end, for the master.
 
+An EDL built from a source with no video stream renders audio only: --audio-only is implied
+(a stderr note, not an error) and --mode master produces an audio master instead of a video.
+
 render blocks until ffmpeg exits and prints one progress line to stderr per
 report (time rendered, percent of the EDL's own duration, encode speed).
 stdout stays reserved for the result: nothing to poll, nothing to grep a
@@ -85,12 +88,17 @@ export type Edl = {
   }
   output: {
     path: string
-    width: number
-    height: number
-    fps: number
-    videoCodec: 'h264' | 'hevc'
-    pixelFormat: string
-    colorSpace: string
+    // #42: undefined on an EDL built from a video-less source (build-edl.ts's own `output`
+    // branch). The V1 output contract these five fields describe — dimensions, frame rate,
+    // codec, pixel format, colour space — is a picture's contract, and a video-less EDL has no
+    // picture to report one for. `hasVideoSource` (below) is what every reader branches on
+    // rather than checking each field's presence separately.
+    width?: number
+    height?: number
+    fps?: number
+    videoCodec?: 'h264' | 'hevc'
+    pixelFormat?: string
+    colorSpace?: string
     audioTrackPolicy: 'required' | 'forbidden' | 'explicit-silence'
     overwrite: false
   }
@@ -135,9 +143,22 @@ export type OutputProbe = {
 const seconds = (milliseconds: number): string =>
   (milliseconds / 1000).toFixed(6).replace(/0+$/, '').replace(/\.$/, '')
 
-const cropErrors = (segment: Segment): string[] => {
+// #42: whether this EDL has any picture to render at all. build-edl.ts only ever produces an
+// EDL where every source agrees (a video-less source's own build refuses --crop, which is the
+// only route that could otherwise mix a video-less and a video-bearing source), so checking
+// "any" rather than "every" reads the same on every EDL this CLI writes and is the more honest
+// question for a hand-edited one: a single video source is enough to owe the picture checks.
+export const hasVideoSource = (edl: Edl): boolean => edl.sources.some((source) => source.hasVideo)
+
+const cropErrors = (segment: Segment, edlHasVideo: boolean): string[] => {
   if (segment.crop === undefined || segment.crop === null) {
     return []
+  }
+  // #42: a crop frames a picture; a video-less EDL has none to frame. build-edl.ts already
+  // refuses --crop at build time for a video-less source, so this only ever fires on an EDL
+  // edited by hand after the fact.
+  if (!edlHasVideo) {
+    return [`${segment.id}: crop set on a video-less EDL`]
   }
   const crop = segment.crop
   return crop.x < 0 ||
@@ -156,6 +177,7 @@ const segmentErrors = (
   policy: Edl['output']['audioTrackPolicy'],
   mode: Mode,
   hasExternalAudio: boolean,
+  edlHasVideo: boolean,
 ): string[] => {
   const errors: string[] = []
   const source = sourceMap.get(segment.sourceId)
@@ -163,7 +185,10 @@ const segmentErrors = (
   if (source === undefined) {
     return [`${segment.id}: unknown source`]
   }
-  if (!source.hasVideo) {
+  // #42: only an EDL that claims a picture (edlHasVideo) owes every segment a video-bearing
+  // source. A video-less EDL never asks for one, so a video-less source failing this check
+  // would be refusing the exact source #42 makes legal.
+  if (edlHasVideo && !source.hasVideo) {
     errors.push(`${segment.id}: source lacks video`)
   }
   // Only when the segment is where the sound comes from. With a separate recording the check
@@ -177,7 +202,7 @@ const segmentErrors = (
   if (mode === 'master' && segment.approval !== 'approved') {
     errors.push(`${segment.id}: master requires approved segment`)
   }
-  errors.push(...cropErrors(segment))
+  errors.push(...cropErrors(segment, edlHasVideo))
   return errors
 }
 
@@ -198,14 +223,20 @@ const approvalErrors = (edl: Edl, mode: Mode): string[] => {
 export const edlErrors = (edl: Edl, mode: Mode): string[] => {
   const sourceMap = new Map(edl.sources.map((source) => [source.id, source]))
   const segmentIds = new Set(edl.segments.map((segment) => segment.id))
+  const edlHasVideo = hasVideoSource(edl)
   const errors = [
     ...(edl.timebase === 'milliseconds' ? [] : ['unsupported timebase']),
     ...(edl.sources.length === sourceMap.size ? [] : ['duplicate source ID']),
     ...(edl.segments.length === segmentIds.size ? [] : ['duplicate segment ID']),
     ...(edl.segments.length > 0 ? [] : ['no segments']),
     ...(edl.output.overwrite === false ? [] : ['output overwrite must be false']),
-    ...(edl.output.pixelFormat === 'yuv420p' ? [] : ['unsupported V1 pixel format']),
-    ...(edl.output.colorSpace === 'bt709' ? [] : ['unsupported V1 color space']),
+    // #42: the V1 pixel format / colour space contract describes a picture. A video-less EDL
+    // carries neither field (build-edl.ts's own video-less `output` branch), so there is
+    // nothing here to be unsupported — checked only when a video source is actually present.
+    ...(!edlHasVideo || edl.output.pixelFormat === 'yuv420p'
+      ? []
+      : ['unsupported V1 pixel format']),
+    ...(!edlHasVideo || edl.output.colorSpace === 'bt709' ? [] : ['unsupported V1 color space']),
     ...externalAudioErrors(edl),
     ...approvalErrors(edl, mode),
   ]
@@ -217,6 +248,7 @@ export const edlErrors = (edl: Edl, mode: Mode): string[] => {
         edl.output.audioTrackPolicy,
         mode,
         edl.audio.externalAudioSourceId !== null && edl.audio.externalAudioSourceId !== undefined,
+        edlHasVideo,
       ),
     )
   }
@@ -314,9 +346,17 @@ const audioEdgeFade = (segment: Segment, fadeMs: number | undefined): string => 
 export const buildFfmpegArgs = (
   edl: Edl,
   outputPath: string,
-  options: { audioOnly?: boolean } = {},
+  options: { audioOnly?: boolean; masterAudio?: boolean } = {},
 ): string[] => {
-  const audioOnly = options.audioOnly === true
+  // #42: masterAudio is the finished-file case for a video-less EDL (`vcut render --mode
+  // master` with no picture to encode) — it takes the same "no video filters, audio graph
+  // only" shape audioOnly already builds below, so both flow through the one audioOnly branch
+  // rather than a second copy of the filter graph. What differs is only the codec choice at the
+  // bottom of this function: audioOnly (a scratch render for iterating) stays lossless pcm_s16le
+  // in a .wav; masterAudio (the file a listener receives) encodes AAC in .m4a — see the
+  // masterAudio branch below for the reasoning.
+  const masterAudio = options.masterAudio === true
+  const audioOnly = options.audioOnly === true || masterAudio
   const sourceIndex = new Map(edl.sources.map((source, index) => [source.id, index]))
   const filters: string[] = []
   // fpsConverting keeps its video and audio labels in two separate arrays and feeds them to
@@ -424,30 +464,45 @@ export const buildFfmpegArgs = (
     )
   }
 
-  const codec = edl.output.videoCodec === 'h264' ? 'libx264' : 'libx265'
   const args = edl.sources.flatMap((source) => ['-i', source.path])
 
   if (audioOnly) {
-    // Lossless, because this file exists to be judged by ear. A codec artifact heard
-    // while iterating would be read as a defect in the cut, which is the one thing this
-    // is meant to answer.
-    args.push(
-      '-filter_complex',
-      filters.join(';'),
-      '-map',
-      '[a]',
-      '-vn',
-      '-c:a',
-      'pcm_s16le',
-      '-ar',
-      '48000',
-      '-ac',
-      '2',
-      outputPath,
-    )
+    args.push('-filter_complex', filters.join(';'), '-map', '[a]', '-vn')
+    if (masterAudio) {
+      // #42: the file a listener receives, not a scratch render for iterating — AAC in an m4a
+      // container rather than lossless pcm. This is the same codec the video path already
+      // encodes its own audio track with (see the aac branch a few lines below, in the video
+      // arm of this function), so a video-less master and a video master's audio track are
+      // produced by the identical encoder at the identical bitrate policy; nothing about the
+      // sound changes depending on whether a picture happens to ride alongside it. AAC at
+      // ffmpeg's default quality is well above spoken-word's actual bitrate needs, universally
+      // playable, and a fraction of lossless size for a recording that can run well past an
+      // hour — the properties a distributable master wants, where the audioOnly scratch
+      // render's own lossless-for-judging-by-ear reasoning does not apply: nobody scratch-audits
+      // a master, they receive it.
+      args.push('-c:a', 'aac', '-ar', '48000', '-ac', '2', outputPath)
+    } else {
+      // Lossless, because this file exists to be judged by ear. A codec artifact heard
+      // while iterating would be read as a defect in the cut, which is the one thing this
+      // is meant to answer.
+      args.push('-c:a', 'pcm_s16le', '-ar', '48000', '-ac', '2', outputPath)
+    }
     return args
   }
 
+  // Reachable only for a video-bearing EDL: a video-less one always sets audioOnly (build-edl.ts
+  // never omits it, runRender forces it — see the implied-audio-only comment there), which
+  // returns above. This narrows output.fps/pixelFormat/colorSpace/videoCodec from optional to
+  // required for the rest of the function, rather than every read below re-asserting non-null.
+  if (
+    edl.output.fps === undefined ||
+    edl.output.pixelFormat === undefined ||
+    edl.output.colorSpace === undefined ||
+    edl.output.videoCodec === undefined
+  ) {
+    throw new Error('a video render needs an EDL that carries the V1 output contract')
+  }
+  const codec = edl.output.videoCodec === 'h264' ? 'libx264' : 'libx265'
   args.push('-filter_complex', filters.join(';'), '-map', '[v]')
   if (hasAudio) {
     args.push('-map', '[a]', '-c:a', 'aac', '-ar', '48000', '-ac', '2')
@@ -493,14 +548,16 @@ const parseRate = (rate: string): number => {
 // output asks for. An EDL with no averageFrameRate on any of its sources (written before
 // that field existed, or by hand) cannot be told apart from a native-rate one here, so it
 // reads as native and keeps the graph shape that has always rendered it — the byte-identical
-// guarantee for every EDL already on disk depends on that default.
+// guarantee for every EDL already on disk depends on that default. A video-less EDL (#42, no
+// output.fps to convert to) reads the same way, for the same reason: nothing here to convert.
 export const convertsFps = (edl: Edl): boolean =>
+  edl.output.fps !== undefined &&
   edl.segments.some((segment) => {
     const source = edl.sources.find((candidate) => candidate.id === segment.sourceId)
     if (source?.averageFrameRate === undefined || source.averageFrameRate === null) {
       return false
     }
-    return Math.abs(parseRate(source.averageFrameRate) - edl.output.fps) > 0.001
+    return Math.abs(parseRate(source.averageFrameRate) - (edl.output.fps as number)) > 0.001
   })
 
 // The frame rate the video trim filter actually quantises each segment's edges against.
@@ -575,6 +632,14 @@ const videoOutputErrors = (
   video: OutputProbe['streams'][number],
   duration: string,
 ): string[] => {
+  // Reachable only when the render actually carries a video stream (outputErrors's own guard,
+  // just above its call to this function), which only happens for an EDL that asked for one —
+  // narrows output.fps/pixelFormat/colorSpace from optional to required for the rest of this
+  // function rather than every read below re-asserting non-null.
+  if (edl.output.fps === undefined || edl.output.pixelFormat === undefined) {
+    return ['render carries video but the EDL has no video output contract to check it against']
+  }
+  const outputFps = edl.output.fps
   const errors: string[] = []
   const sourceFps = dominantSourceFps(edl)
   // fps-converting: expectedFrames comes from the ceil-based derivation (why: the export's
@@ -588,14 +653,14 @@ const videoOutputErrors = (
   const isFpsConverting = convertsFps(edl)
   const expectedFrames =
     isFpsConverting && sourceFps !== null
-      ? expectedFramesForConcat(edl.segments, sourceFps, edl.output.fps)
-      : expectedFramesNaive(edl.segments, edl.output.fps)
+      ? expectedFramesForConcat(edl.segments, sourceFps, outputFps)
+      : expectedFramesNaive(edl.segments, outputFps)
   const expectedDuration =
     isFpsConverting && sourceFps !== null
-      ? (expectedFrames / edl.output.fps) * 1000
+      ? (expectedFrames / outputFps) * 1000
       : edl.segments.reduce((total, segment) => total + segment.outMs - segment.inMs, 0)
   const observedDuration = Number(duration) * 1000
-  const toleranceMs = 2000 / edl.output.fps + 20
+  const toleranceMs = 2000 / outputFps + 20
   const observedFrames = Number(video.nb_read_frames)
 
   if (video.width !== edl.output.width || video.height !== edl.output.height) {
@@ -614,7 +679,7 @@ const videoOutputErrors = (
   }
   if (
     video.r_frame_rate === undefined ||
-    Math.abs(parseRate(video.r_frame_rate) - edl.output.fps) > 0.001
+    Math.abs(parseRate(video.r_frame_rate) - outputFps) > 0.001
   ) {
     errors.push('render frame rate differs from EDL')
   }
@@ -831,9 +896,12 @@ const parseCli = (args: string[]): CliOptions => {
     throw new Error('mode must be preview or master')
   }
   const audioOnly = args.includes('--audio-only')
-  if (audioOnly && modeValue === 'master') {
-    throw new Error('--audio-only is for iterating; a master is the finished video')
-  }
+  // #42: this refusal only makes sense once we know whether the EDL has a picture to render,
+  // which parseCli does not have access to (it parses argv before the EDL is read). The real
+  // check now lives in renderCommand, right after the EDL loads: --audio-only + --mode master is
+  // still a contradiction on a video-bearing EDL, but on a video-less one --audio-only is what
+  // the master render already implies, so passing it explicitly alongside --mode master is
+  // redundant, not wrong.
   return {
     edlPath: resolve(edlPath),
     outputPath: value('--output') === undefined ? undefined : resolve(value('--output') as string),
@@ -891,13 +959,34 @@ export type RenderResult = {
 // partial-file rename, output validation — is unchanged. Shelling out to vcut's own CLI from
 // inside vcut was ruled out; this export is the minimal alternative.
 export const runRender = async (edl: Edl, options: RenderOptions): Promise<RenderResult> => {
+  // #42: a video-less EDL has no picture to render, so --audio-only is the only render this
+  // EDL can ever produce — implied rather than required, and said once on stderr rather than
+  // refused, per the issue: a caller that built this EDL from an audio-only source should not
+  // have to pass a flag whose absence is not actually a mistake. audioOnly here is the one this
+  // function and buildFfmpegArgs act on from this point forward; options.audioOnly (the raw
+  // flag) is never read again below.
+  const edlHasVideo = hasVideoSource(edl)
+  const audioOnly = options.audioOnly || !edlHasVideo
+  if (!edlHasVideo && !options.audioOnly) {
+    console.error(
+      'note: this EDL has no video source; --audio-only is implied (nothing to render a picture from)',
+    )
+  }
+  // A video-less EDL's master is an audio file, not a video with a filter graph and nowhere to
+  // put it: masterAudio picks the distributable AAC/m4a encode (buildFfmpegArgs's own reasoning)
+  // instead of the audioOnly scratch render's lossless pcm, the moment mode is 'master'.
+  const masterAudio = !edlHasVideo && options.mode === 'master'
   const errors = edlErrors(edl, options.mode)
   // The EDL's own output path names a video. Writing audio there would collide with the
   // render it is meant to precede, so audio-only lands beside it as a .wav unless asked
-  // for somewhere else.
+  // for somewhere else. A video-less master keeps the EDL's own output path unchanged instead —
+  // there is no video render for it to collide with, and that path is already the master name
+  // the caller chose.
   const outputPath =
     options.outputPath ??
-    (options.audioOnly ? `${edl.output.path.replace(/\.[^./]+$/, '')}.wav` : edl.output.path)
+    (audioOnly && !masterAudio
+      ? `${edl.output.path.replace(/\.[^./]+$/, '')}.wav`
+      : edl.output.path)
 
   for (const source of edl.sources) {
     if (!existsSync(source.path)) {
@@ -926,15 +1015,15 @@ export const runRender = async (edl: Edl, options: RenderOptions): Promise<Rende
   // ffmpeg writes straight to its target, so the target is a sibling temp file until the
   // render has proven itself. Same directory, so the rename stays on one filesystem.
   const pendingPath = `${outputPath}.partial-${process.pid}${extname(outputPath)}`
-  const args = buildFfmpegArgs(edl, pendingPath, { audioOnly: options.audioOnly })
+  const args = buildFfmpegArgs(edl, pendingPath, { audioOnly, masterAudio })
   if (options.dryRun) {
     // Printed against the real destination: the temp file is this function's business, and a
     // command nobody can paste and run is not a useful thing to print.
-    const shown = buildFfmpegArgs(edl, outputPath, { audioOnly: options.audioOnly })
+    const shown = buildFfmpegArgs(edl, outputPath, { audioOnly, masterAudio })
     return {
       status: 'ready',
       mode: options.mode,
-      ...(options.audioOnly ? { audioOnly: true } : {}),
+      ...(audioOnly ? { audioOnly: true } : {}),
       sources: edl.sources.length,
       segments: edl.segments.length,
       expectedDurationMs,
@@ -963,10 +1052,10 @@ export const runRender = async (edl: Edl, options: RenderOptions): Promise<Rende
   }
   const probe = await probeOutput(pendingPath)
   // The picture checks describe a file this one deliberately has no picture in. Duration
-  // still has to hold: it is what says the cuts landed where the EDL asked.
-  const validationErrors = options.audioOnly
-    ? audioOnlyErrors(edl, probe)
-    : outputErrors(edl, probe)
+  // still has to hold: it is what says the cuts landed where the EDL asked. A video-less master
+  // takes the same audioOnlyErrors check a scratch render does — its own duration/audio-contract
+  // reasoning is unchanged by which codec masterAudio chose.
+  const validationErrors = audioOnly ? audioOnlyErrors(edl, probe) : outputErrors(edl, probe)
   if (validationErrors.length > 0) {
     // A render that failed its own contract is not something to leave lying around under the
     // name of a good one: the next command would read it as finished work.
@@ -974,14 +1063,18 @@ export const runRender = async (edl: Edl, options: RenderOptions): Promise<Rende
     throw new Error(validationErrors.join('\n'))
   }
   renameSync(pendingPath, outputPath)
-  const next = options.audioOnly ? renderAudioOnlyNext(outputPath) : []
+  // The audio-only next hints (transcribe, review) are for a scratch render iterating toward a
+  // cut; a video-less master is the finished file, the same place a video master's own empty
+  // next[] already leaves a caller — there is no "render the picture once, at the end" step
+  // left to point at when there was never a picture.
+  const next = audioOnly && !masterAudio ? renderAudioOnlyNext(outputPath) : []
   return {
     status: 'rendered',
-    ...(options.audioOnly ? { audioOnly: true } : {}),
+    ...(audioOnly ? { audioOnly: true } : {}),
     outputPath,
     sha256: await sha256(outputPath),
     duration: probe.format.duration,
-    ...(options.audioOnly
+    ...(audioOnly
       ? {}
       : {
           frames: probe.streams.find((stream) => stream.codec_type === 'video')?.nb_read_frames,
@@ -1037,6 +1130,13 @@ export const renderCommand = async (argv: string[]): Promise<void> => {
   const outputMode: OutputMode = resolveMode(argv, Boolean(process.stdout.isTTY))
   const options = parseCli(argv)
   const edl = JSON.parse(readFileSync(options.edlPath, 'utf8')) as Edl
+  // #42: a video-bearing EDL keeps the old rule — --audio-only is for iterating, a master is
+  // the finished video, and asking for both in one call is a contradiction. A video-less EDL
+  // has no such contradiction: --mode master already implies audio-only (runRender's own
+  // implied-audio-only note), so --audio-only alongside it is redundant rather than wrong.
+  if (options.audioOnly && options.mode === 'master' && hasVideoSource(edl)) {
+    throw new Error('--audio-only is for iterating; a master is the finished video')
+  }
   const result = await runRender(edl, options)
   if (outputMode === 'human') {
     console.log(humanReport(result))

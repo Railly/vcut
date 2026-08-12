@@ -27,6 +27,11 @@ every round's question is about sound, and rendering the picture for it costs 10
 clock for nothing a round needs. `--video` renders the preview instead, for the one call at the
 end of a loop. Output lands beside the EDL as `<name>.wav` unless `--output` already names one.
 
+**On a session opened from an audio-only source (#42), `--video` still renders audio.** There is
+no picture to render, so the render step's own implied-`--audio-only` behaviour (see `--section
+render`) applies underneath `commit` the same as it would to a bare `render` call — a stderr
+note, not an error, and the session's flow otherwise proceeds exactly the same.
+
 ```
 committed  ./edl.json
   removalPercent          14.2%
