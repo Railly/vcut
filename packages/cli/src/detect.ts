@@ -36,6 +36,10 @@ Flags:
 Filler cutting needs word-level timestamps. Generate them with:
   whisper-cli --max-len 1 --split-on-word
 
+A source with no video stream (a meeting-recorder mic track, a podcast export) skips the
+black/frozen-frame scan automatically, with its own warning distinct from --skip-video-scan.
+Silence detection, clipping, and word clamping are unaffected.
+
 Also accepts --fields/--jq. See vcut --help for the full picture.`
 
 export type Preset = 'noisy' | 'clean' | 'podcast'
@@ -90,6 +94,10 @@ export type DetectReport = {
   // Carried so `edl build` writes the second source without being told twice, and so the
   // report says which waveform its silences came from.
   audioPath: string | null
+  // #42: whether `input` has a video stream at all. Carried here rather than re-probed by every
+  // later reader (`edl build`, `commit`) — one ffprobe call, once, at detect time, the same
+  // reasoning `transcript.path`/`audioPath` already follow for "answer once, read everywhere."
+  hasVideo: boolean
   silences: SilenceCandidate[]
   review: ReviewCandidate[]
   warnings: string[]
@@ -333,6 +341,26 @@ export const probeDurationMs = async (path: string): Promise<number> => {
   return Math.round(Number(parsed.format.duration) * 1000)
 }
 
+// #42: the one probe every video-assumption in this pipeline now branches on. Stream presence
+// only, not duration or codec — those already have their own probes where they matter — so a
+// caller that only needs to know "is there a picture" pays for a single cheap ffprobe call.
+export const probeHasVideo = async (path: string): Promise<boolean> => {
+  const { stdout, stderr, exitCode } = await run('ffprobe', [
+    '-v',
+    'error',
+    '-show_entries',
+    'stream=codec_type',
+    '-of',
+    'json',
+    path,
+  ])
+  if (exitCode !== 0) {
+    throw new Error(stderr.trim() || `ffprobe exited with ${exitCode}`)
+  }
+  const parsed = JSON.parse(stdout) as { streams: Array<{ codec_type: string }> }
+  return parsed.streams.some((stream) => stream.codec_type === 'video')
+}
+
 export type CliOptions = {
   input: string
   preset: Preset
@@ -542,7 +570,16 @@ export const runDetect = async (options: CliOptions): Promise<DetectReport> => {
   ])
   const review: ReviewCandidate[] = [...parseClipping(statsLog, durationMs)]
 
-  if (!options.skipVideoScan) {
+  // #42: black/frozen-frame detection reads frames, so it needs a video stream to read them
+  // from. Checked before --skip-video-scan's own flag so a video-less source gets the honest
+  // reason (no frames to scan) rather than reading as though a caller asked to skip a check
+  // that source could actually have run.
+  const hasVideo = await probeHasVideo(options.input)
+  if (!hasVideo) {
+    warnings.push(
+      'no video stream on this source; black and frozen frame candidates not collected (nothing to scan a frame for)',
+    )
+  } else if (!options.skipVideoScan) {
     const videoLog = await runFfmpeg([
       '-i',
       options.input,
@@ -582,6 +619,7 @@ export const runDetect = async (options: CliOptions): Promise<DetectReport> => {
     lang: options.lang,
     transcript: { path, wordLevel: transcript.wordLevel, words: transcript.words.length },
     audioPath: options.audioPath,
+    hasVideo,
     silences,
     review,
     warnings,

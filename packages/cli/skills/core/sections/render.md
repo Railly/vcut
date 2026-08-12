@@ -63,3 +63,45 @@ is what makes a master.
 Audio is normalised to the `speechTargetLufs` the EDL declares, defaulting to -16 LUFS with a -1 dBTP ceiling. This runs on the concatenated result rather than per segment, so a quiet passage stays quieter than a loud one instead of every piece being dragged to the same number. Measured on one recording: -25.4 LUFS in, -16.5 out.
 
 The renderer validates its own output against the EDL: dimensions, pixel format, colour metadata, frame count within one frame, and the audio contract. Identical inputs produce a byte-identical file, so the `sha256` in the result is a reproducibility check.
+
+## Audio-only sources (#42)
+
+A source with no video stream — a meeting-recorder mic track, a podcast export, an m4a in an
+mp4 container — is a first-class source, not an error. `open`/`edl build`/`commit` already read
+it fine; `render` is where that shows up as a different flag surface, not a different command.
+
+**`--audio-only` is implied, not required, on a video-less EDL.** Passing it explicitly is
+redundant, not wrong; omitting it is not a mistake either — `render` prints a note on stderr
+once (`this EDL has no video source; --audio-only is implied`) and proceeds. There is nothing
+to render a picture from, so refusing the call over a missing flag would be refusing the exact
+source this exists for.
+
+**`--mode master` on a video-less EDL produces an audio master, not a video.** The V1 output
+contract (`h264`/`yuv420p`/`bt709`, width/height/fps) describes a picture; a video-less EDL's
+`output` block carries none of those fields, only `path`/`audioTrackPolicy`/`overwrite`. The
+master encodes AAC in the same container the video path already writes its own audio track
+with — universally playable, a fraction of lossless size for a recording that can run well past
+an hour, and the right trade for a file that gets received rather than scratch-audited. The
+`--audio-only` scratch render used while iterating stays lossless `pcm_s16le` in a `.wav`, same
+as always; only the finished master's codec changed.
+
+```bash
+vcut render --edl edl.json --mode preview          # scratch: implied audio-only, lossless .wav
+vcut render --edl edl.json --mode master            # finished: implied audio-only, AAC master
+```
+
+Approval semantics are unchanged: still a human edit to the EDL (`approval.status` and every
+segment's own `approval` to `"approved"`), still refused without it. `--audio-only` alongside
+`--mode master` is still a contradiction on a video-bearing EDL — that combination stays
+refused, since a scratch render and a finished video really are two different things there.
+
+**Frame-dependent checks skip cleanly, never crash, never fake a result.** `detect`'s
+black/frozen-frame scan needs a frame to scan; on a video-less source it does not run, and the
+report says so directly (`no video stream on this source; black and frozen frame candidates not
+collected`) rather than reading like a flag was passed. `--crop` is refused at build time with a
+named reason (`--crop applies to a picture, and <source> has no video stream to crop`) instead
+of being silently dropped — a crop that vanished without a word would read as a bug, not as the
+flag correctly not applying.
+
+`audit`, `joins`, and `nonspeech --verify` needed nothing to change: they already read the
+waveform only, the same `.wav` the audio-only loop always fed them.

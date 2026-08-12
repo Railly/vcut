@@ -11,6 +11,18 @@ Inverts the cut intervals into the spans worth keeping, so the EDL always descri
 
 Flags: `--edl <path>` (default `./edl.json`), `--width`, `--height`, `--fps`, `--edge-fade <ms>` (default 50), `--semantic <path>`, `--crop <spec>`.
 
+**A source with no video stream builds a legal, video-less EDL (#42).** `edl build` used to
+hard-fail on it (`source has no video stream`), which forced every meeting-recorder mic track
+or podcast export through a fake black-video mux just to reach `detect`/`build`/`render`. It
+no longer does: the built source carries `hasVideo: false`, and the EDL's `output` block omits
+width/height/fps/videoCodec/pixelFormat/colorSpace entirely rather than reporting fabricated
+values — there is no picture for the V1 output contract to describe. Segments are bounded by
+the audio stream's own duration instead of a video stream's. `--crop` is refused outright on a
+video-less source (`--crop applies to a picture, and <source> has no video stream to crop`)
+rather than silently doing nothing; every other flag and every downstream verb (`render`,
+`audit`, `joins`, `nonspeech`) treats the result the same as any other EDL. See `--section
+render` for what changes once this EDL reaches a render.
+
 **`--crop` frames the whole edit at once**, which is the reason it lives here and not in the
 renderer's per-segment field. A traditional editor makes you set the frame per clip, so
 remembering the menu bar after cutting means redoing every segment by hand. Here the crop is

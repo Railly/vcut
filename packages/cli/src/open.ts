@@ -138,6 +138,10 @@ export type OpenReport = {
   transcriptPresent: boolean
   suspects: OpenSuspect[]
   fresh: boolean
+  // #42: carried straight from the detect report so a caller sees this before ever reaching
+  // commit/render, where it actually changes what those verbs do (implied --audio-only, no
+  // frame checks, an audio master).
+  hasVideo: boolean
 }
 
 const SUSPECT_LIMIT = 10
@@ -175,6 +179,14 @@ const human = (report: OpenReport): string => {
     line('transcript', report.transcriptPresent ? 'present' : 'none cached'),
     line('suspects', String(report.suspects.length)),
   ]
+  if (!report.hasVideo) {
+    lines.push(
+      line(
+        'source',
+        'audio-only, no video stream — render implies --audio-only, master is audio, frame checks skipped',
+      ),
+    )
+  }
   for (const suspect of report.suspects.slice(0, SUSPECT_LIMIT)) {
     lines.push(
       line(
@@ -259,6 +271,7 @@ export const openCommand = async (argv: string[]): Promise<void> => {
     transcriptPresent,
     suspects,
     fresh: session.fresh,
+    hasVideo: report.hasVideo,
   }
 
   if (mode === 'json') {

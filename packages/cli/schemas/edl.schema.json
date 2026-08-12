@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://vcut.dev/schemas/edl.schema.json",
-  "title": "Video preprocessing edit decision list",
+  "title": "Edit decision list (video or audio-only source)",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -307,15 +307,10 @@
       "additionalProperties": false,
       "required": [
         "path",
-        "width",
-        "height",
-        "fps",
-        "videoCodec",
-        "pixelFormat",
-        "colorSpace",
         "audioTrackPolicy",
         "overwrite"
       ],
+      "description": "width/height/fps/videoCodec/pixelFormat/colorSpace describe the V1 video contract and are present only when at least one source has a video stream (#42). An EDL built from a video-less source carries none of them.",
       "properties": {
         "path": {
           "type": "string",

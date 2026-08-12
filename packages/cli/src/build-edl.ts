@@ -45,6 +45,10 @@ Flags:
 
 Every segment is written as proposed and the EDL as draft. Nothing is approved here.
 
+A source with no video stream builds a legal, video-less EDL: width/height/fps/videoCodec/
+pixelFormat/colorSpace are omitted from output rather than fabricated, and --crop is refused
+rather than silently ignored.
+
 Also accepts --fields/--jq. See vcut --help for the full picture.`
 
 export type BuildSummary = {
@@ -813,13 +817,26 @@ export const runBuild = async (
   const probe = await probeSource(report.input)
   const video = probe.streams.find((stream) => stream.codec_type === 'video')
   const audio = probe.streams.find((stream) => stream.codec_type === 'audio')
-  if (video === undefined) {
-    throw new Error('source has no video stream')
+  // #42: a source with no video stream (a meeting-recorder mic track, a podcast export, an m4a
+  // in an mp4 container) is legal on its own — nothing downstream of the cut list reads a
+  // frame. The old hard error forced every audio-only source through a black-video shim just to
+  // reach detect/build/render, and a real 19-minute run proved the shim was pure overhead: 8
+  // committed rounds, 0 join suspects, 111/111 audit segments above 0.99 correlation, none of
+  // it touching a pixel. `hasVideo` on the built source (below) is what the rest of the pipeline
+  // branches on from here. A source with neither stream is the one case still refused: there is
+  // nothing here to cut, silent video included, since a muted video source still has a video
+  // stream to trim against.
+  if (video === undefined && audio === undefined) {
+    throw new Error('source has neither a video nor an audio stream')
   }
 
-  const frameRate = video.r_frame_rate ?? '30/1'
+  // Frame boundaries only mean something when a picture will be trimmed to them: an audio-only
+  // build has nothing to snap, so outputFps stays 0 and snapToFrame's own fps<=0 branch (plain
+  // millisecond rounding) is what actually runs invertToSegments below.
+  const frameRate = video?.r_frame_rate ?? '30/1'
   const [numerator, denominator] = frameRate.split('/').map(Number)
-  const outputFps = options.fps ?? (denominator === 0 ? 30 : numerator / denominator)
+  const outputFps =
+    video === undefined ? 0 : (options.fps ?? (denominator === 0 ? 30 : numerator / denominator))
 
   // Semantic spans skip clampToWords on purpose: the model chose those boundaries by
   // meaning, and snapping them to word edges would undo the judgement being reviewed.
@@ -848,13 +865,23 @@ export const runBuild = async (
     report.audioPath === null || report.audioPath === undefined
       ? null
       : await describeAudioSource(report.audioPath, sourceId)
-  // Segments are trimmed from this source's video stream, so what bounds a kept span is the
-  // video stream's own duration, not the container's — the container reports the longest of
-  // its streams, and a screen recording's audio device commonly outlives the last frame.
+  // #42: crop frames a picture, so it has nothing to apply to on a video-less source. Refused
+  // here rather than silently dropped — a caller who asked for a crop and got none back would
+  // read that as the crop having failed rather than as the flag not applying to this source.
+  if (video === undefined && options.crop !== null) {
+    throw new UsageError(
+      `--crop applies to a picture, and ${report.input} has no video stream to crop`,
+    )
+  }
+  // Segments are bounded by whichever stream actually gets trimmed. With a picture, that is the
+  // video stream's own duration, not the container's — the container reports the longest of its
+  // streams, and a screen recording's audio device commonly outlives the last frame. Without a
+  // picture, the audio stream is what gets trimmed, so its own duration is the bound instead.
+  const sourceDurationMs = video === undefined ? probe.durationMs : probe.videoDurationMs
   const segments = markSemanticRisk(
     invertToSegments(
       allCuts,
-      probe.videoDurationMs,
+      sourceDurationMs,
       sourceId,
       report.marginMs,
       outputFps,
@@ -863,12 +890,12 @@ export const runBuild = async (
     ),
     semanticCuts,
     mergedCuts,
-    report.marginMs + Math.ceil(1000 / outputFps),
+    report.marginMs + Math.ceil(1000 / (outputFps === 0 ? 30 : outputFps)),
   )
   assertSegmentCount(segments.length)
 
   const keptMs = segments.reduce((total, segment) => total + segment.outMs - segment.inMs, 0)
-  const removalPercent = ((probe.videoDurationMs - keptMs) / probe.videoDurationMs) * 100
+  const removalPercent = ((sourceDurationMs - keptMs) / sourceDurationMs) * 100
 
   const edl = {
     version: 1,
@@ -880,13 +907,12 @@ export const runBuild = async (
         id: sourceId,
         path: report.input,
         sha256: await sha256(report.input),
-        // The renderer bounds every segment against this number. It has to be the video
-        // stream's own duration: segments are trimmed from the picture, and the picture is
-        // what runs out first when the container's duration comes from a longer audio track.
-        durationMs: probe.videoDurationMs,
-        hasVideo: true,
+        // The renderer bounds every segment against this number: the stream that actually gets
+        // trimmed, per the sourceDurationMs comment above.
+        durationMs: sourceDurationMs,
+        hasVideo: video !== undefined,
         hasAudio: audio !== undefined,
-        averageFrameRate: video.avg_frame_rate ?? frameRate,
+        averageFrameRate: video === undefined ? null : (video.avg_frame_rate ?? frameRate),
         sampleRateHz: audio?.sample_rate === undefined ? null : Number(audio.sample_rate),
         channels: audio?.channels ?? null,
       },
@@ -901,20 +927,37 @@ export const runBuild = async (
       edgeFadeMs: options.edgeFadeMs,
     },
     captions: captionPaths(report),
-    output: {
-      path: options.outputPath,
-      width: options.width ?? video.width ?? 1920,
-      height: options.height ?? video.height ?? 1080,
-      fps: outputFps,
-      videoCodec: 'h264',
-      pixelFormat: 'yuv420p',
-      colorSpace: 'bt709',
-      // The question is whether the render will have sound, not whether the picture carries
-      // it: a video recorded mute is exactly the case a separate recorder exists for.
-      audioTrackPolicy:
-        audio === undefined && externalAudio === null ? 'explicit-silence' : 'required',
-      overwrite: false,
-    },
+    output:
+      video === undefined
+        ? // #42: the V1 output contract (h264/yuv420p/bt709, width/height/fps) describes a
+          // picture. A video-less source has none of those to report, so the output block
+          // carries only what applies — the audio contract and the master path — and the
+          // renderer's own edlErrors reads hasVideo across sources to skip the picture checks
+          // rather than reading a fabricated width/height/fps that never gets encoded. Audio is
+          // guaranteed present here: the only source with neither stream was already refused
+          // above, so a video-less source always has the audio the block below requires.
+          {
+            path: options.outputPath,
+            audioTrackPolicy: 'required' as const,
+            overwrite: false,
+          }
+        : {
+            path: options.outputPath,
+            width: options.width ?? video.width ?? 1920,
+            height: options.height ?? video.height ?? 1080,
+            fps: outputFps,
+            videoCodec: 'h264' as const,
+            pixelFormat: 'yuv420p',
+            colorSpace: 'bt709',
+            // The question is whether the render will have sound, not whether the picture
+            // carries it: a video recorded mute is exactly the case a separate recorder exists
+            // for.
+            audioTrackPolicy:
+              audio === undefined && externalAudio === null
+                ? ('explicit-silence' as const)
+                : ('required' as const),
+            overwrite: false,
+          },
     approval: {
       status: 'draft',
       approvedAt: null,

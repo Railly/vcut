@@ -1,6 +1,6 @@
 ---
 name: vcut
-description: Cut silences, filler words, and dead air out of a recording and render a clean master, reproducibly. Use when the user has a raw screen or camera recording, mentions cutting silences or filler words or dead air, asks to clean up a take before publishing, wants an edit decision list from a video, or asks to trim pauses out of a talking-head recording. Also use when a recording needs a technical pass for clipping, black frames, or frozen frames before it ships. Do not use for story ideation, caption styling, subtitle translation, or publishing to a platform.
+description: Cut silences, filler words, and dead air out of a recording and render a clean master, reproducibly. Use when the user has a raw screen or camera recording, a meeting-recorder or podcast audio track with no video, mentions cutting silences or filler words or dead air, asks to clean up a take before publishing, wants an edit decision list from a video or audio-only source, or asks to trim pauses out of a talking-head recording. Also use when a recording needs a technical pass for clipping, black frames, or frozen frames before it ships. Do not use for story ideation, caption styling, subtitle translation, or publishing to a platform.
 allowed-tools: Bash(vcut:*), Bash(npx @crafter/vcut:*)
 ---
 

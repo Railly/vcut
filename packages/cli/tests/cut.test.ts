@@ -303,6 +303,7 @@ limpio
     lang: 'es',
     transcript: { path: null, wordLevel: false, words: 0 },
     audioPath: null,
+    hasVideo: true,
     silences: [{ kind: 'silence', startMs: 800, endMs: 1400, durationMs: 600 }],
     review: [],
     warnings: [],
