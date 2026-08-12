@@ -190,6 +190,48 @@ describe('mergeRepeats', () => {
     const merged = mergeRepeats([entry('b', 10_000)], [entry('a', 0)])
     expect(merged.map((e) => e.windowStartMs)).toEqual([0, 10_000])
   })
+
+  // The overlap case #58 exists for: --stride < --window means the same real repeat is heard
+  // by every window whose span covers it, and each one reports the identical phrase. That is
+  // one finding, not one per window, and only a time overlap between the reporting windows
+  // (not merely sharing a phrase) tells a genuine repeat-of-one apart from two unrelated ones.
+  const spanned = (phrase: string, startMs: number, endMs: number) => ({
+    phrase,
+    count: 2,
+    windowStartMs: startMs,
+    windowEndMs: endMs,
+  })
+
+  test('collapses the same phrase reported by two time-overlapping windows into one finding', () => {
+    const merged = mergeRepeats([
+      spanned('reciben un poema', 216_000, 232_000),
+      spanned('reciben un poema', 224_000, 240_000),
+      spanned('reciben un poema', 232_000, 248_000),
+    ])
+    expect(merged).toHaveLength(1)
+    expect(merged[0]?.windowStartMs).toBe(216_000)
+  })
+
+  test('does not collapse the same phrase from windows whose spans do not touch', () => {
+    const merged = mergeRepeats([
+      spanned('y bueno', 0, 16_000),
+      spanned('y bueno', 300_000, 316_000),
+    ])
+    expect(merged).toHaveLength(2)
+  })
+
+  test('a window ending exactly where the next starts does not overlap it', () => {
+    const merged = mergeRepeats([spanned('y bueno', 0, 16_000), spanned('y bueno', 16_000, 32_000)])
+    expect(merged).toHaveLength(2)
+  })
+
+  test('different phrases at overlapping windows are kept as separate findings', () => {
+    const merged = mergeRepeats([
+      spanned('vamos ahora mismo', 0, 16_000),
+      spanned('le damos clic', 8_000, 24_000),
+    ])
+    expect(merged).toHaveLength(2)
+  })
 })
 
 describe('findTruncatedEdges', () => {
@@ -387,6 +429,24 @@ printf '{"success":true,"files":{},"text":" reciben un poema mio reciben un poem
     expect(report.windows).toHaveLength(3)
   })
 
+  // The same stub text on every tile, now with --stride 4 (half of --window 8): every window
+  // overlaps its neighbor, so the identical duplicated-sentence finding is heard by all five
+  // tiles but each distinct phrase must be reported once, not once per window that heard it.
+  // The stub text carries two distinct 3-word runs ("reciben un poema", "un poema mio"), so the
+  // dedup proof is that each collapses on its own, not that the whole defect collapses to one.
+  test('overlapping windows report each real repeat once, not once per window', async () => {
+    const report = await runVerifyWindows(mediaPath, 8_000, 4_000, 'es', 2, undefined)
+    expect(report.windows.length).toBeGreaterThan(3)
+    const recibenFindings = report.repeatedPhrases.filter(
+      (entry) => entry.phrase === 'reciben un poema',
+    )
+    const poemaMioFindings = report.repeatedPhrases.filter(
+      (entry) => entry.phrase === 'un poema mio',
+    )
+    expect(recibenFindings).toHaveLength(1)
+    expect(poemaMioFindings).toHaveLength(1)
+  })
+
   test('durationMs comes from a real ffprobe measurement of the media', async () => {
     const report = await runVerifyWindows(mediaPath, 8_000, 8_000, 'es', 2, undefined)
     expect(report.durationMs).toBeGreaterThan(19_000)
@@ -405,12 +465,68 @@ printf '{"success":true,"files":{},"text":" reciben un poema mio reciben un poem
       logs.push(message)
     }
     try {
-      await verifyCommand(['--windows', mediaPath, '--window', '8', '--lang', 'es', '--json'])
+      await verifyCommand([
+        '--windows',
+        mediaPath,
+        '--window',
+        '8',
+        '--stride',
+        '8',
+        '--lang',
+        'es',
+        '--json',
+      ])
     } finally {
       console.log = originalLog
     }
     expect(logs).toHaveLength(1)
     const report = JSON.parse(logs[0] ?? '{}')
     expect(report.windows).toHaveLength(3)
+  })
+
+  // #58: --stride with no explicit value defaults to half of --window, not the same as
+  // --window, so every span in the media is covered by at least two differently-aligned
+  // windows and a repeat straddling one window's boundary lands whole inside another.
+  test('defaults --stride to half of --window when --stride is not given', async () => {
+    const logs: string[] = []
+    const originalLog = console.log
+    console.log = (message: string) => {
+      logs.push(message)
+    }
+    try {
+      await verifyCommand(['--windows', mediaPath, '--window', '8', '--lang', 'es', '--json'])
+    } finally {
+      console.log = originalLog
+    }
+    const report = JSON.parse(logs[0] ?? '{}')
+    expect(report.windowMs).toBe(8_000)
+    expect(report.strideMs).toBe(4_000)
+  })
+
+  // An explicit --stride still wins over the half-window default: a caller who names a stride
+  // gets exactly that stride, not a value #58 silently substitutes.
+  test('an explicit --stride overrides the half-window default', async () => {
+    const logs: string[] = []
+    const originalLog = console.log
+    console.log = (message: string) => {
+      logs.push(message)
+    }
+    try {
+      await verifyCommand([
+        '--windows',
+        mediaPath,
+        '--window',
+        '8',
+        '--stride',
+        '8',
+        '--lang',
+        'es',
+        '--json',
+      ])
+    } finally {
+      console.log = originalLog
+    }
+    const report = JSON.parse(logs[0] ?? '{}')
+    expect(report.strideMs).toBe(8_000)
   })
 })

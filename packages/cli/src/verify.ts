@@ -56,7 +56,9 @@ Usage:
 
 Flags:
   --window <sec>       Width of each window (default 16, the width the hand method used)
-  --stride <sec>       How far each window steps (default: same as --window, no overlap)
+  --stride <sec>       How far each window steps (default: half of --window, so every span
+                        is covered by at least two differently-aligned windows; a repeat
+                        straddling one window's boundary lands whole inside another)
   --lang <code>        Language passed to the transcriber
   --transcript <path>  A cached whole-file SRT to diff windows against (optional)
   --concurrency <n>    How many windows to transcribe at once (default min(4, cpus))
@@ -354,14 +356,32 @@ export const runPooled = async <T, R>(
 export const defaultConcurrency = (): number =>
   Math.max(1, Math.min(MAX_CONCURRENCY, cpus().length))
 
-// findRepeatedPhrases and findStackedOpeners check different shapes of the same defect class
-// (a run of words said twice, and two sentences opening on the same short phrase) and can
-// legitimately both fire on the same window without describing the same finding twice: a
-// three-word overlap and a two-word opener overlap are not required to coincide. They are
-// deduped only when they would report the literal same phrase at the literal same window.
+const overlaps = (leftStartMs: number, leftEndMs: number, right: RepeatedPhrase): boolean =>
+  leftStartMs < right.windowEndMs && right.windowStartMs < leftEndMs
+
+/**
+ * findRepeatedPhrases and findStackedOpeners check different shapes of the same defect class
+ * (a run of words said twice, and two sentences opening on the same short phrase) and can
+ * legitimately both fire on the same window without describing the same finding twice: a
+ * three-word overlap and a two-word opener overlap are not required to coincide.
+ *
+ * With `--stride < --window`, the same real repeat is also heard by every window whose span
+ * covers it, and reports the identical phrase once per window that heard it: a genuine repeat
+ * at 224s shows up at the 216s, 224s and 232s windows alike when they overlap it. That is one
+ * finding, not three, so entries reporting the same phrase from windows whose spans overlap in
+ * time are collapsed into one, kept at the earliest window's span (where the repeat was first
+ * audible). The overlap test walks the sorted run and grows a chain's own span as it absorbs
+ * each entry, so a phrase spanning three overlapping windows in a row (A overlaps B, B overlaps
+ * C, A does not directly overlap C) still collapses to one finding, not two.
+ *
+ * Two windows that merely happen not to overlap (`--stride >= --window`, or two overlapping
+ * windows far enough apart that their spans do not touch) reporting the same short phrase is
+ * not this shape: "y bueno" said once near 0s and again, unrelated, near 300s are two different
+ * findings, and only a time overlap between the reporting windows tells them apart from that.
+ */
 export const mergeRepeats = (...groups: RepeatedPhrase[][]): RepeatedPhrase[] => {
   const seen = new Set<string>()
-  const merged: RepeatedPhrase[] = []
+  const byPhrase: RepeatedPhrase[] = []
   for (const group of groups) {
     for (const entry of group) {
       const key = `${entry.windowStartMs}:${entry.phrase}`
@@ -369,7 +389,29 @@ export const mergeRepeats = (...groups: RepeatedPhrase[][]): RepeatedPhrase[] =>
         continue
       }
       seen.add(key)
+      byPhrase.push(entry)
+    }
+  }
+  byPhrase.sort((left, right) => left.windowStartMs - right.windowStartMs)
+
+  const merged: RepeatedPhrase[] = []
+  const chainSpans = new Map<RepeatedPhrase, { startMs: number; endMs: number }>()
+  for (const entry of byPhrase) {
+    const existing = merged.find((kept) => {
+      if (kept.phrase !== entry.phrase) {
+        return false
+      }
+      const span = chainSpans.get(kept)
+      return span !== undefined && overlaps(span.startMs, span.endMs, entry)
+    })
+    if (existing === undefined) {
       merged.push(entry)
+      chainSpans.set(entry, { startMs: entry.windowStartMs, endMs: entry.windowEndMs })
+      continue
+    }
+    const span = chainSpans.get(existing)
+    if (span !== undefined) {
+      span.endMs = Math.max(span.endMs, entry.windowEndMs)
     }
   }
   return merged.sort((left, right) => left.windowStartMs - right.windowStartMs)
@@ -450,7 +492,13 @@ export const verifyCommand = async (argv: string[]): Promise<void> => {
   }
 
   const windowS = numberFlag(argv, '--window', DEFAULT_WINDOW_S)
-  const strideS = numberFlag(argv, '--stride', windowS)
+  // Half the window, not the window itself: adjacent non-overlapping tiles put an interior
+  // boundary at every window edge, and a phrase repeated across that edge (first half in one
+  // window's tail, second half in the next window's head) is invisible to a detector that only
+  // reads a window's own text. Striding at half the width means every point in the media falls
+  // inside at least two differently-aligned windows, so a repeat pair can no longer straddle
+  // every window that would otherwise have seen it whole. An explicit --stride still wins.
+  const strideS = numberFlag(argv, '--stride', windowS / 2)
   const concurrency = numberFlag(argv, '--concurrency', defaultConcurrency())
   if (!Number.isInteger(concurrency)) {
     throw new UsageError('--concurrency needs a positive integer')
