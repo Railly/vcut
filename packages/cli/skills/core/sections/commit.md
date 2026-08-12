@@ -23,9 +23,35 @@ lives where they wrote it, exactly as `open`'s own manual entry already says abo
 else the session holds.
 
 **`--audio-only` is the default render**, matching the core manual's own per-round rule:
-every round's question is about sound, and rendering the picture for it costs 100x the wall
-clock for nothing a round needs. `--video` renders the preview instead, for the one call at the
-end of a loop. Output lands beside the EDL as `<name>.wav` unless `--output` already names one.
+every round's question is about sound, and rendering the picture for it costs far more wall
+clock than anything a round needs. `--video` renders the preview instead, for the one call at
+the end of a loop. Output lands beside the EDL as `<name>.wav` unless `--output` already names
+one.
+
+**Batch verified cuts into one commit. Never commit per find.** Every `commit` re-renders the
+whole cut from scratch, so what it costs is set by how much audio the cut keeps, not by how
+much changed since the last one. Two commits five minutes apart on the same source cost the
+same each, and the second re-renders every second the first already rendered.
+
+The math this rule comes from: six commits in one session on a 700-second source, ~9 to 9.5
+minutes each, over 50 minutes of foreground ffmpeg — most of a session spent waiting rather
+than deciding. Another run paid eight commits on a 1145-second source at similar cost apiece.
+At today's ~1s per 14s of kept audio, a 490-second cut is ~35 seconds per commit, so the same
+six commits cost about 3.5 minutes instead of 50 — but five of those six are still avoidable.
+
+Propose every cut the evidence supports (`vcut cut` accumulates into the session and renders
+nothing), then commit once and verify the whole batch against that one render:
+
+```bash
+vcut cut recording.mp4 --start-ms 12000 --end-ms 13400 --kind filler --reason "eh"
+vcut cut recording.mp4 --start-ms 48200 --end-ms 51100 --kind tangent --reason "aside"
+vcut cut recording.mp4 --start-ms 92700 --end-ms 94050 --kind filler --reason "o sea"
+vcut commit recording.mp4 --output master.mp4 --campaign my-video   # one render, all three
+```
+
+This is about how many commits a round costs, never about how many rounds a cut gets. The
+rounds gate still requires a real second pass against the previous round's render, and
+batching does not buy a way around it.
 
 ```
 committed  ./edl.json

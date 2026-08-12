@@ -223,6 +223,59 @@ describe('buildFfmpegArgs --audio-only', () => {
   })
 })
 
+// #41: a many-segment audio render cost minutes because every segment referenced [0:a]
+// directly and ffmpeg inserted the fan-out itself, once per extra consumer. The fix names
+// that fan-out with one asplit. Asserted as graph shape rather than as seconds: the timing
+// this came from (293s to 43s on a 180-segment, 700s source) is real but machine-dependent,
+// while "one split, N branches, the raw input read once" is the mechanism that produced it.
+describe('buildFfmpegArgs fans a source out once (#41)', () => {
+  const manySegments = (count: number): Edl => {
+    const base = edl('required')
+    return {
+      ...base,
+      sources: [{ ...base.sources[0], durationMs: 10_000 * count }],
+      segments: Array.from({ length: count }, (_, index) => ({
+        id: `seg-${index}`,
+        sourceId: 'src-1',
+        inMs: index * 1_000,
+        outMs: index * 1_000 + 500,
+        approval: 'proposed' as const,
+      })),
+    }
+  }
+  const graphOf = (args: string[]): string => args[args.indexOf('-filter_complex') + 1] as string
+
+  test('splits the audio once instead of reading [0:a] once per segment', () => {
+    const graph = graphOf(buildFfmpegArgs(manySegments(40), '/tmp/cut.wav', { audioOnly: true }))
+    expect(graph).toContain('[0:a]asplit=40')
+    // The defect itself: 40 separate reads of the same decoded stream.
+    expect(graph.match(/\[0:a\]/g)).toHaveLength(1)
+    expect(graph.match(/asplit=/g)).toHaveLength(1)
+  })
+
+  test('gives every segment its own branch off that one split', () => {
+    const graph = graphOf(buildFfmpegArgs(manySegments(40), '/tmp/cut.wav', { audioOnly: true }))
+    for (let index = 0; index < 40; index++) {
+      expect(graph).toContain(`[sa0_${index}]atrim=`)
+    }
+  })
+
+  test('splits the picture once too, on the video path', () => {
+    const graph = graphOf(buildFfmpegArgs(manySegments(40), '/tmp/master.mp4'))
+    expect(graph).toContain('[0:v]split=40')
+    expect(graph.match(/\[0:v\]/g)).toHaveLength(1)
+    expect(graph.match(/\[0:a\]/g)).toHaveLength(1)
+  })
+
+  // A single-segment EDL has nothing to fan out, and every EDL already on disk that renders
+  // one segment has to keep producing the exact bytes it always did.
+  test('adds no split when a source feeds a single branch', () => {
+    const graph = graphOf(buildFfmpegArgs(manySegments(1), '/tmp/cut.wav', { audioOnly: true }))
+    expect(graph).not.toContain('asplit')
+    expect(graph).toContain('[0:a]atrim=')
+  })
+})
+
 describe('buildFfmpegArgs edge fade', () => {
   test('ramps both edges of the segment', () => {
     const graph = buildFfmpegArgs(edl('required', 50), '/tmp/master.mp4').join(' ')

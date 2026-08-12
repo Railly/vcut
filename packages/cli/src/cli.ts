@@ -782,7 +782,7 @@ const CONTRACTS: Record<string, unknown> = {
       'render blocks in the foreground until ffmpeg exits and streams one progress line to stderr per ffmpeg report. There is no background mode, so a caller never polls for the output file or greps a process table to learn a render is alive: when the command returns, the render is done. --quiet drops the progress lines and renders the same file.',
       'Audio is normalised to the EDL speechTargetLufs, on the concatenated result rather than per segment.',
       'The renderer validates its own output against the EDL and fails on a mismatch.',
-      '--audio-only renders the audio alone for iterating, using the same audio graph as the video path. Measured at 0.25s against 31.8s on one 22-segment EDL. It writes lossless audio, defaults to the EDL output path with a .wav extension, and is refused in master mode.',
+      '--audio-only renders the audio alone for iterating, using the same audio graph as the video path. Much cheaper than a video render but not instant: roughly 1s per 14s of audio the cut keeps, driven by kept audio rather than segment count. It writes lossless audio, defaults to the EDL output path with a .wav extension, and is refused in master mode.',
       'The audio-only verification loop: render --audio-only, then vcut audit and vcut nonspeech against that same .wav — both read the waveform only and accept it wherever they accept a video render. Render video once, at the end, for the master.',
     ],
   },

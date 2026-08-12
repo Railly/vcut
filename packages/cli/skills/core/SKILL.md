@@ -156,9 +156,10 @@ Method, invariants, and the full stopping condition:
 **Verify on the audio-only render; mux video once, at the end.** `commit` defaults to
 `--audio-only` and `render --audio-only` is the standalone equivalent. `audit` correlates
 waveforms and `nonspeech --verify` classifies audio — neither reads a frame, so both take the
-`.wav` directly, same as `joins`. Measured on one 22-segment EDL: 0.25s against 31.8s for the
-same cuts. One run spent 69 of its 105 seconds of tool time on two video renders, the second
-purely to feed checks that never needed a frame.
+`.wav` directly, same as `joins`. Audio-only is far cheaper than video, but it is not free and
+it is not constant: it costs roughly **1 second per 14 seconds of audio the cut keeps**
+(measured below). One run spent 69 of its 105 seconds of tool time on two video renders, the
+second purely to feed checks that never needed a frame.
 
 ```bash
 vcut render --edl edl.json --audio-only          # rounds 1..n
@@ -173,11 +174,29 @@ nothing to grep a process table for; when the command returns, the render is don
 drops the progress lines and renders the same file.
 
 Know the cost before you call it: a video render runs roughly real time per minute of source
-— a 10-minute source is a multi-minute foreground call — while `--audio-only` is near instant.
-If your harness caps tool calls at a default timeout, raise the timeout for that one call
-instead of backgrounding it. One run read this exact rule, hit a 180-second default timeout on
-a 9-minute render, and spiraled into the poll-loop behavior the rule forbids; a 600-second
-timeout on the same call finishes in the foreground with no ceremony.
+— a 10-minute source is a multi-minute foreground call. `--audio-only` is much cheaper but
+still scales with the cut: about **1 second of wall clock per 14 seconds of kept audio**, so a
+490-second cut is a ~35-second call, not an instant one. If your harness caps tool calls at a
+default timeout, raise the timeout for that one call instead of backgrounding it. One run read
+this exact rule, hit a 180-second default timeout on a 9-minute render, and spiraled into the
+poll-loop behavior the rule forbids; a 600-second timeout on the same call finishes in the
+foreground with no ceremony.
+
+**Batch verified cuts into one commit.** Every `commit` re-renders the whole cut from scratch,
+so its cost is set by how much audio the cut keeps, not by how much you changed since the last
+one. Committing after each individual find pays that full price per find. The wall-clock math
+from the run that made this a rule: six commits in one session on a 700-second source, ~9
+minutes each, 50+ minutes of foreground ffmpeg, and the last commit re-rendered every second of
+audio the first five had already rendered. Propose every cut you have evidence for, then commit
+once and verify the batch. The rounds gate still wants a real second pass — batching is about
+how many commits a round costs, never about skipping a round.
+
+**Where the time actually goes** (measured on a synthetic 700-second source, 490 seconds kept):
+loudness normalisation is ~95% of an audio-only render, it is single-threaded, and it is linear
+in kept audio — the floor no flag removes. Segment count is nearly free now: 22 segments and
+180 segments over the same kept audio cost 6.9s and 8.7s on a 120-second source. Before 0.19.1
+segment count dominated instead (293s at 180 segments against 43s today, same output bytes),
+which is what made per-find commits cost minutes.
 
 **`--jq <expr>` filters and reshapes, so never reach for `python3 -c`.** `--fields` projects to
 dot paths; `--jq` does the structural work — filter a `nonspeech` list to the

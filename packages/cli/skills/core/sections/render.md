@@ -10,14 +10,22 @@ Preview mode accepts proposed segments. Master mode requires an approved EDL, ap
 Render blocks in the foreground and streams progress to stderr; there is nothing to poll. A
 video render runs roughly real time per minute of source, so budget the call accordingly: if
 your harness enforces a default tool timeout shorter than the render, raise the timeout for
-that call rather than backgrounding it. `--audio-only` is near instant and is the mode every
-round before the last one should be using anyway.
+that call rather than backgrounding it. `--audio-only` is the mode every round before the last
+one should be using anyway, and it is much cheaper than video — but it is not instant.
 
 **Render `--audio-only` for every round. Render video once, at the end, and not before.** This
 is the default, not an optimisation to remember: every question a round asks is about sound —
 whether a filler survived, whether a boundary clipped a word, whether an idea is still said
-twice. Answering those through the video path re-encodes every frame for nothing. Measured on
-one 22-segment EDL: **0.25s against 31.8s** for the same cuts.
+twice. Answering those through the video path re-encodes every frame for nothing.
+
+**What an audio-only render costs.** Roughly **1 second per 14 seconds of audio the cut keeps**
+— a 490-second cut is about 35 seconds, not a quarter of a second. The cost is set by kept
+audio, not by segment count: 22 and 180 segments over the same 84 seconds of kept audio measured
+6.9s and 8.7s. Loudness normalisation is ~95% of it, single-threaded and linear in kept audio,
+which is the floor no flag removes. The **0.25s** figure this document used to quote was
+measured on a 54.6-second cut before loudness normalisation entered the graph; it never
+described a full-length source, and reading it as "instant" is what made per-find commits look
+free.
 
 ```bash
 vcut render --edl edl.json --audio-only          # rounds 1..n

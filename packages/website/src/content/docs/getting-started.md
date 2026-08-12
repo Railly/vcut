@@ -50,9 +50,10 @@ vcut render --edl edl.json --mode preview
 The EDL from step 2 is not optional plumbing. It is the artifact you read and disagree with before anything gets rendered.
 
 Step 3 exists because a round of edits asks audio questions, and rendering the picture to
-answer them costs about a hundred times the wall clock: measured on one 22-segment EDL,
-**0.25s against 31.8s** for the same cuts. See [Iterate on audio](#iterate-on-audio) in the
-cutting loop for why this is where most of a round's work actually happens.
+answer them costs far more wall clock than the round needs. Audio-only is not instant either:
+it costs roughly **1 second per 14 seconds of audio the cut keeps**. See
+[Iterate on audio](#iterate-on-audio) in the cutting loop for why this is where most of a
+round's work actually happens.
 
 ### Editing across several calls
 
