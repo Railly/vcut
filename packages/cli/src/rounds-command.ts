@@ -10,8 +10,11 @@ import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 
 import type { BuildSummary } from './build-edl.ts'
-import { emitJson, heading, line, type Mode, resolveMode, UsageError } from './output.ts'
+import { duration, emitJson, heading, line, type Mode, resolveMode, UsageError } from './output.ts'
+import type { Edl } from './render-edl.ts'
 import {
+  type DeltaVerification,
+  deltaVerification,
   diffMetaSpeech,
   diffRounds,
   type MetaSpeechDiffEntry,
@@ -32,11 +35,23 @@ const HELP = `vcut rounds - a session's committed rounds, and what changed betwe
 Usage:
   vcut rounds <media> [--json|--human]
   vcut rounds <media> --diff <N> <M> [--json|--human]
+  vcut rounds <media> --diff <N> <M> --verify-delta [--json|--human]
 
 Without --diff, lists every round this session has committed (from 'vcut commit'), in order.
 With --diff, compares round N's build report against round M's: removalPercent delta, segment
 count delta, and semanticCuts matched by span overlap and reported added / removed / changed /
 unchanged. Omit N and M to diff the latest two rounds.
+
+--verify-delta names the master-time spans round M's render actually needs re-verified, instead
+of the whole render. A cut anywhere shifts every later segment's master position, so "what moved
+in master time" is the wrong diff: it marks everything after the first cut as changed. Segment
+ids are not a safe identity either, since a removal renumbers every id after it even when the
+audio itself never changed. This diffs by the segment's actual source-time span instead (source
+plus inMs/outMs): a segment is only flagged when that exact span is new to this round, never for
+sliding to a new master timestamp because something upstream got shorter or renumbered. The
+immediate neighbours of every flagged segment are flagged too, since a join is exactly where a
+duplicated phrase or a clipped word appears. Re-transcribe only the spans this reports, not the
+render end to end.
 
 This diffs what each round's build asked for (the same report 'vcut commit' already writes to
 rounds/round-N/report.json), not what either round's render actually says: that needs a
@@ -148,6 +163,29 @@ const humanDiff = (diff: RoundsDiff, metaSpeech: MetaSpeechDiffEntry[] | null): 
   return lines.join('\n')
 }
 
+const humanDeltaVerification = (delta: DeltaVerification): string => {
+  const lines = [
+    heading(`round ${delta.fromRound} -> round ${delta.toRound}  delta verification`),
+    line(
+      'spans to re-verify',
+      `${delta.spanCount} of ${delta.totalSegments} segments (${duration(delta.spanDurationMs)} of ${duration(delta.totalDurationMs)})`,
+    ),
+  ]
+  if (delta.spans.length === 0) {
+    lines.push(line('spans', 'none, round M made no content changes since round N'))
+    return lines.join('\n')
+  }
+  for (const span of delta.spans) {
+    lines.push(
+      line(
+        `  ${(span.masterInMs / 1000).toFixed(2)}-${(span.masterOutMs / 1000).toFixed(2)}s`,
+        `${span.segmentId}  ${span.reason}`,
+      ),
+    )
+  }
+  return lines.join('\n')
+}
+
 export const roundsCommand = async (argv: string[]): Promise<void> => {
   if (argv.includes('--help') || argv.length === 0) {
     console.log(HELP)
@@ -236,6 +274,23 @@ export const roundsCommand = async (argv: string[]): Promise<void> => {
   const toData = readRound(session.dir, toRound)
   if (fromData === null || toData === null) {
     throw new Error(`round data missing on disk for ${fromRound} or ${toRound}`)
+  }
+
+  if (argv.includes('--verify-delta')) {
+    const fromEdl = fromData.edl as Edl
+    const toEdl = toData.edl as Edl
+    const delta = deltaVerification(fromRound, fromEdl.segments, toRound, toEdl.segments)
+    if (mode === 'json') {
+      emitJson({
+        version: 1,
+        input: resolvedMedia,
+        sessionDir: session.dir,
+        deltaVerification: delta,
+      })
+      return
+    }
+    console.log(humanDeltaVerification(delta))
+    return
   }
 
   const diff = diffRounds(
