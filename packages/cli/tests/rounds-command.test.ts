@@ -40,6 +40,23 @@ const round = (removalPercent: number) => ({
   report: { removalPercent, segments: 1, semanticCuts: [] },
 })
 
+const segment = (id: string, inMs: number, outMs: number) => ({
+  id,
+  sourceId: 'source-a',
+  inMs,
+  outMs,
+  reason: 'approved-line',
+  handlesMs: { before: 100, after: 100 },
+  approval: 'proposed',
+  semanticRisk: 'none',
+  crop: null,
+})
+
+const roundWithSegments = (segments: ReturnType<typeof segment>[], removalPercent: number) => ({
+  edl: { segments },
+  report: { removalPercent, segments: segments.length, semanticCuts: [] },
+})
+
 describe('rounds summary carries the rounds gate (#36)', () => {
   test('a one-round session gets insufficient-rounds framing in JSON', async () => {
     const session = await openSession(mediaPath)
@@ -120,5 +137,63 @@ describe('rounds summary carries the rounds gate (#36)', () => {
 
     expect(ackedOutput.roundsGate.status).toBe('acknowledged-single-round')
     expect(unackedOutput.roundsGate.status).toBe('insufficient-rounds')
+  })
+})
+
+describe('rounds --diff --verify-delta (#46)', () => {
+  test('flags only the spans a removal touched, not the whole render, in JSON', async () => {
+    const session = await openSession(mediaPath)
+    const one = roundWithSegments(
+      [
+        segment('segment-001', 0, 60_000),
+        segment('segment-002', 60_000, 61_000),
+        segment('segment-003', 61_000, 121_000),
+        segment('segment-004', 121_000, 181_000),
+        segment('segment-005', 181_000, 241_000),
+      ],
+      2,
+    )
+    const two = roundWithSegments(
+      [
+        segment('segment-001', 0, 60_000),
+        segment('segment-003', 61_000, 121_000),
+        segment('segment-004', 121_000, 181_000),
+        segment('segment-005', 181_000, 241_000),
+      ],
+      3,
+    )
+    writeRound(nextRoundDir(session.dir), one.edl, one.report)
+    writeRound(nextRoundDir(session.dir), two.edl, two.report)
+
+    await roundsCommand([mediaPath, '--diff', '1', '2', '--verify-delta', '--json'])
+    const output = JSON.parse(logged) as {
+      deltaVerification: {
+        spanCount: number
+        totalSegments: number
+        spans: Array<{ segmentId: string; reason: string }>
+      }
+    }
+    expect(output.deltaVerification.totalSegments).toBe(4)
+    // segment-001 and segment-003 are flagged (the removal made them newly adjacent).
+    // segment-004 and segment-005 kept their original neighbour and only slid in master time,
+    // so they must not be re-verified even though their master timestamps changed.
+    expect(output.deltaVerification.spanCount).toBe(2)
+    expect(output.deltaVerification.spans.map((span) => span.segmentId).sort()).toEqual([
+      'segment-001',
+      'segment-003',
+    ])
+    expect(output.deltaVerification.spans.map((span) => span.segmentId)).not.toContain(
+      'segment-005',
+    )
+  })
+
+  test('an unchanged round reports zero spans in --human', async () => {
+    const session = await openSession(mediaPath)
+    const stable = roundWithSegments([segment('segment-001', 0, 1000)], 1)
+    writeRound(nextRoundDir(session.dir), stable.edl, stable.report)
+    writeRound(nextRoundDir(session.dir), stable.edl, stable.report)
+
+    await roundsCommand([mediaPath, '--diff', '1', '2', '--verify-delta', '--human'])
+    expect(logged).toContain('0 of 1 segments')
   })
 })
