@@ -38,6 +38,7 @@ import {
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
+import type { SurvivingDeadAirReport } from './dead-air.ts'
 import type { DetectReport } from './detect.ts'
 import { packageVersion } from './output.ts'
 import type { MetaSpeechSpan, Proposal } from './semantic.ts'
@@ -480,6 +481,35 @@ export const readMetaSpeech = (
     return null
   }
   return JSON.parse(readFileSync(path, 'utf8')) as MetaSpeechSpan[]
+}
+
+// --- Surviving dead air (#43) ------------------------------------------------------------------
+//
+// commit runs `findSurvivingDeadAir` (dead-air.ts) against its own render on every round, the
+// same forced placement #38 already proved for metaSpeech: a check that only exists inside a
+// verb the session loop never forces is optional by construction, and #43's own forensics are
+// what happens when the check exists nowhere at all: a 19.9s silence survived three rounds of
+// verification because none of them looked at the render's audio. Recorded beside the round's
+// EDL, build report, and metaSpeech spans so `rounds` can answer the same addressed-vs-standing
+// question for a surviving pause that it already answers for a metaSpeech marker.
+const deadAirPath = (roundDir: string): string => join(roundDir, 'dead-air.json')
+
+export const writeDeadAir = (roundDir: string, report: SurvivingDeadAirReport): string => {
+  const path = deadAirPath(roundDir)
+  writeFileSync(path, `${JSON.stringify(report, null, 2)}\n`)
+  return path
+}
+
+/** A round's recorded surviving-dead-air report. Null when the round predates #43. */
+export const readDeadAir = (
+  sessionDir: string,
+  roundNumber: number,
+): SurvivingDeadAirReport | null => {
+  const path = deadAirPath(join(roundsDir(sessionDir), `round-${roundNumber}`))
+  if (!existsSync(path)) {
+    return null
+  }
+  return JSON.parse(readFileSync(path, 'utf8')) as SurvivingDeadAirReport
 }
 
 // --- Commit marker -------------------------------------------------------------------------

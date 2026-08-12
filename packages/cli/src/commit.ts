@@ -33,6 +33,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { basename, dirname, extname, join, resolve } from 'node:path'
 
 import { type BuildOptions, type Crop, parseCrop, runBuild } from './build-edl.ts'
+import { findSurvivingDeadAir, type SurvivingDeadAirReport } from './dead-air.ts'
 import type { CliOptions as DetectOptions, DetectReport, Preset } from './detect.ts'
 import { parseSrt, runDetect } from './detect.ts'
 import { emitJson, heading, line, type Mode, nextStep, resolveMode, UsageError } from './output.ts'
@@ -59,6 +60,7 @@ import {
   readProposalsFile,
   releaseLock,
   writeCachedDetect,
+  writeDeadAir,
   writeMetaSpeech,
   writeRound,
 } from './session.ts'
@@ -262,6 +264,27 @@ export const metaSpeechForRound = (
   return metaSpeech(lines, cuts, blocks, report.lang)
 }
 
+/**
+ * #43: surviving-dead-air findings go first, ahead of metaSpeech and the rounds gate. Dead air
+ * is this tool's founding target, and the forensics that opened #43 are a 19.9s silence that
+ * sailed through joins, audit, and nonspeech into a converged preview because none of them
+ * measured the render's own audio. `metaSpeechNext`/`commitNext` follow, unchanged.
+ */
+export const deadAirNext = (
+  report: SurvivingDeadAirReport,
+): Array<{ question: string; verb: string }> =>
+  report.pauses.length === 0
+    ? []
+    : [
+        {
+          question: `${report.pauses.length} pause${report.pauses.length === 1 ? '' : 's'} over ${report.minSilenceMs / 1000}s survived in the render; read each and cut it or name why it stays`,
+          // `cut`'s --kind is a fixed set (false-start/repetition/tangent/filler), none of them
+          // "silence". A surviving pause the fixed detect preset kept as speech is proposed the
+          // same way any other manual removal is, as filler.
+          verb: 'read the deadAir field above, then vcut cut <media> --start-ms <n> --end-ms <n> --kind filler --reason "..." per pause you are removing',
+        },
+      ]
+
 const humanReport = (
   edlPath: string,
   removalPercent: number,
@@ -274,6 +297,7 @@ const humanReport = (
   }>,
   render: { status: string; outputPath: string; sha256?: string; duration?: string },
   gate: RoundsGate,
+  deadAir: SurvivingDeadAirReport,
   metaSpeechFindings: MetaSpeechSpan[] | null,
   hints: Array<{ question: string; verb: string }>,
 ): string => {
@@ -294,6 +318,26 @@ const humanReport = (
   lines.push(line('output', render.outputPath))
   if (render.duration !== undefined) {
     lines.push(line('duration', `${render.duration}s`))
+  }
+  // #43: one warning-style line whenever this round's own render still carries silence over the
+  // calibrated threshold, the check `joins`/`audit`/`nonspeech` never ran, on the one artefact
+  // where it matters. deadAir.floor is null (not printed) when the render was too short to
+  // calibrate a threshold against, distinct from a floor that ran and found nothing to flag.
+  if (deadAir.floor !== null && deadAir.pauses.length > 0) {
+    lines.push(
+      line(
+        'deadAir',
+        `${deadAir.pauses.length} pause${deadAir.pauses.length === 1 ? '' : 's'} survived, floor ${deadAir.floor.floorDb.toFixed(1)}dB, threshold ${deadAir.floor.thresholdDb.toFixed(1)}dB`,
+      ),
+    )
+    for (const pause of deadAir.pauses) {
+      lines.push(
+        line(
+          `  ${(pause.startMs / 1000).toFixed(2)}-${(pause.endMs / 1000).toFixed(2)}s`,
+          `${(pause.durationMs / 1000).toFixed(2)}s of silence`,
+        ),
+      )
+    }
   }
   // #38: one warning-style line whenever this round's transcript carried standing metaSpeech
   // spans — spoken editing markers ("rebobinando", "corta eso") sitting outside every cut this
@@ -425,6 +469,15 @@ export const commitCommand = async (argv: string[]): Promise<void> => {
     }
     const render = await runRender(edl as Edl, renderOptions)
 
+    // #43: surviving dead air, measured on the render this call just produced, at a threshold
+    // calibrated to that render's own noise floor rather than a preset built for a different
+    // microphone. Runs on every commit, unconditionally, the same forced placement #38 already
+    // proved: `joins`, `audit`, and `nonspeech` all verify something about the EDL's intent, and
+    // none of them reads the render's own audio, which is how a 19.9s silence reached a
+    // converged preview in the run that opened this issue.
+    const deadAir = await findSurvivingDeadAir(render.outputPath)
+    writeDeadAir(roundDir, deadAir)
+
     // A successful commit marks the session as a gc candidate (B7-Q2): the round it just wrote
     // is state `session gc` may now consider clearing, never state it deletes on its own.
     markCommitted(session.dir)
@@ -447,9 +500,15 @@ export const commitCommand = async (argv: string[]): Promise<void> => {
       gate.status === 'insufficient-rounds' && gate.next !== undefined
         ? gate.next
         : commitNext(args.edlPath, render.outputPath)
-    // #38: standing metaSpeech findings are named before every other hint, including the rounds
-    // gate's own — the run this issue is about read hint[0] every round and stopped there.
-    const hints = [...metaSpeechNext(metaSpeechFindings ?? []), ...baseHints]
+    // #43/#38: surviving-dead-air findings are named before metaSpeech and before the rounds
+    // gate's own hints. Dead air is this tool's founding target, and it is evidence about the
+    // render that was just produced, not a heuristic marker scan. metaSpeechNext follows,
+    // unchanged, per #38.
+    const hints = [
+      ...deadAirNext(deadAir),
+      ...metaSpeechNext(metaSpeechFindings ?? []),
+      ...baseHints,
+    ]
 
     if (mode === 'json') {
       emitJson({
@@ -460,6 +519,9 @@ export const commitCommand = async (argv: string[]): Promise<void> => {
         build: summary,
         render,
         roundsGate: gate,
+        // Always present. floor is null only when the render was too short to calibrate a
+        // threshold against (#43); pauses is [] whenever the check ran and found nothing.
+        deadAir,
         // Always present, even as `[]`, so its absence can never be read as "not checked" (#38).
         // `metaSpeechChecked` is the honest separate signal for the one case an empty array
         // cannot distinguish on its own: a session with no transcript to check yet.
@@ -476,6 +538,7 @@ export const commitCommand = async (argv: string[]): Promise<void> => {
         summary.semanticCuts,
         render,
         gate,
+        deadAir,
         metaSpeechFindings,
         hints,
       ),
