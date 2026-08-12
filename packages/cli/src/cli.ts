@@ -4,6 +4,7 @@ import { join, resolve } from 'node:path'
 import { auditCommand } from './audit-command.ts'
 import { buildEdlCommand } from './build-edl.ts'
 import { commitCommand } from './commit.ts'
+import { compareCommand } from './compare.ts'
 import { convergeCommand } from './converge.ts'
 import { cutCommand } from './cut.ts'
 import { detectCommand, positional } from './detect.ts'
@@ -64,6 +65,7 @@ Usage:
   vcut cut <media> --refs|--start-ms|--span  Propose a semantic cut against a session, see what it removes
   vcut commit <media> [flags]        Build + render a session's proposals into a draft EDL
   vcut rounds <media> [--diff N M]   A session's committed rounds, diffed between two
+  vcut compare --edl <path> --reference <path>  Grade an EDL against an approved human edit
   vcut session list|gc [flags]       See what a session store holds, and clear it explicitly
   vcut schema [name]                 Print the JSON contract for a command
   vcut skills list|get|path [name]   Read the bundled agent manual, or one section of it
@@ -610,6 +612,34 @@ const CONTRACTS: Record<string, unknown> = {
       "The session must already exist with at least 2 committed rounds for --diff; like cut and commit, this reads a session's history rather than creating one.",
     ],
   },
+  compare: {
+    version: SCHEMA_VERSION,
+    command: 'vcut compare',
+    output: {
+      version: 'number, always 1',
+      edl: 'absolute path to the EDL being graded',
+      reference: 'absolute path to the approved edit it is graded against',
+      referenceKind: '"edl" | "srt" | "media", what the reference turned out to be',
+      referenceTranscriptFrom:
+        '"flag" | "transcribed" | null. flag means --reference-transcript or an SRT reference was used; transcribed means this run paid for it; null on an EDL reference, which needs none',
+      headline:
+        '{ sourceDurationMs, edlKeptMs, referenceKeptMs, keptDeltaMs, edlCutCount, referenceCutCount, missedCount, overcutCount, missedMs, overcutMs }',
+      missed:
+        '[{ startMs, endMs, durationMs, removedText, wordCount, coveragePercent }], spans the reference removes that the EDL does not',
+      overcut:
+        '[{ startMs, endMs, durationMs, coveragePercent, keptText }], spans the EDL removes that the reference keeps',
+    },
+    notes: [
+      'An approved master is ground truth for the next run on similar material. This is the eval loop: a corpus of (source, approved edit) pairs turns any change to vcut, or any agent run, into a measurable regression test on edit quality rather than a verdict reached by ear.',
+      "The reference's cut list is recovered, not read: its word stream is aligned against the source transcript over diacritic-folded, punctuation-stripped tokens (a longest-matching-subsequence opcodes walk, the same shape difflib.SequenceMatcher produces), and every run of source tokens the reference does not carry is a span the human removed.",
+      'Alignment tolerances are constants with evidence-based defaults, not flags: adjacent recovered deletions closer than 800ms are merged into one cut (a human cut lands where the sentence turns, not on a token boundary), spans under 1000ms are dropped as transcription noise, and a span is treated as covered at 60% overlap. Measured: every span both sides agreed on scored above 0.9 and every span the human removed alone scored 0, so the bar sits between two clusters rather than inside one.',
+      'The source transcript comes from --transcript, or from the session cached for the EDL source when one exists. compare reads a session, it never creates one.',
+      'With a media reference, transcription is the whole cost of this command and it is real wall-clock time. It runs in chunks (--chunk, default 120s), strictly sequentially like every other trx caller here, and streams one progress line per chunk to stderr the way render streams ffmpeg. Nothing is cached: --reference-transcript <srt> is the explicit, caller-owned way to reuse a transcription, since a cache this command cannot invalidate is a stale answer waiting to be trusted.',
+      'An EDL reference skips the alignment entirely: both cut lists are already stated in source time, and recovering one of them from audio would be strictly worse evidence than the statement itself. A transcript there only supplies the quoted text, and its absence is a report without quotes rather than a refusal.',
+      'overcut is the weaker direction by construction. An EDL cut of pure dead air has no words in it to corroborate, so silence-only spans are excluded rather than reported: grading them against a speech alignment reports noise as findings.',
+      'A missed or overcut span is a place to look, not a verdict, the same stance joins and peek take. It rests on two independent transcriptions of the same speech agreeing about what was said.',
+    ],
+  },
   session: {
     version: SCHEMA_VERSION,
     command: 'vcut session list | vcut session gc',
@@ -845,6 +875,7 @@ export const CORE_SECTIONS: { name: string; reads: string }[] = [
   { name: 'cut', reads: 'ref ranges, --start-ms, --span, --list/--drop' },
   { name: 'commit', reads: 'what a commit builds, renders, and records' },
   { name: 'rounds', reads: 'comparing two committed rounds' },
+  { name: 'compare', reads: 'grading an EDL against an approved human edit, and the eval loop' },
   { name: 'session', reads: 'the store, gc, and the advisory lock' },
   { name: 'edl-build', reads: 'removedText, driftSuspect, boundary warnings, --crop' },
   { name: 'render', reads: 'audio-only, progress, loudness, reproducibility' },
@@ -1085,6 +1116,9 @@ export const route = async (argv: string[]): Promise<void> => {
   }
   if (command === 'rounds') {
     return roundsCommand(rest)
+  }
+  if (command === 'compare') {
+    return compareCommand(rest)
   }
   if (command === 'session') {
     return sessionCommand(rest)

@@ -321,6 +321,7 @@ Run `vcut schema <name>` for the field-by-field contract instead of parsing `--h
 | Propose a cut against a session and see what it removes? | `cut <media> --refs\|--start-ms/--end-ms\|--span` |
 | Build and render everything a session has accumulated? | `commit <media> --output <path> --campaign <id>` |
 | What changed between two committed rounds? | `rounds <media> --diff` |
+| Did this edit catch what an approved human edit caught? | `compare --edl <path> --reference <approved edit>` |
 | Where should I look first in a long file? | `suspects --detect detect.json` |
 | What in this file is worth cutting? | `detect <input>` |
 | What is said at a position, from the existing transcript? | `say --transcript ... --at <s>` |
@@ -362,6 +363,7 @@ version.
 | `cut` | ref ranges, `--start-ms`, `--span`, `--list`/`--drop`, `--literal` for a verified boundary |
 | `commit` | what a commit builds, renders, and records |
 | `rounds` | comparing two committed rounds |
+| `compare` | grading an EDL against an approved human edit, and the eval loop |
 | `session` | the store, `gc`, and the advisory lock |
 | `edl-build` | `removedText`, `driftSuspect`, boundary warnings, `--crop` |
 | `render` | audio-only, progress, loudness, reproducibility |
