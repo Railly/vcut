@@ -265,7 +265,13 @@ export const metaSpeechForRound = (
 const humanReport = (
   edlPath: string,
   removalPercent: number,
-  semanticCuts: Array<{ startMs: number; endMs: number; kind: string; removedText: string }>,
+  semanticCuts: Array<{
+    startMs: number
+    endMs: number
+    kind: string
+    removedText: string
+    literal?: true
+  }>,
   render: { status: string; outputPath: string; sha256?: string; duration?: string },
   gate: RoundsGate,
   metaSpeechFindings: MetaSpeechSpan[] | null,
@@ -280,7 +286,7 @@ const humanReport = (
     lines.push(
       line(
         `  ${(cut.startMs / 1000).toFixed(2)}-${(cut.endMs / 1000).toFixed(2)}s`,
-        `${cut.kind}: "${cut.removedText || '(no transcript)'}"`,
+        `${cut.kind}${cut.literal === true ? ' (literal)' : ''}: "${cut.removedText || '(no transcript)'}"`,
       ),
     )
   }

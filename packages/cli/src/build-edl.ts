@@ -112,7 +112,7 @@ export const humanSummary = (summary: BuildSummary): string => {
     lines.push(
       line(
         `  ${(cut.startMs / 1000).toFixed(2)}-${(cut.endMs / 1000).toFixed(2)}s`,
-        `${cut.kind}: "${cut.removedText || '(no transcript)'}"`,
+        `${cut.kind}${cut.literal === true ? ' (literal)' : ''}: "${cut.removedText || '(no transcript)'}"`,
       ),
     )
   }
@@ -467,9 +467,21 @@ export type SemanticCutReport = {
   removedText: string
   boundariesInSilence: [boolean, boolean]
   driftSuspect?: true
+  literal?: true
 }
 
-/** Per-proposal build report: what each accepted semantic span actually removes. */
+/**
+ * Per-proposal build report: what each accepted semantic span actually removes.
+ *
+ * A `literal` proposal (issue #40, `cut --literal`) skips `clampedSpanFor` and reports its own
+ * raw span instead of the one it absorbs into once merged with a neighbouring silence cut or
+ * another proposal. `removedText`, `boundariesInSilence`, and `driftSuspect` are still computed
+ * — against that exact span — so the warning surface stays intact; a `literal` cut can still
+ * come back `driftSuspect: true`, and that still means re-verify, not "the flag already
+ * verified it". Every non-literal proposal is unaffected: this only changes which span a
+ * literal proposal is read against, never the actual cut/kept boundaries `invertToSegments`
+ * computes from `allCuts`.
+ */
 export const describeSemanticCuts = (
   proposals: Proposal[],
   merged: Cut[],
@@ -480,7 +492,7 @@ export const describeSemanticCuts = (
   const warnings: string[] = []
 
   for (const proposal of proposals) {
-    const span = clampedSpanFor(proposal, merged)
+    const span = proposal.literal === true ? proposal : clampedSpanFor(proposal, merged)
     const text = removedText(span, words)
     const inSilence = boundariesInSilence(span, silences)
     const drifted = driftSuspectSpan(span, words, silences)
@@ -494,6 +506,9 @@ export const describeSemanticCuts = (
     }
     if (drifted) {
       cut.driftSuspect = true
+    }
+    if (proposal.literal === true) {
+      cut.literal = true
     }
     cuts.push(cut)
     if (reasonMismatch(text, proposal.reason)) {

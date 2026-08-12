@@ -359,7 +359,7 @@ version.
 | `detect` | picking a preset, or reading a drift warning |
 | `open` | refs, `gen`, and what a session caches |
 | `peek` | four views of a position and `viewsDisagree` |
-| `cut` | ref ranges, `--start-ms`, `--span`, `--list`/`--drop` |
+| `cut` | ref ranges, `--start-ms`, `--span`, `--list`/`--drop`, `--literal` for a verified boundary |
 | `commit` | what a commit builds, renders, and records |
 | `rounds` | comparing two committed rounds |
 | `session` | the store, `gc`, and the advisory lock |
