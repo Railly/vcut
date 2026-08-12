@@ -62,8 +62,9 @@ vcut render --edl edl.json --mode preview
 ```
 
 Step 3 exists because a round of edits asks audio questions and rendering the picture to
-answer them costs about a hundred times the wall clock: measured on one 22-segment EDL,
-**0.25s against 31.8s** for the same cuts.
+answer them costs far more wall clock than the round needs. Audio-only is not instant either:
+it costs roughly **1 second per 14 seconds of audio the cut keeps**, driven by kept audio
+rather than segment count.
 
 In a terminal you get a summary:
 

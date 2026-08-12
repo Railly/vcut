@@ -81,7 +81,7 @@ N=1   # bump every round: the renderer refuses to overwrite
 vcut edl build --detect detect.json --semantic proposals.json \
   --output cut-$N.mp4 --campaign my-video --edl edl-$N.json \
   --human --report-json report-$N.json
-vcut render --edl edl-$N.json --audio-only --output cut-$N.wav   # 0.25s, not 32s
+vcut render --edl edl-$N.json --audio-only --output cut-$N.wav   # ~1s per 14s kept
 
 # 2. Transcribe the RENDER, never reuse the previous transcript
 trx transcribe cut-$N.wav --words --language <lang> -m large-v3-turbo

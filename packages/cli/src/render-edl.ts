@@ -32,8 +32,10 @@ approved segments, matching source hashes, and a free output path.
 
 --audio-only skips the picture and keeps the audio graph unchanged, edge fades and
 loudness included, so what you hear is what the finished render will sound like.
-Measured on one 22-segment EDL: 0.25s against 31.8s for the same cuts with video.
-Use it for the rounds where the questions are about sound, then render once.
+Much cheaper than the video path, but not instant: roughly 1s per 14s of audio the
+cut keeps, set by kept audio rather than by segment count, and loudness
+normalisation is most of it. Use it for the rounds where the questions are about
+sound, then render once.
 
 The audio-only verification loop: render --audio-only, then vcut audit and vcut nonspeech
 against that same .wav. Both read the waveform only and accept it wherever they accept a
@@ -333,11 +335,59 @@ const audioEdgeFade = (segment: Segment, fadeMs: number | undefined): string => 
   return `,afade=t=in:st=0:d=${fade},afade=t=out:st=${outStart}:d=${fade}`
 }
 
+// Every segment reading the same source audio is a second consumer of that one decoded
+// stream, and ffmpeg inserts the fan-out itself when a filter label is referenced more than
+// once. That implicit split is what made a many-segment audio render cost minutes: measured
+// on a 700s source, cutting it into 180 segments with no filters at all took 68s while
+// decoding the whole audio track once took 0.66s. Naming the fan-out with an explicit asplit
+// instead collapses it to a single decode feeding N windows: 207s to 28.5s on the same
+// 180-segment EDL, 38.6s to 20.7s at 50.
+//
+// Byte-identical by construction, not by hope: asplit is what ffmpeg was already inserting,
+// so this only writes down a graph edge that was always there. Verified as bytes rather than
+// argued — the same EDL rendered both ways hashed the same at 5, 20, 50 and 180 segments.
+//
+// Emitted only when a source feeds more than one branch, so a single-segment EDL keeps the
+// exact graph string it has always produced and nothing already on disk re-renders differently.
+const splitFilters = (
+  counts: Map<number, number>,
+  kind: 'video' | 'audio',
+): { filters: string[]; label: (input: number) => string } => {
+  const prefix = kind === 'video' ? 'sv' : 'sa'
+  const stream = kind === 'video' ? 'v' : 'a'
+  const filter = kind === 'video' ? 'split' : 'asplit'
+  const filters: string[] = []
+  for (const [input, count] of [...counts.entries()].sort((a, b) => a[0] - b[0])) {
+    if (count < 2) {
+      continue
+    }
+    const labels = Array.from({ length: count }, (_, branch) => `[${prefix}${input}_${branch}]`)
+    filters.push(`[${input}:${stream}]${filter}=${count}${labels.join('')}`)
+  }
+  const used = new Map<number, number>()
+  return {
+    filters,
+    label: (input: number) => {
+      const total = counts.get(input) ?? 0
+      if (total < 2) {
+        return `${input}:${stream}`
+      }
+      const branch = used.get(input) ?? 0
+      used.set(input, branch + 1)
+      return `${prefix}${input}_${branch}`
+    },
+  }
+}
+
 /**
  * Iterating a cut asks audio questions: whether a filler survived, whether a boundary
  * clipped a word, whether a pause is still there. Answering them through the video path
- * re-encodes every frame, which on one 22-segment EDL measured 31.8s against 0.25s for
- * the same cuts in audio alone.
+ * re-encodes every frame, for nothing the round needs.
+ *
+ * Audio-only is much cheaper but not free: its cost tracks the audio the cut KEEPS, not the
+ * segment count, at roughly 1s per 14s kept, and loudnorm is ~95% of it (single-threaded,
+ * linear in kept audio). The 0.25s figure this comment used to quote came from a 54.6s cut
+ * measured before loudness normalisation was in the graph.
  *
  * The audio half of the graph is used unchanged, edge fades and loudness included, so
  * what is heard while iterating is what the finished render will sound like. Only the
@@ -385,6 +435,30 @@ export const buildFfmpegArgs = (
       ? undefined
       : sourceIndex.get(edl.audio.externalAudioSourceId)
 
+  // How many branches will read each input's picture and each input's sound, counted before
+  // any filter is emitted: an asplit has to declare its output count up front, so the tally
+  // cannot be built while walking the segments that consume it.
+  const videoBranchCounts = new Map<number, number>()
+  const audioBranchCounts = new Map<number, number>()
+  if (!audioOnly || policy === 'required') {
+    for (const segment of edl.segments) {
+      const input = sourceIndex.get(segment.sourceId)
+      if (input === undefined) {
+        continue
+      }
+      if (!audioOnly) {
+        videoBranchCounts.set(input, (videoBranchCounts.get(input) ?? 0) + 1)
+      }
+      if (policy === 'required') {
+        const audioIn = audioInput ?? input
+        audioBranchCounts.set(audioIn, (audioBranchCounts.get(audioIn) ?? 0) + 1)
+      }
+    }
+  }
+  const videoSplit = splitFilters(videoBranchCounts, 'video')
+  const audioSplit = splitFilters(audioBranchCounts, 'audio')
+  filters.push(...videoSplit.filters, ...audioSplit.filters)
+
   for (const [index, segment] of edl.segments.entries()) {
     const input = sourceIndex.get(segment.sourceId)
     if (input === undefined) {
@@ -405,7 +479,7 @@ export const buildFfmpegArgs = (
       // concat landed 0 at every segment count tried, both directions.
       const fpsSegment = fpsConverting ? '' : `,fps=${fps}`
       filters.push(
-        `[${input}:v]trim=start=${seconds(segment.inMs)}:end=${seconds(segment.outMs)},setpts=PTS-STARTPTS,crop=trunc(iw*${crop.width}/2)*2:trunc(ih*${crop.height}/2)*2:trunc(iw*${crop.x}/2)*2:trunc(ih*${crop.y}/2)*2,scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:black${fpsSegment},format=${edl.output.pixelFormat}[v${index}]`,
+        `[${videoSplit.label(input)}]trim=start=${seconds(segment.inMs)}:end=${seconds(segment.outMs)},setpts=PTS-STARTPTS,crop=trunc(iw*${crop.width}/2)*2:trunc(ih*${crop.height}/2)*2:trunc(iw*${crop.x}/2)*2:trunc(ih*${crop.y}/2)*2,scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:black${fpsSegment},format=${edl.output.pixelFormat}[v${index}]`,
       )
       videoConcatInputs.push(`[v${index}]`)
       legacyConcatInputs.push(`[v${index}]`)
@@ -419,7 +493,7 @@ export const buildFfmpegArgs = (
       const audioIn = audioInput ?? input
       const shift = audioInput === undefined ? 0 : edl.audio.syncOffsetMs
       filters.push(
-        `[${audioIn}:a]atrim=start=${seconds(Math.max(0, segment.inMs + shift))}:end=${seconds(Math.max(0, segment.outMs + shift))},asetpts=PTS-STARTPTS,aresample=48000,aformat=channel_layouts=stereo${audioEdgeFade(segment, edl.audio.edgeFadeMs)}[a${index}]`,
+        `[${audioSplit.label(audioIn)}]atrim=start=${seconds(Math.max(0, segment.inMs + shift))}:end=${seconds(Math.max(0, segment.outMs + shift))},asetpts=PTS-STARTPTS,aresample=48000,aformat=channel_layouts=stereo${audioEdgeFade(segment, edl.audio.edgeFadeMs)}[a${index}]`,
       )
       audioConcatInputs.push(`[a${index}]`)
       legacyConcatInputs.push(`[a${index}]`)

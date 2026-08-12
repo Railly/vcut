@@ -401,7 +401,7 @@ vcut render --edl edl.json --mode preview
 
 After rendering, vcut probes the file it produced and validates it against the EDL. A mismatch fails the run instead of shipping a bad file.
 
-**Iterate with `--audio-only`.** Nearly every question a round of edits asks is about sound, and answering it through the video path re-encodes every frame for nothing. Measured on one 22-segment EDL: **0.25s against 31.8s** for the same cuts. The audio graph is unchanged, edge fades and loudness included, so what you hear is what the finished render will sound like: -16.4 LUFS on both paths from the same EDL. It writes lossless audio, because a codec artifact heard while iterating reads as a defect in the cut. Refused in `master` mode.
+**Iterate with `--audio-only`.** Nearly every question a round of edits asks is about sound, and answering it through the video path re-encodes every frame for nothing. Audio-only costs roughly **1 second per 14 seconds of audio the cut keeps** (set by kept audio, not segment count), against a video render that runs near real time per minute of source. The audio graph is unchanged, edge fades and loudness included, so what you hear is what the finished render will sound like: -16.4 LUFS on both paths from the same EDL. It writes lossless audio, because a codec artifact heard while iterating reads as a defect in the cut. Refused in `master` mode.
 
 The result runs a few tens of milliseconds short of the segment sum (31ms on a 54.6s cut). That is `loudnorm` latency draining trailing decay, not missing material; a video render hides it because the picture sets the container duration.
 

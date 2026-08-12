@@ -147,7 +147,7 @@ vcut silences source.mp4 --from 327.3 --to 330.5 --noise -33 --min 0.08
 
 ### Iterate on audio
 
-Every question in the round above is about sound: whether a filler survived, whether a boundary clipped a word, whether a pause is still there. The picture cannot answer any of them, and rendering it costs about a hundred times the wall clock. Measured on one 22-segment EDL: **0.25s for the audio against 31.8s with video**, from the same cuts.
+Every question in the round above is about sound: whether a filler survived, whether a boundary clipped a word, whether a pause is still there. The picture cannot answer any of them, and rendering it costs far more wall clock than the round needs. Audio-only is much cheaper but not instant: roughly **1 second per 14 seconds of audio the cut keeps**, set by kept audio rather than segment count, with loudness normalisation accounting for most of it. Because every commit re-renders the whole cut, batch the cuts you have evidence for into one commit instead of committing per find.
 
 `--audio-only` uses the same audio graph the video path uses, edge fades and loudness included, so what you hear while iterating is what the finished file will sound like.
 

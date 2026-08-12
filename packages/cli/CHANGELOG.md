@@ -2,6 +2,17 @@
 
 Notable changes to `@crafter/vcut`. Entries say what changed and, where it is not obvious, what measurement led to it.
 
+## Unreleased
+
+### Fixed
+
+- **A many-segment audio-only render cost minutes because the source was decoded once per segment (#41).** Every segment's `atrim` referenced `[0:a]` directly, and ffmpeg inserts the fan-out itself once per extra consumer of a label, so a 180-segment EDL paid that cost 180 times. Measured on a synthetic 700-second source: decoding the whole audio track once takes 0.66s, while cutting it into 180 segments with no filters at all took 68s. Naming the fan-out with one explicit `asplit` (and `split` on the video path) collapses it to a single decode feeding N windows. End to end through `runRender` on a 700-second source, 490 seconds kept: **293.3s to 43.4s at 180 segments**, 53.4s to 21.0s at 50, 32.7s to 19.8s at 20. **Byte-identical output**, verified as bytes rather than argued: the same EDL rendered before and after hashed to the same sha256 at 1, 5, 20, 50 and 180 segments. `asplit` is what ffmpeg was already inserting, so this only writes down a graph edge that was always there; a source feeding a single branch emits no split and keeps its exact prior graph string.
+
+### Changed
+
+- **The "0.25s against 31.8s" audio-only claim is corrected across the manual, README, website and help text (#41).** That figure was measured on a 54.6-second cut before loudness normalisation entered the graph, and it was being read as "audio-only is instant" at any scale, which is what made per-find commits look free. The real law, measured: cost tracks **the audio the cut keeps**, not the segment count, at roughly **1 second per 14 seconds kept** — 22 and 180 segments over the same 84 seconds of kept audio cost 6.9s and 8.7s, while 490 seconds kept costs ~34s at any segment count. `loudnorm` is ~95% of that, single-threaded and linear in kept audio: it is the floor, and no flag removes it.
+- **Commit cadence is now a stated rule with its wall-clock math, in the core skill and the commit section (#41).** Every `commit` re-renders the whole cut, so its cost is set by kept audio rather than by how much changed since the last one. The run this came from paid six commits on a 700-second source at ~9 to 9.5 minutes each, 50+ minutes of foreground ffmpeg, each one re-rendering everything its predecessors had already rendered. The rule: propose every cut the evidence supports, then commit once and verify the batch. It governs how many commits a round costs, never whether a cut gets its second round — the rounds gate is unchanged.
+
 ## 0.15.0
 
 ### Added
