@@ -1,0 +1,507 @@
+/**
+ * The listener-grade window sweep: what a whole-file transcript cannot see because it is
+ * exactly the pass that hides it.
+ *
+ * `rounds-methodology.md`'s own working-a-round section already names the reason: "A
+ * whole-file transcript averages. Re-transcribe the passage." A model reading ninety seconds
+ * collapses three attempts at the same line into one, because one line is the likelier
+ * sentence; the same audio cut to twelve seconds returns all three. Every instrument in this
+ * codebase that answers a disagreement question (`converge`, `say --transcribe`, `peek`,
+ * `joins`, `nonspeech --verify`) already re-transcribes a short window for that reason. What
+ * none of them did until now is run that sweep unconditionally, end to end, across a whole
+ * render, and merge the result into one report. An agent found this the hard way, running the
+ * method by hand: ~140 raw tool calls, serially, one window at a time, per round.
+ *
+ * `--windows` turns the hand loop into one call. It tiles the media in `--window`-sized spans
+ * every `--stride` ms, transcribes every tile, and reports what a short window can see that a
+ * long one cannot: a phrase one tile's own text repeats (a duplicated sentence: "reciben un
+ * poema mio, reciben un poema mio"), two consecutive sentences opening on the same short phrase
+ * (a stacked filler: "Y bueno, eso es todo. Y bueno, ya para cerrar"), and a tile whose own text
+ * runs right up against its edge without landing (a truncated fragment, "the word whose span
+ * extends past its segment's cut point").
+ *
+ * Concurrency, unlike every other trx caller in this codebase, runs windows in parallel rather
+ * than sequentially. Every other command (`nonspeech --verify`, `converge`, `joins`, `say
+ * --positions --transcribe`, `compare`'s reference chunks) is sequential because a live editing
+ * session shares one machine with an already-heavy video editor, and each `trx` call loads a
+ * whisper model into a fresh process. This command's own windows genuinely share no state: a
+ * short ffmpeg extract followed by one `trx transcribe` call touches nothing any other window
+ * touches. So nothing about correctness forces them apart, and the entire reason to build this
+ * verb instead of documenting the hand loop is that a sweep of good length takes minutes
+ * serially and seconds in parallel. Measured on this machine (2026-08-12, `ps aux` against a
+ * live `whisper-cli` process, large-v3-turbo): each concurrent transcription process holds
+ * roughly 1.8GB resident, independent of window length (a 25s window and a 358s file both
+ * loaded ~1.8GB: the cost is the model, not the audio). `--concurrency` is a real flag rather
+ * than an invented constant so a caller can raise or lower it against its own machine; its
+ * default is `min(4, cpus)`, chosen so the worst case (4 x 1.8GB is under 8GB) leaves headroom
+ * on any machine that can run a video editor at all, not tuned to this one's 24GB.
+ *
+ * vcut still calls no model of its own: every call here shells out to `trx`, already on the
+ * caller's PATH, the same way every measurement in this codebase runs ffmpeg.
+ */
+
+import { existsSync, readFileSync } from 'node:fs'
+import { cpus } from 'node:os'
+import { resolve } from 'node:path'
+
+import { parseSrt, probeDurationMs } from './detect.ts'
+import { emitJson, heading, line, type Mode, nextStep, resolveMode, UsageError } from './output.ts'
+import { foldDiacritics } from './semantic.ts'
+import { transcribeWindow } from './transcribe-window.ts'
+
+const HELP = `vcut verify --windows - the listener-grade window sweep over a render
+
+Usage:
+  vcut verify --windows <media> [flags]
+
+Flags:
+  --window <sec>       Width of each window (default 16, the width the hand method used)
+  --stride <sec>       How far each window steps (default: same as --window, no overlap)
+  --lang <code>        Language passed to the transcriber
+  --transcript <path>  A cached whole-file SRT to diff windows against (optional)
+  --concurrency <n>    How many windows to transcribe at once (default min(4, cpus))
+  --json / --human     Output mode
+  --help                Show this message
+
+Extracts every window with ffmpeg and transcribes it with trx, in parallel (short extracts
+share no state, unlike every other trx caller in this codebase, which stays sequential because
+each call loads a whisper model). Reports repeated phrases, truncated edges, and anomalies
+against the cached transcript when --transcript is given.
+
+A whole-file transcript averages: a model reading ninety seconds collapses three attempts at a
+line into one, because one is the likelier sentence. The same audio cut to sixteen seconds
+returns what was actually said. This is the instrument that reads the short way every round.
+
+Also accepts --fields/--jq. See vcut --help for the full picture.`
+
+export type Window = {
+  startMs: number
+  endMs: number
+  text: string
+}
+
+export type RepeatedPhrase = {
+  phrase: string
+  count: number
+  windowStartMs: number
+  windowEndMs: number
+}
+
+export type TruncatedEdge = {
+  windowStartMs: number
+  windowEndMs: number
+  edge: 'start' | 'end'
+  word: string
+}
+
+export type TranscriptAnomaly = {
+  windowStartMs: number
+  windowEndMs: number
+  windowText: string
+  cachedText: string
+}
+
+export type VerifyWindowsReport = {
+  version: 1
+  input: string
+  durationMs: number
+  windowMs: number
+  strideMs: number
+  windows: Window[]
+  repeatedPhrases: RepeatedPhrase[]
+  truncatedEdges: TruncatedEdge[]
+  anomalies: TranscriptAnomaly[]
+}
+
+const DEFAULT_WINDOW_S = 16
+// Same reasoning nonspeech.ts states for its own concurrency choice, made explicit rather than
+// left to a runtime read of free memory: a stable default is a reproducible one, and reading
+// os.freemem() at call time would make the same command pick a different concurrency, and
+// possibly a different result if a race ever crept in, on the same machine a minute apart.
+const MAX_CONCURRENCY = 4
+
+/**
+ * Non-overlapping (or overlapping, if --stride < --window) tiles covering the whole duration.
+ * The last tile is clamped to durationMs rather than dropped or padded past the end, so the
+ * final seconds of a render are never silently unswept.
+ */
+export const buildWindows = (
+  durationMs: number,
+  windowMs: number,
+  strideMs: number,
+): Interval[] => {
+  if (durationMs <= 0 || windowMs <= 0 || strideMs <= 0) {
+    return []
+  }
+  const windows: Interval[] = []
+  for (let startMs = 0; startMs < durationMs; startMs += strideMs) {
+    const endMs = Math.min(durationMs, startMs + windowMs)
+    windows.push({ startMs, endMs })
+    if (endMs >= durationMs) {
+      break
+    }
+  }
+  return windows
+}
+
+type Interval = { startMs: number; endMs: number }
+
+/** Punctuation and case are delivery, not words: matching through them finds real repeats. */
+const normalise = (text: string): string =>
+  foldDiacritics(text)
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+
+// Same run length semantic.ts's own repeatedPhrases uses for the identical question (a phrase
+// repeated more than once in transcribed text): short enough to catch "reciben un poema mio"
+// duplicated with only three carrying words, long enough that ordinary connective overlap
+// between adjacent windows ("y bueno", "es que") does not read as a finding.
+const RUN_LENGTH = 3
+
+/**
+ * Repeats found by scanning each window's own text for a run of words the window says more than
+ * once. Unlike semantic.ts's repeatedPhrases (which scans a transcript already split into
+ * sentence-shaped lines and reports a phrase recurring ACROSS lines), this scans one window's
+ * raw text and reports a phrase recurring WITHIN it, the direct catch for a duplicated sentence
+ * a whole-file pass smooths into a single clean line: a whole-file transcript averages three
+ * attempts at a line into the likeliest single reading, and only a short window is narrow enough
+ * to return the repeat intact rather than resolved away. "si reciben un poema mio, reciben un
+ * poema mio por WhatsApp" is exactly this shape: one window, one run of words, said twice.
+ *
+ * Deliberately not cross-window: two adjacent windows built with `--stride < --window`
+ * legitimately share audio, and a phrase said once but covered by two overlapping windows would
+ * otherwise report as a false repeat with no way to tell it from a real one.
+ */
+export const findRepeatedPhrases = (windows: Window[]): RepeatedPhrase[] => {
+  const result: RepeatedPhrase[] = []
+  for (const window of windows) {
+    const words = normalise(window.text).split(' ').filter(Boolean)
+    const counts = new Map<string, number>()
+    for (let start = 0; start + RUN_LENGTH <= words.length; start += 1) {
+      const run = words.slice(start, start + RUN_LENGTH).join(' ')
+      counts.set(run, (counts.get(run) ?? 0) + 1)
+    }
+    for (const [phrase, count] of counts) {
+      if (count > 1) {
+        result.push({ phrase, count, windowStartMs: window.startMs, windowEndMs: window.endMs })
+      }
+    }
+  }
+  return result.sort((left, right) => left.windowStartMs - right.windowStartMs)
+}
+
+// Two words, not RUN_LENGTH's three: a stacked filler is a short discourse marker ("Y bueno",
+// "so anyway"), and requiring three words would miss it entirely while still reading like a
+// stricter rule. Two consecutive sentences opening on the identical two words is specific enough
+// that it does not need a curated filler lexicon (metaSpeech's own, a different problem) to stay
+// language-agnostic: "Esto es todo" followed unrelated sentences later by "Esto es todo" again
+// is not this shape, because OPENERS compares only sentences that are adjacent.
+const OPENER_LENGTH = 2
+
+/**
+ * The stacked-filler defect: two consecutive sentences inside one window that open on the exact
+ * same short run of words. "Y bueno, eso es todo. Y bueno, ya para cerrar" is this shape
+ * precisely: findRepeatedPhrases' 3-word run does not fire here (the run diverges at the third
+ * word, "eso" against "ya"), and lowering RUN_LENGTH to catch it would also catch every ordinary
+ * two-word connective repeated anywhere in a window's prose, most of which is not a defect. This
+ * stays structural instead: not "these two words recur somewhere", but "the speaker opened two
+ * sentences in a row with them", which is what a stacked filler actually is.
+ */
+export const findStackedOpeners = (windows: Window[]): RepeatedPhrase[] => {
+  const result: RepeatedPhrase[] = []
+  for (const window of windows) {
+    const sentences = window.text
+      .split(/[.!?]+/)
+      .map((sentence) => sentence.trim())
+      .filter((sentence) => sentence.length > 0)
+    for (let index = 1; index < sentences.length; index += 1) {
+      const previousWords = normalise(sentences[index - 1] ?? '')
+        .split(' ')
+        .filter(Boolean)
+      const currentWords = normalise(sentences[index] ?? '')
+        .split(' ')
+        .filter(Boolean)
+      if (previousWords.length < OPENER_LENGTH || currentWords.length < OPENER_LENGTH) {
+        continue
+      }
+      const previousOpener = previousWords.slice(0, OPENER_LENGTH).join(' ')
+      const currentOpener = currentWords.slice(0, OPENER_LENGTH).join(' ')
+      if (previousOpener === currentOpener) {
+        result.push({
+          phrase: currentOpener,
+          count: 2,
+          windowStartMs: window.startMs,
+          windowEndMs: window.endMs,
+        })
+      }
+    }
+  }
+  return result.sort((left, right) => left.windowStartMs - right.windowStartMs)
+}
+
+// A stretched vowel or an unfinished word at the very edge of what a window heard: the last
+// token butts against the boundary with no closing punctuation and no gap, which is what a
+// clause cut off mid-word looks like in prose. Conservative on purpose (this reports a
+// candidate to look at, not a verdict): it only fires when the edge token itself carries no
+// terminal punctuation, since an ordinary sentence ending exactly at a window's own boundary is
+// not truncated, it is well-placed.
+const TERMINAL_PUNCTUATION = /[.!?…,;:]$/
+
+export const findTruncatedEdges = (windows: Window[]): TruncatedEdge[] => {
+  const edges: TruncatedEdge[] = []
+  for (const window of windows) {
+    const trimmed = window.text.trim()
+    if (trimmed === '') {
+      continue
+    }
+    const words = trimmed.split(/\s+/)
+    const last = words.at(-1)
+    if (last !== undefined && !TERMINAL_PUNCTUATION.test(last)) {
+      edges.push({
+        windowStartMs: window.startMs,
+        windowEndMs: window.endMs,
+        edge: 'end',
+        word: last,
+      })
+    }
+  }
+  return edges
+}
+
+/**
+ * Anomalies against a cached whole-file transcript: a window whose carrying words the cached
+ * transcript's own span does not contain. Optional, since the cached transcript is exactly the
+ * instrument under suspicion, reported as a place to look, the same honest-limits stance
+ * `peek`'s viewsDisagree and `joins`'s reading already take, never a verdict on its own.
+ */
+export const findAnomalies = (
+  windows: Window[],
+  cachedWords: { text: string; startMs: number; endMs: number }[],
+): TranscriptAnomaly[] => {
+  const anomalies: TranscriptAnomaly[] = []
+  for (const window of windows) {
+    const windowCarrying = normalise(window.text)
+      .split(' ')
+      .filter((word) => word.length >= 4)
+    if (windowCarrying.length === 0) {
+      continue
+    }
+    const cachedText = cachedWords
+      .filter((word) => word.endMs > window.startMs && word.startMs < window.endMs)
+      .map((word) => word.text)
+      .join(' ')
+    const cachedNormalised = new Set(normalise(cachedText).split(' ').filter(Boolean))
+    const hits = windowCarrying.filter((word) => cachedNormalised.has(word)).length
+    const overlap = hits / windowCarrying.length
+    // Same 0.6 bar converge's own containsPhrase uses for the identical question (does this
+    // window's wording show up in another text), which measured cleanly on real material: every
+    // window inside a retake scored 1.00 against it and every window past it scored 0.00.
+    if (overlap < 0.6) {
+      anomalies.push({
+        windowStartMs: window.startMs,
+        windowEndMs: window.endMs,
+        windowText: window.text,
+        cachedText,
+      })
+    }
+  }
+  return anomalies
+}
+
+const numberFlag = (argv: string[], flag: string, fallback: number): number => {
+  const index = argv.indexOf(flag)
+  if (index === -1) {
+    return fallback
+  }
+  const parsed = Number(argv[index + 1])
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new UsageError(`${flag} needs a positive number`)
+  }
+  return parsed
+}
+
+const flagValue = (argv: string[], name: string): string | undefined => {
+  const index = argv.indexOf(name)
+  return index === -1 ? undefined : argv[index + 1]
+}
+
+/**
+ * A bounded worker pool over Promise.all: `concurrency` windows in flight at once, the next one
+ * starting the instant a slot frees up rather than waiting for a whole batch to finish. Plain
+ * chunking (`windows.slice(i, i + n)`, await each chunk) would leave a fast window idle while a
+ * slow one in the same chunk still runs; this keeps every slot busy until the queue empties.
+ */
+export const runPooled = async <T, R>(
+  items: T[],
+  concurrency: number,
+  worker: (item: T, index: number) => Promise<R>,
+): Promise<R[]> => {
+  const results: R[] = new Array(items.length)
+  let next = 0
+  const runners = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (next < items.length) {
+      const index = next
+      next += 1
+      results[index] = await worker(items[index] as T, index)
+    }
+  })
+  await Promise.all(runners)
+  return results
+}
+
+export const defaultConcurrency = (): number =>
+  Math.max(1, Math.min(MAX_CONCURRENCY, cpus().length))
+
+// findRepeatedPhrases and findStackedOpeners check different shapes of the same defect class
+// (a run of words said twice, and two sentences opening on the same short phrase) and can
+// legitimately both fire on the same window without describing the same finding twice: a
+// three-word overlap and a two-word opener overlap are not required to coincide. They are
+// deduped only when they would report the literal same phrase at the literal same window.
+export const mergeRepeats = (...groups: RepeatedPhrase[][]): RepeatedPhrase[] => {
+  const seen = new Set<string>()
+  const merged: RepeatedPhrase[] = []
+  for (const group of groups) {
+    for (const entry of group) {
+      const key = `${entry.windowStartMs}:${entry.phrase}`
+      if (seen.has(key)) {
+        continue
+      }
+      seen.add(key)
+      merged.push(entry)
+    }
+  }
+  return merged.sort((left, right) => left.windowStartMs - right.windowStartMs)
+}
+
+export const runVerifyWindows = async (
+  mediaPath: string,
+  windowMs: number,
+  strideMs: number,
+  lang: string | undefined,
+  concurrency: number,
+  cachedTranscriptPath: string | undefined,
+): Promise<VerifyWindowsReport> => {
+  const durationMs = await probeDurationMs(mediaPath)
+  const tiles = buildWindows(durationMs, windowMs, strideMs)
+
+  const windows = await runPooled(tiles, concurrency, async (tile) => {
+    const text = await transcribeWindow(mediaPath, tile.startMs, tile.endMs, lang, 'vcut-verify')
+    return { startMs: tile.startMs, endMs: tile.endMs, text }
+  })
+
+  const repeated = mergeRepeats(findRepeatedPhrases(windows), findStackedOpeners(windows))
+  const truncated = findTruncatedEdges(windows)
+  const anomalies =
+    cachedTranscriptPath === undefined
+      ? []
+      : findAnomalies(windows, parseSrt(readFileSync(cachedTranscriptPath, 'utf8')).words)
+
+  return {
+    version: 1,
+    input: mediaPath,
+    durationMs,
+    windowMs,
+    strideMs,
+    windows,
+    repeatedPhrases: repeated,
+    truncatedEdges: truncated,
+    anomalies,
+  }
+}
+
+// --windows itself takes no value (it selects the sweep, the only mode this command has today),
+// so a naive "previous flag consumed a value" positional scan reads <media> as --windows's own
+// argument and reports a missing positional. Same trap commit.ts's own BOOLEAN_FLAGS set exists
+// to avoid.
+const BOOLEAN_FLAGS = new Set(['--windows', '--json', '--human', '--help'])
+
+const positional = (args: string[]): string | undefined => {
+  for (const [index, arg] of args.entries()) {
+    if (arg.startsWith('-')) {
+      continue
+    }
+    const previous = args[index - 1]
+    if (previous?.startsWith('--') && !BOOLEAN_FLAGS.has(previous)) {
+      continue
+    }
+    return arg
+  }
+  return undefined
+}
+
+export const verifyCommand = async (argv: string[]): Promise<void> => {
+  if (argv.includes('--help') || argv.length === 0) {
+    console.log(HELP)
+    return
+  }
+  if (!argv.includes('--windows')) {
+    throw new UsageError(HELP)
+  }
+  const mode: Mode = resolveMode(argv, Boolean(process.stdout.isTTY))
+  const target = positional(argv)
+  if (target === undefined) {
+    throw new UsageError(HELP)
+  }
+  const mediaPath = resolve(target)
+  if (!existsSync(mediaPath)) {
+    throw new UsageError(`no media at ${mediaPath}`)
+  }
+
+  const windowS = numberFlag(argv, '--window', DEFAULT_WINDOW_S)
+  const strideS = numberFlag(argv, '--stride', windowS)
+  const concurrency = numberFlag(argv, '--concurrency', defaultConcurrency())
+  if (!Number.isInteger(concurrency)) {
+    throw new UsageError('--concurrency needs a positive integer')
+  }
+  const transcriptArg = flagValue(argv, '--transcript')
+  if (transcriptArg !== undefined && !existsSync(resolve(transcriptArg))) {
+    throw new UsageError(`no transcript at ${resolve(transcriptArg)}`)
+  }
+
+  const report = await runVerifyWindows(
+    mediaPath,
+    Math.round(windowS * 1000),
+    Math.round(strideS * 1000),
+    flagValue(argv, '--lang'),
+    concurrency,
+    transcriptArg === undefined ? undefined : resolve(transcriptArg),
+  )
+
+  if (mode === 'json') {
+    emitJson(report)
+    return
+  }
+
+  const lines = [
+    heading('verify --windows'),
+    line('windows', String(report.windows.length)),
+    line('repeated phrases', String(report.repeatedPhrases.length)),
+    line('truncated edges', String(report.truncatedEdges.length)),
+    line('anomalies', String(report.anomalies.length)),
+  ]
+  for (const repeat of report.repeatedPhrases) {
+    lines.push(
+      line(
+        `${(repeat.windowStartMs / 1000).toFixed(2)}s`,
+        `repeated x${repeat.count}: "${repeat.phrase}"`,
+      ),
+    )
+  }
+  for (const edge of report.truncatedEdges) {
+    lines.push(line(`${(edge.windowEndMs / 1000).toFixed(2)}s`, `truncated at "${edge.word}"`))
+  }
+  for (const anomaly of report.anomalies) {
+    lines.push(
+      line(
+        `${(anomaly.windowStartMs / 1000).toFixed(2)}s`,
+        `window/cache disagree: "${anomaly.windowText.slice(0, 60)}"`,
+      ),
+    )
+  }
+  if (report.repeatedPhrases.length > 0 || report.truncatedEdges.length > 0) {
+    lines.push(nextStep(`listen at the timestamps above in ${target}`))
+  }
+  console.log(lines.join('\n'))
+}
