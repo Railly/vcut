@@ -728,6 +728,104 @@ describe('describeSemanticCuts', () => {
       warnings.every((warning) => !warning.includes('which the reason does not mention')),
     ).toBe(true)
   })
+
+  // Issue #40: reproduces the drop-and-repropose loop the retro named — a proposal whose exact
+  // boundary already sits right beside a silence cut absorbs into the wider merged span by
+  // default, and the reported removedText grows to include a word the caller meant to keep.
+  // `literal: true` on the proposal is the escape hatch: it reports the proposal's own span
+  // exactly, the same one invertToSegments never touches either way.
+  describe('literal proposals (issue #40)', () => {
+    test('a literal proposal keeps its exact span where a non-literal one would absorb the neighbouring silence cut', () => {
+      // A silence cut runs 1800-2100; a proposal asking for 1000-1800 sits flush against it, so
+      // the default merge (mergeIntervals) fuses them into one 1000-2100 span before
+      // describeSemanticCuts ever sees it — this is the corrective the flag exists for.
+      const merged: Cut[] = [{ startMs: 1000, endMs: 2100, reason: 'semantic' }]
+      const words = [
+        word('borra', 1000, 1400),
+        word('esto', 1400, 1800),
+        // "profe" starts inside the merged span's absorbed tail (1800-2100), the word a
+        // clamped read would eat that the caller meant to keep.
+        word('profe', 1850, 2050),
+      ]
+
+      const clamped = describeSemanticCuts(
+        [{ startMs: 1000, endMs: 1800, kind: 'filler' as const, reason: 'borra esto' }],
+        merged,
+        words,
+        [],
+      )
+      expect(clamped.cuts[0]).toMatchObject({ startMs: 1000, endMs: 2100 })
+      expect(clamped.cuts[0]?.removedText).toBe('borra esto profe')
+
+      const literal = describeSemanticCuts(
+        [
+          {
+            startMs: 1000,
+            endMs: 1800,
+            kind: 'filler' as const,
+            reason: 'borra esto',
+            literal: true,
+          },
+        ],
+        merged,
+        words,
+        [],
+      )
+      expect(literal.cuts[0]).toMatchObject({ startMs: 1000, endMs: 1800, literal: true })
+      expect(literal.cuts[0]?.removedText).toBe('borra esto')
+    })
+
+    test('removedText and driftSuspect are still computed against the literal span, not skipped', () => {
+      // Same drift shape every other driftSuspect fixture in this file uses: a word claims to
+      // start at 900ms while detect measured silence through 1400ms.
+      const merged: Cut[] = [{ startMs: 900, endMs: 2000, reason: 'semantic' }]
+      const words = [word('hola', 1000, 1600)]
+      const silences = [silence(800, 1400)]
+      const { cuts, warnings } = describeSemanticCuts(
+        [
+          {
+            startMs: 900,
+            endMs: 2000,
+            kind: 'filler' as const,
+            reason: 'stray word',
+            literal: true,
+          },
+        ],
+        merged,
+        words,
+        silences,
+      )
+      expect(cuts[0]?.literal).toBe(true)
+      expect(cuts[0]?.removedText).toBe('hola')
+      expect(cuts[0]?.driftSuspect).toBe(true)
+      expect(warnings.some((warning) => warning.includes('driftSuspect'))).toBe(true)
+    })
+
+    test('a clean literal span carries literal: true with no driftSuspect', () => {
+      const merged: Cut[] = [{ startMs: 1000, endMs: 2000, reason: 'semantic' }]
+      const words = [word('hola', 1500, 1800)]
+      const { cuts } = describeSemanticCuts(
+        [{ startMs: 1000, endMs: 2000, kind: 'filler' as const, reason: 'clean', literal: true }],
+        merged,
+        words,
+        [],
+      )
+      expect(cuts[0]?.literal).toBe(true)
+      expect(cuts[0]?.driftSuspect).toBeUndefined()
+    })
+
+    test('a non-literal proposal never carries literal on its report', () => {
+      const merged: Cut[] = [{ startMs: 1000, endMs: 2000, reason: 'semantic' }]
+      const { cuts } = describeSemanticCuts(
+        [{ startMs: 1000, endMs: 2000, kind: 'filler' as const, reason: 'clean' }],
+        merged,
+        [],
+        [],
+      )
+      expect(cuts[0]?.literal).toBeUndefined()
+      expect('literal' in (cuts[0] ?? {})).toBe(false)
+    })
+  })
 })
 
 describe('buildEdlNext', () => {

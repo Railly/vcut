@@ -103,6 +103,16 @@ not a re-transcription: that answers what the audio actually says, which `peek` 
 --transcribe` already provide on demand, and running one automatically per span would spend a
 transcription call on every proposal whether it needed one or not.
 
+**A `literal` proposal (`cut --literal`) skips the merge above and reports its own raw span.**
+Every span this section describes so far is read against the *merged* interval a proposal
+absorbs into once it lands beside a silence cut or another proposal — normally the right read,
+since that merged span is what the render actually cuts. A proposal marked `literal: true`
+(see `--section cut`) is the exception: its `removedText`, `boundariesInSilence`, and
+`driftSuspect` are computed against the exact span the caller named, not the absorbed one. This
+never changes which segments the render itself keeps or drops — `invertToSegments` still merges
+every cut, literal or not, the same way — it only changes which span the report holds the
+proposal accountable to.
+
 Compare the reported `removalPercent` against the target for the content type:
 
 | Content | Expected removal |

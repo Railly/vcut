@@ -40,6 +40,20 @@
  * the write; `--list` never locks, since it only reads. A second writer on the same session
  * gets `SessionLockedError` naming the holder's pid, verb, and age rather than a race on
  * `proposals.json`.
+ *
+ * `--literal` (issue #40) trusts `--start-ms`/`--end-ms` (or `--span`) exactly, skipping the
+ * clamp-expansion `edl build`'s `describeSemanticCuts` otherwise applies at build time: a
+ * proposal's reported span normally absorbs into whatever wider merged cut it touches once
+ * silence cuts and neighbouring proposals land next to it (`clampedSpanFor`), so a boundary
+ * verified word-for-word by a fresh windowed re-transcription could still come back with
+ * `removedText` that ate a word the caller meant to keep — the drop-and-repropose loop #40
+ * names. `driftSuspect` and `removedText` are still computed, against the literal span itself,
+ * so the warning surface stays intact; `driftSuspect: true` on a literal cut means re-verify,
+ * not "trust the flag over the check". Rejected together with `--refs`: a ref's span already
+ * comes from the session's own measured block boundaries, so there is nothing for `--literal`
+ * to bypass. The proposal record carries `literal: true` (same present-and-true-only convention
+ * as `driftSuspect`) so a reader of `--list` or the build report can see which cuts were named
+ * exactly rather than resolved.
  */
 
 import { existsSync, readFileSync } from 'node:fs'
@@ -83,6 +97,12 @@ Flags:
   --start-ms <n>        Raw span start in milliseconds, the unit say/silences/semantic export
                         emit. Requires --end-ms. Mutually exclusive with --refs and --span.
   --end-ms <n>          Raw span end in milliseconds. Requires --start-ms.
+  --literal             Trust --start-ms/--end-ms (or --span) exactly: skip the clamp-expansion
+                        edl build otherwise applies when this span merges with a neighbouring
+                        cut. Still computes and reports removedText and driftSuspect against the
+                        exact span given. For boundaries already verified by a fresh windowed
+                        re-transcription (say --transcribe --words) — not a way to skip that
+                        check. Rejected together with --refs.
   --kind <kind>         Required: false-start | repetition | tangent | filler
   --reason <text>       Required, non-empty. Read by a human deciding whether to approve.
   --list                Print the session's accumulated proposals with their removedText
@@ -109,7 +129,7 @@ Next: vcut peek to hear the span, vcut commit when done proposing.
 
 Also accepts --fields/--jq. See vcut --help for the full picture.`
 
-const BOOLEAN_FLAGS = new Set(['--json', '--human', '--help', '--list'])
+const BOOLEAN_FLAGS = new Set(['--json', '--human', '--help', '--list', '--literal'])
 
 const positional = (args: string[]): string | undefined => {
   for (const [index, arg] of args.entries()) {
@@ -292,7 +312,7 @@ const humanList = (input: string, proposals: SessionProposal[]): string => {
     lines.push(
       line(
         `[${index}] ${(proposal.startMs / 1000).toFixed(2)}-${(proposal.endMs / 1000).toFixed(2)}s`,
-        `${proposal.kind}: "${proposal.removedText || '(no transcript)'}"`,
+        `${proposal.kind}${proposal.literal === true ? ' (literal)' : ''}: "${proposal.removedText || '(no transcript)'}"`,
       ),
     )
     lines.push(line('', `reason: ${proposal.reason}`))
@@ -317,6 +337,9 @@ const humanAccepted = (
     line('reason', proposal.reason),
     line('removedText', proposal.removedText || '(no transcript cached in this session)'),
   ]
+  if (proposal.literal === true) {
+    lines.push(line('literal', 'true — exact span trusted, clamp-expansion skipped at build time'))
+  }
   if (proposal.driftSuspect === true) {
     lines.push(line('warning', driftWarning(proposal)))
   }
@@ -427,6 +450,16 @@ export const cutCommand = async (argv: string[]): Promise<void> => {
     throw new UsageError('--refs, --span, and --start-ms/--end-ms are mutually exclusive')
   }
 
+  const literal = argv.includes('--literal')
+  // A ref's span already comes from the session's own measured block boundaries (resolveRef),
+  // not a hand-typed number — there is no clamp-expansion for --literal to bypass, so pairing
+  // it with --refs is a usage error rather than a silent no-op.
+  if (literal && refsArg !== undefined) {
+    throw new UsageError(
+      "--literal and --refs are mutually exclusive: a ref is already the session's own measured boundary, nothing to bypass",
+    )
+  }
+
   const kind = validateKind(flagValue(argv, '--kind'))
   const reason = validateReason(flagValue(argv, '--reason'))
 
@@ -456,6 +489,7 @@ export const cutCommand = async (argv: string[]): Promise<void> => {
     reason,
     removedText,
     proposedAt: new Date().toISOString(),
+    ...(literal ? { literal: true as const } : {}),
   }
   acquireLock(session.dir, 'cut')
   try {

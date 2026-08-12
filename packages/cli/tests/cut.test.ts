@@ -453,6 +453,245 @@ limpio
   })
 })
 
+describe('cutCommand --literal (issue #40)', () => {
+  let workDir: string
+  let mediaPath: string
+  let originalSessionsDir: string | undefined
+  let originalLog: typeof console.log
+  let logged: string
+
+  beforeEach(() => {
+    workDir = mkdtempSync(join(tmpdir(), 'vcut-cut-literal-test-'))
+    mediaPath = join(workDir, 'source.mp4')
+    writeFileSync(mediaPath, 'fake media bytes')
+    originalSessionsDir = process.env.VCUT_SESSIONS_DIR
+    process.env.VCUT_SESSIONS_DIR = join(workDir, 'sessions')
+    originalLog = console.log
+    logged = ''
+    console.log = (...args: unknown[]) => {
+      logged += args.join(' ')
+    }
+  })
+
+  afterEach(() => {
+    console.log = originalLog
+    rmSync(workDir, { recursive: true, force: true })
+    if (originalSessionsDir === undefined) {
+      delete process.env.VCUT_SESSIONS_DIR
+    } else {
+      process.env.VCUT_SESSIONS_DIR = originalSessionsDir
+    }
+  })
+
+  const refs = {
+    gen: 1,
+    blocks: [{ ref: 'b001', startMs: 1000, endMs: 2000, durationMs: 1000 }],
+  }
+
+  const baseReport = (durationMs: number): DetectReport => ({
+    version: 1,
+    input: mediaPath,
+    durationMs,
+    preset: 'noisy',
+    thresholdDb: -20,
+    minSilenceMs: 300,
+    marginMs: 100,
+    lang: 'es',
+    transcript: { path: null, wordLevel: false, words: 0 },
+    audioPath: null,
+    silences: [{ kind: 'silence', startMs: 800, endMs: 1400, durationMs: 600 }],
+    review: [],
+    warnings: [],
+  })
+
+  const srt = `1
+00:00:00,900 --> 00:00:01,600
+sospechoso
+
+2
+00:00:03,000 --> 00:00:03,500
+limpio
+`
+
+  const openWithCache = async () => {
+    const session = await openSession(mediaPath)
+    writeCachedDetect(session.dir, baseReport(10_000))
+    writeFileSync(join(session.dir, 'transcript.srt'), srt)
+    return session
+  }
+
+  test('the accepted proposal carries literal: true when --literal is given', async () => {
+    await openWithCache()
+    await cutCommand([
+      mediaPath,
+      '--start-ms',
+      '3000',
+      '--end-ms',
+      '3500',
+      '--kind',
+      'tangent',
+      '--reason',
+      'clean aside',
+      '--literal',
+      '--json',
+    ])
+    const output = JSON.parse(logged) as { accepted: Record<string, unknown> }
+    expect(output.accepted.literal).toBe(true)
+  })
+
+  test('--literal is persisted to proposals.json, not derived fresh like driftSuspect', async () => {
+    const session = await openWithCache()
+    await cutCommand([
+      mediaPath,
+      '--start-ms',
+      '3000',
+      '--end-ms',
+      '3500',
+      '--kind',
+      'tangent',
+      '--reason',
+      'clean aside',
+      '--literal',
+      '--json',
+    ])
+    const raw = JSON.parse(readFileSync(join(session.dir, 'proposals.json'), 'utf8')) as Array<
+      Record<string, unknown>
+    >
+    expect(raw[0]?.literal).toBe(true)
+  })
+
+  test('a proposal made without --literal never carries the field', async () => {
+    await openWithCache()
+    await cutCommand([
+      mediaPath,
+      '--start-ms',
+      '3000',
+      '--end-ms',
+      '3500',
+      '--kind',
+      'tangent',
+      '--reason',
+      'clean aside',
+      '--json',
+    ])
+    const output = JSON.parse(logged) as { accepted: Record<string, unknown> }
+    expect('literal' in output.accepted).toBe(false)
+  })
+
+  test('removedText and driftSuspect are still reported on a literal proposal', async () => {
+    await openWithCache()
+    await cutCommand([
+      mediaPath,
+      '--start-ms',
+      '900',
+      '--end-ms',
+      '2000',
+      '--kind',
+      'tangent',
+      '--reason',
+      'suspect aside',
+      '--literal',
+      '--json',
+    ])
+    const output = JSON.parse(logged) as { accepted: Record<string, unknown> }
+    expect(output.accepted.removedText).toBe('sospechoso')
+    expect(output.accepted.driftSuspect).toBe(true)
+    expect(output.accepted.literal).toBe(true)
+  })
+
+  test('--literal survives through --list', async () => {
+    await openWithCache()
+    await cutCommand([
+      mediaPath,
+      '--start-ms',
+      '3000',
+      '--end-ms',
+      '3500',
+      '--kind',
+      'tangent',
+      '--reason',
+      'clean aside',
+      '--literal',
+      '--json',
+    ])
+    logged = ''
+    await cutCommand([mediaPath, '--list', '--json'])
+    const output = JSON.parse(logged) as { proposals: Array<Record<string, unknown>> }
+    expect(output.proposals[0]?.literal).toBe(true)
+  })
+
+  test('--human marks a literal proposal in --list output', async () => {
+    await openWithCache()
+    await cutCommand([
+      mediaPath,
+      '--start-ms',
+      '3000',
+      '--end-ms',
+      '3500',
+      '--kind',
+      'tangent',
+      '--reason',
+      'clean aside',
+      '--literal',
+      '--human',
+    ])
+    logged = ''
+    await cutCommand([mediaPath, '--list', '--human'])
+    expect(logged).toContain('literal')
+  })
+
+  test("--literal with --refs is a usage error: a ref is already the session's own boundary", async () => {
+    const session = await openSession(mediaPath)
+    writeCachedDetect(session.dir, baseReport(10_000))
+    writeFileSync(join(session.dir, 'refs.json'), JSON.stringify(refs))
+    await expect(
+      cutCommand([
+        mediaPath,
+        '--refs',
+        'b001',
+        '--kind',
+        'tangent',
+        '--literal',
+        '--reason',
+        'clean aside',
+        '--json',
+      ]),
+    ).rejects.toThrow(UsageError)
+    await expect(
+      cutCommand([
+        mediaPath,
+        '--refs',
+        'b001',
+        '--kind',
+        'tangent',
+        '--literal',
+        '--reason',
+        'clean aside',
+        '--json',
+      ]),
+    ).rejects.toThrow(/mutually exclusive/)
+  })
+
+  test('--literal with --span is accepted, same as --start-ms/--end-ms', async () => {
+    await openWithCache()
+    await cutCommand([
+      mediaPath,
+      '--span',
+      '3..3.5',
+      '--kind',
+      'tangent',
+      '--reason',
+      'clean aside',
+      '--literal',
+      '--json',
+    ])
+    const output = JSON.parse(logged) as { accepted: Record<string, unknown> }
+    expect(output.accepted.literal).toBe(true)
+    expect(output.accepted.startMs).toBe(3000)
+    expect(output.accepted.endMs).toBe(3500)
+  })
+})
+
 // Issue #31: --human --jq used to be a silent no-op on any command that prints human output
 // without ever reaching emitJson. cutCommand resolves mode before it ever touches a session on
 // disk, so this fails fast on the flag conflict rather than needing a real session fixture.

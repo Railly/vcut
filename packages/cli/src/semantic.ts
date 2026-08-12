@@ -165,6 +165,11 @@ export type Proposal = {
   endMs: number
   kind: 'false-start' | 'repetition' | 'tangent' | 'filler' | 'non-speech'
   reason: string
+  // Present and true only, same convention as driftSuspect: absent means the default clamped
+  // path built this proposal. Set by `cut --literal` (issue #40) on a boundary the caller has
+  // already verified — build-edl.ts's describeSemanticCuts reads it to report the proposal's
+  // own span exactly rather than the span it absorbs into once merged with neighbouring cuts.
+  literal?: true
 }
 
 export type ProposalIssue = {
