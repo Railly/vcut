@@ -38,6 +38,7 @@ import { sessionCommand } from './session-command.ts'
 import { silencesCommand } from './silences.ts'
 import { skillsDir } from './skills-dir.ts'
 import { suspectsCommand } from './suspects.ts'
+import { verifyCommand } from './verify.ts'
 
 export { skillsDir } from './skills-dir.ts'
 
@@ -60,6 +61,7 @@ Usage:
   vcut silences <media> [flags]      Speech/silence blocks over a range, at a chosen resolution
   vcut converge <media> [flags]      Find where a repeated phrase stops coming back
   vcut nonspeech <render> [--verify] Find audible sound that is not language
+  vcut verify --windows <media>      Listener-grade window sweep: repeats, truncations, anomalies
   vcut open <media> [flags]          Open or resume a session, map its blocks with stable refs
   vcut peek <media> (--ref|--at)     The four views of a position, aligned, disagreement named
   vcut cut <media> --refs|--start-ms|--span  Propose a semantic cut against a session, see what it removes
@@ -796,6 +798,32 @@ const CONTRACTS: Record<string, unknown> = {
       'vocalization-suspect means the windowed transcript names a hesitation sound (eh, ehm, mmm, aah, tolerant of a stretched vowel), or the span has real level with no words inside it. words-around means the window transcribes to ordinary words sitting either side of the span, i.e. a breath in a pause. empty means no words and no real level. A span whose windowed transcript is genuinely empty at real level is still a question for a listener, not a false positive to wave off.',
     ],
   },
+  verify: {
+    version: SCHEMA_VERSION,
+    command: 'vcut verify --windows',
+    output: {
+      version: 'number, always 1',
+      input: 'absolute path to the media',
+      durationMs: 'integer',
+      windowMs: 'integer, width of each window',
+      strideMs: 'integer, how far each window steps',
+      windows: '[{ startMs, endMs, text }], every window transcribed, in order',
+      repeatedPhrases:
+        "[{ phrase, count, windowStartMs, windowEndMs }], a run of 3+ words one window's own text repeats, merged with any pair of consecutive sentences opening on the same 2 words (a stacked filler)",
+      truncatedEdges:
+        '[{ windowStartMs, windowEndMs, edge: "end", word }], a window whose last word carries no terminal punctuation',
+      anomalies:
+        '[{ windowStartMs, windowEndMs, windowText, cachedText }], only with --transcript: a window whose carrying words the cached transcript does not corroborate over the same span',
+    },
+    notes: [
+      'Tiles the whole media in --window-sized spans every --stride ms (default: no overlap, stride equals window) and transcribes every tile with trx, the same primitive say --transcribe and converge already share (transcribeWindow).',
+      'Unlike every other trx caller in this codebase (nonspeech --verify, converge, joins, say --positions --transcribe, compare), windows transcribe IN PARALLEL, bounded by --concurrency (default min(4, cpus)). Every other command stays sequential because it interleaves with other work sharing one machine; a window sweep has no other work to interleave with and its windows share no state, so nothing about correctness forces them apart. Measured: each concurrent trx process holds ~1.8GB resident regardless of window length, which is why concurrency is a real flag and not unbounded Promise.all.',
+      "repeatedPhrases only fires on a run repeating inside ONE window's own text, not a phrase merely present in two overlapping windows by construction of --stride < --window. This is the direct catch for a duplicated sentence a whole-file pass smooths into one line: a whole-file transcript averages three attempts at a line into the likeliest single reading, and only a short window is narrow enough to return all of them intact. It merges two checks: a literal 3-word run repeated anywhere in the window (the duplicated-sentence shape, e.g. 'reciben un poema mio, reciben un poema mio'), and two consecutive sentences opening on the identical 2 words (the stacked-filler shape, e.g. 'Y bueno, eso es todo. Y bueno, ya para cerrar.', which a 3-word run misses because the two sentences diverge at their third word).",
+      'truncatedEdges is conservative on purpose: it flags a window whose last heard word carries no terminal punctuation, which is a candidate for a clause cut mid-word at a tile boundary, not a verdict. A window that happens to end exactly where a sentence ends is not truncated, it is well-placed.',
+      "--transcript is optional. Its absence is a supported state: anomalies is simply empty, since a cached whole-file transcript is exactly the instrument this command exists to doubt, and an anomaly against it is a place to look, not a verdict, the same honest-limits stance peek's viewsDisagree and joins's reading already take.",
+      "vcut calls no model of its own: trx is a binary on the caller's PATH, exactly like ffmpeg.",
+    ],
+  },
   render: {
     version: SCHEMA_VERSION,
     command: 'vcut render',
@@ -1098,6 +1126,9 @@ export const route = async (argv: string[]): Promise<void> => {
   }
   if (command === 'nonspeech') {
     return nonspeechCommand(rest)
+  }
+  if (command === 'verify') {
+    return verifyCommand(rest)
   }
   if (command === 'silences') {
     return silencesCommand(rest)

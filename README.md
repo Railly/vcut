@@ -97,6 +97,7 @@ Piped or captured, the same command emits JSON. No flag needed.
 | `vcut silences <media>` | Speech/silence blocks over a range, at a threshold and minimum you choose |
 | `vcut converge <media>` | Finds where a repeated phrase stops coming back |
 | `vcut nonspeech <render> [--verify]` | Finds audible sound that is not language; `--verify` reads a window around each span instead of the whole-file transcript |
+| `vcut verify --windows <media>` | Tiles the media into short windows, transcribes every one in parallel, and reports repeated phrases, truncated edges, and anomalies a whole-file transcript smooths away |
 | `vcut open <media>` | Opens or resumes a content-addressed session, maps its blocks with stable refs, caches detection across calls |
 | `vcut peek <media> (--ref \| --at)` | The four views of a position aligned in one call: cached transcript, re-transcribed audio, fine-resolution speech/silence blocks, level, and their disagreement named |
 | `vcut cut <media> --refs \| --span` | Proposes a semantic cut against a session's block refs, shows what it removes before any build |
