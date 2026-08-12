@@ -12,6 +12,7 @@ import {
   cachedTranscriptPath,
   openSession,
   pointCachedTranscriptAtSession,
+  readDeadAir,
   readMetaSpeech,
   writeCachedDetect,
 } from '../src/session.ts'
@@ -27,6 +28,11 @@ let sourcePath: string
 // above leaves a single kept segment and no detectable gap at all, which is a property of that
 // fixture's duration, not of the metaSpeech pass itself.
 let longSourcePath: string
+// A clip carrying a pause quiet enough to be dead air but loud enough to survive round-1's own
+// default detect/build unmodified, for the #43 describe block below. See its own comment where
+// it is built for the exact levels and why they clear the noisy preset while still reading as
+// the quietest thing in the render once round-1's default EDL drops the true-silence flanks.
+let quietSourcePath: string
 
 beforeAll(async () => {
   fixtureDir = mkdtempSync(join(tmpdir(), 'vcut-commit-fixture-'))
@@ -72,6 +78,56 @@ beforeAll(async () => {
     'aac',
     '-shortest',
     longSourcePath,
+  ])
+
+  quietSourcePath = join(fixtureDir, 'source-quiet.mp4')
+  // silence(1.2s) - loud "speech"(3s, +20dB) - a quiet tone louder than the noisy preset's
+  // -20dB floor but far under the loud tone (1.5s, +3dB, ~-19dB) - loud "speech"(3s, +20dB) -
+  // silence(1.2s). The quiet tone survives round-1's own default detect/build unmodified
+  // (measured directly against this fixture: only the two anullsrc flanks land in detect's
+  // silences at -20dB), so it reaches the render exactly the way #43's real surviving pause
+  // reached a converged preview: too loud for the fixed preset, too quiet to be speech.
+  await run('ffmpeg', [
+    '-hide_banner',
+    '-y',
+    '-f',
+    'lavfi',
+    '-i',
+    'color=c=blue:s=320x240:d=9.9:r=10',
+    '-f',
+    'lavfi',
+    '-i',
+    'anullsrc=r=48000:cl=stereo:d=1.2',
+    '-f',
+    'lavfi',
+    '-i',
+    'sine=frequency=440:d=3',
+    '-f',
+    'lavfi',
+    '-i',
+    'sine=frequency=300:d=1.5',
+    '-f',
+    'lavfi',
+    '-i',
+    'sine=frequency=440:d=3',
+    '-f',
+    'lavfi',
+    '-i',
+    'anullsrc=r=48000:cl=stereo:d=1.2',
+    '-filter_complex',
+    '[2:a]volume=20dB[speech1];[3:a]volume=3dB[pause];[4:a]volume=20dB[speech2];[1:a][speech1][pause][speech2][5:a]concat=n=5:v=0:a=1[a]',
+    '-map',
+    '0:v',
+    '-map',
+    '[a]',
+    '-c:v',
+    'libx264',
+    '-pix_fmt',
+    'yuv420p',
+    '-c:a',
+    'aac',
+    '-shortest',
+    quietSourcePath,
   ])
 })
 
@@ -138,6 +194,13 @@ const commit = async (extraArgs: string[] = []) => {
     roundsGate: { status: string; committedRounds: number; next?: unknown[] }
     metaSpeech: Array<{ text: string; startMs: number; endMs: number; nearestRef: string | null }>
     metaSpeechChecked: boolean
+    deadAir: {
+      input: string
+      durationMs: number
+      floor: { floorDb: number; windowS: number; thresholdDb: number } | null
+      minSilenceMs: number
+      pauses: Array<{ startMs: number; endMs: number; durationMs: number }>
+    }
     next: Array<{ question: string; verb: string }>
   }
 }
@@ -153,6 +216,12 @@ const srt = (entries: Array<[string, string, string]>): string =>
 const useLongMedia = () => {
   mediaPath = join(workDir, 'source-long.mp4')
   writeFileSync(mediaPath, readFileSync(longSourcePath))
+}
+
+// Swaps `mediaPath` to the 6s silence-tone-silence fixture, for the #43 describe block below.
+const useQuietMedia = () => {
+  mediaPath = join(workDir, 'source-quiet.mp4')
+  writeFileSync(mediaPath, readFileSync(quietSourcePath))
 }
 
 // Mirrors what `vcut open <media> --transcript <path>` caches into a session — detect, then the
@@ -360,5 +429,86 @@ describe('commit auto-runs metaSpeech against the session transcript (#38)', () 
     const statuses = (diff ?? []).map((entry) => entry.status)
     expect(statuses).toContain('addressed')
     expect(statuses).not.toContain('standing')
+  })
+})
+
+describe('commit auto-runs findSurvivingDeadAir against its own render (#43)', () => {
+  test('an uncut silence in the render surfaces in deadAir, the human report, and next hints first', async () => {
+    useQuietMedia()
+    const output = await commit()
+
+    expect(output.deadAir.floor).not.toBeNull()
+    expect(output.deadAir.pauses.length).toBeGreaterThan(0)
+    // Threshold sits above the measured floor, and the floor of a silence-tone-silence fixture
+    // must read from the silent flanks, not get pulled toward the loud tone by averaging.
+    expect(output.deadAir.floor?.thresholdDb).toBeGreaterThan(output.deadAir.floor?.floorDb ?? 0)
+
+    // #43: named before every other hint, including metaSpeech and the rounds gate's own
+    // insufficient-rounds hints this session also carries at round 1. Dead air is this tool's
+    // founding target.
+    expect(output.next[0].question).toContain('survived in the render')
+
+    commitCallIndex += 1
+    logged = ''
+    await commitCommand([
+      mediaPath,
+      '--output',
+      join(workDir, `master-${commitCallIndex}.mp4`),
+      '--campaign',
+      'gate-test',
+      '--edl',
+      join(workDir, `edl-${commitCallIndex}.json`),
+      '--human',
+    ])
+    expect(logged).toContain('deadAir')
+    expect(logged).toContain('survived')
+  })
+
+  test('writes dead-air.json into the round directory, readable by readDeadAir', async () => {
+    useQuietMedia()
+    const output = await commit()
+    const report = readDeadAir(output.sessionDir, 1)
+    expect(report).not.toBeNull()
+    expect(report?.pauses.length).toBeGreaterThan(0)
+    expect(report?.pauses[0].startMs).toBeGreaterThanOrEqual(0)
+    expect(report?.pauses[0].endMs).toBeGreaterThan(report?.pauses[0].startMs ?? 0)
+  })
+
+  test('a render too short to calibrate a floor reports floor: null and pauses: [], never a guessed threshold', async () => {
+    // The 1s default fixture: well under probeNoiseFloor's own MIN_WINDOWS at a 2s bucket
+    // width, so calibration honestly reports "cannot answer" rather than fabricating a number.
+    const output = await commit()
+    expect(output.deadAir.floor).toBeNull()
+    expect(output.deadAir.pauses).toEqual([])
+    expect(output.next[0].question).not.toContain('survived in the render')
+  })
+
+  test('cutting the pause in a second round removes it from deadAir', async () => {
+    useQuietMedia()
+    const first = await commit()
+    expect(first.deadAir.pauses.length).toBeGreaterThan(0)
+    const firstPause = first.deadAir.pauses[0]
+
+    // deadAirNext's own hint (verified above): --kind filler, the closest fit `cut`'s fixed
+    // kind set has for a manual removal that is not a semantic false-start/repetition/tangent.
+    await cutCommand([
+      mediaPath,
+      '--start-ms',
+      String(firstPause.startMs),
+      '--end-ms',
+      String(firstPause.endMs),
+      '--kind',
+      'filler',
+      '--reason',
+      'the pause flagged by round 1 deadAir',
+      '--json',
+    ])
+    logged = ''
+    const second = await commit()
+    const secondDurations = second.deadAir.pauses.map((pause) => pause.durationMs)
+    const firstDurations = first.deadAir.pauses.map((pause) => pause.durationMs)
+    expect(secondDurations.reduce((total, ms) => total + ms, 0)).toBeLessThan(
+      firstDurations.reduce((total, ms) => total + ms, 0),
+    )
   })
 })
