@@ -95,7 +95,7 @@ the wider window before folding anything back into a proposal.
 ## "Was a word cut in half?"
 
 ```bash
-trx transcribe cut.wav --words --language <lang>
+trx transcribe cut.wav --words --language <lang> --output-dir "$(dirname cut.wav)"
 # diff against the source transcript
 ```
 

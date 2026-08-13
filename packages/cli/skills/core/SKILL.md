@@ -293,7 +293,7 @@ a verbatim transcript. A sentence-level SRT turns clamping off. Getting this wro
 error, it is a worse cut:
 
 ```bash
-trx transcribe <input> --words --language es --preset verbatim -m large-v3-turbo
+trx transcribe <input> --words --language es --preset verbatim -m large-v3-turbo --output-dir "$(dirname <input>)"
 ```
 
 Why each of those flags is load-bearing, and the two warnings `detect` prints about transcript

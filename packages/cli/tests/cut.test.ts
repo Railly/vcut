@@ -600,6 +600,27 @@ limpio
     expect(output.accepted.literal).toBe(true)
   })
 
+  // Issue #55: --human labelled this row "span" while --json carried startMs/endMs and no
+  // span field at all, so `--jq '.proposals[] | .span'` silently returned null. The label now
+  // names the fields --json actually has.
+  test('the accepted-proposal human line names startMs/endMs, not a span field --json does not have', async () => {
+    await openWithCache()
+    await cutCommand([
+      mediaPath,
+      '--start-ms',
+      '3000',
+      '--end-ms',
+      '3500',
+      '--kind',
+      'tangent',
+      '--reason',
+      'clean aside',
+      '--human',
+    ])
+    expect(logged).toContain('startMs..endMs')
+    expect(logged).not.toMatch(/\bspan\b/)
+  })
+
   test('--literal survives through --list', async () => {
     await openWithCache()
     await cutCommand([

@@ -155,7 +155,7 @@ whisper-cli -m ggml-large-v3-turbo.bin -f audio.wav -l es \
   --max-len 1 --split-on-word --output-srt
 ```
 
-`trx transcribe <input> --words --language es -m large-v3-turbo` does the same from `trx@0.7.1`
+`trx transcribe <input> --words --language es -m large-v3-turbo --output-dir "$(dirname <input>)"` does the same from `trx@0.7.1`
 on. `--split-on-word` is not optional: without it `--max-len 1` cuts at token boundaries, so
 "Crafter" arrives as `Cra` + `fter` and the transcript looks word-level while breaking every
 cut that relies on it. Measured on one recording: 26% of cues were fragments without the flag,

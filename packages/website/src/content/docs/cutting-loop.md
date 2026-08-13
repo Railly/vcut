@@ -35,7 +35,7 @@ no `--detect`/`--semantic` paths to re-type each pass:
 vcut cut recording.mp4 --refs b042..b044 --kind repetition --reason "..."  # per finding
 vcut commit recording.mp4 --output master.mp4 --campaign my-video          # builds + renders
 
-trx transcribe master.wav --words --language es -m large-v3-turbo
+trx transcribe master.wav --words --language es -m large-v3-turbo --output-dir "$(dirname master.wav)"
 
 vcut semantic review --edl edl.json --detect detect.json --terse \
   --master master.wav --master-transcript <the .srt trx wrote> > review.json
@@ -82,7 +82,7 @@ vcut edl build --detect detect.json --semantic proposals.json \
   --output cut-$N.mp4 --campaign my-video --edl edl-$N.json
 vcut render --edl edl-$N.json --audio-only --output cut-$N.wav
 
-trx transcribe cut-$N.wav --words --language es -m large-v3-turbo
+trx transcribe cut-$N.wav --words --language es -m large-v3-turbo --output-dir "$(dirname cut-$N.wav)"
 
 vcut semantic review --edl edl-$N.json --detect detect.json --terse \
   --master cut-$N.wav --master-transcript <the .srt trx wrote> > review-$N.json

@@ -39,7 +39,7 @@ the same accumulation into `proposals.json` and the same visibility in `rounds -
 vcut open recording.mp4 --preset clean --lang es --transcript words.srt   # once
 vcut cut recording.mp4 --refs b042..b044 --kind repetition --reason "..."  # per finding
 vcut commit recording.mp4 --output master.mp4 --campaign my-video          # builds + renders the round
-trx transcribe master.wav --words --language es -m large-v3-turbo          # step 2, same as always
+trx transcribe master.wav --words --language es -m large-v3-turbo --output-dir "$(dirname master.wav)"  # step 2, same as always
 vcut semantic review --edl edl.json --detect detect.json \
   --master master.wav --master-transcript <the .srt trx wrote>             # step 3, same as always
 ```
@@ -84,7 +84,7 @@ vcut edl build --detect detect.json --semantic proposals.json \
 vcut render --edl edl-$N.json --audio-only --output cut-$N.wav   # ~1s per 14s kept
 
 # 2. Transcribe the RENDER, never reuse the previous transcript
-trx transcribe cut-$N.wav --words --language <lang> -m large-v3-turbo
+trx transcribe cut-$N.wav --words --language <lang> -m large-v3-turbo --output-dir "$(dirname cut-$N.wav)"
 
 # 3. Read the result and where nobody looked
 vcut semantic review --edl edl-$N.json --detect detect.json \
