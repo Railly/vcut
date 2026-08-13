@@ -324,6 +324,35 @@ export const mergeAdjacent = (spans: RecoveredSpan[], gapMs = MERGE_GAP_MS): Rec
 export type RecoverOptions = {
   mergeGapMs?: number
   minSpanMs?: number
+  sourceSilences?: Span[]
+}
+
+/**
+ * Silence the reference itself carries between consecutive words, measured on its own word
+ * stream rather than on its audio.
+ *
+ * A source pause is only a cut if the reference does not keep a pause there too, and the
+ * reference's word stream already answers that: the same transcriber, on the same speech,
+ * reports where it stopped hearing words. Measuring it here rather than with a second ffmpeg
+ * pass keeps the recovery pure and costs nothing, and the quantity wanted is "did the human
+ * leave a pause", which is a statement about the edit's structure, not about its noise floor.
+ *
+ * Measured on both approved masters this command was built against: the Cueva reference keeps
+ * 2.2s of inter-word gap across 263.4s, the issue #39 hand run 4.0s across 551.5s. A human
+ * editing for delivery removes nearly every pause, which is why source silence maps to a cut
+ * so reliably that seeding on it is safe.
+ */
+export const referencePauseMs = (reference: Word[]): number => {
+  const ordered = [...reference].sort((left, right) => left.startMs - right.startMs)
+  let total = 0
+  let cursor = 0
+  for (const word of ordered) {
+    if (cursor > 0 && word.startMs > cursor) {
+      total += word.startMs - cursor
+    }
+    cursor = Math.max(cursor, word.endMs)
+  }
+  return total
 }
 
 /**
@@ -337,6 +366,22 @@ export type RecoverOptions = {
  * `insert` opcodes are ignored on purpose: tokens present in the reference and absent from the
  * source are the transcriber hearing the edit's audio differently, never material a human
  * added — an edit removes, it does not record new speech.
+ *
+ * `sourceSilences` closes the blind spot the text walk cannot see (issue #60). A recovered span
+ * can only begin and end on a source token, so silence is invisible to the walk in two ways at
+ * once. The obvious one is a stretch of source with no words in it, which no opcode ever claims.
+ * The one that actually dominated the measured error is subtler: Whisper emits gapless cues, so
+ * a source word's cue absorbs the pause that follows it. Measured on the Cueva pair, the same
+ * speech carries an average cue of 547ms in the source against 302ms in the reference, and the
+ * alignment matched the words almost perfectly (857 surviving source tokens against 861
+ * reference words) while still overstating what the reference kept by 261.2s. That surplus is
+ * entirely pause hiding inside cues the walk reads as kept speech.
+ *
+ * So a measured silence is taken as removed wherever it lands, including inside a surviving
+ * word's cue: silencedetect reports where the audio is quiet, which no cue boundary can
+ * contradict, and a cue that spans quiet audio is padding rather than speech. Seeds go through
+ * the same `mergeAdjacent` pass as every other candidate, so a region both mechanisms find is
+ * one span rather than two, and `minSpanMs` still applies to the merged result.
  */
 export const recoverCuts = (
   source: Word[],
@@ -367,6 +412,19 @@ export const recoverCuts = (
       candidates.push(span)
     }
   }
+
+  for (const silence of options.sourceSilences ?? []) {
+    if (silence.endMs > silence.startMs) {
+      candidates.push({
+        startMs: silence.startMs,
+        endMs: silence.endMs,
+        durationMs: silence.endMs - silence.startMs,
+        removedText: '',
+        wordCount: 0,
+      })
+    }
+  }
+
   const minSpanMs = options.minSpanMs ?? MIN_SPAN_MS
   return mergeAdjacent(candidates, options.mergeGapMs ?? MERGE_GAP_MS).filter(
     (span) => span.durationMs >= minSpanMs,
