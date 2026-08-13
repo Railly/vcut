@@ -96,6 +96,75 @@ describe('evaluateRoundsGate: acknowledged via --single-round', () => {
   })
 })
 
+describe('evaluateRoundsGate: the listener gate (#44)', () => {
+  const dirty = (phrases: string[], truncatedEdges = 0) => ({
+    repeatedPhrases: phrases.length,
+    truncatedEdges,
+    phrases,
+  })
+  const clean = { repeatedPhrases: 0, truncatedEdges: 0, phrases: [] }
+
+  test('a standing repeated phrase past the rounds floor is repeated-phrases-unresolved, not converged', () => {
+    const gate = evaluateRoundsGate(2, false, dirty(['reciben un poema mio']))
+    expect(gate.status).toBe('repeated-phrases-unresolved')
+    expect(gate.committedRounds).toBe(2)
+  })
+
+  test('the message quotes the phrase itself and names the command that re-runs the sweep', () => {
+    const gate = evaluateRoundsGate(2, false, dirty(['reciben un poema mio']))
+    expect(gate.message).toContain('"reciben un poema mio"')
+    expect(gate.message).toContain('vcut verify --windows')
+  })
+
+  test('many findings quote the first few and count the rest, never collapse to a bare number', () => {
+    const gate = evaluateRoundsGate(2, false, dirty(['uno dos tres', 'b', 'c', 'd', 'e']))
+    expect(gate.message).toContain('"uno dos tres"')
+    expect(gate.message).toContain('2 more')
+  })
+
+  test('truncated edges ride in the same message when present', () => {
+    const gate = evaluateRoundsGate(2, false, dirty(['una frase repetida'], 3))
+    expect(gate.message).toContain('3 truncated edges')
+  })
+
+  test('insufficient-rounds still wins over the listener: a missing pass is the first problem', () => {
+    const gate = evaluateRoundsGate(1, false, dirty(['reciben un poema mio']))
+    expect(gate.status).toBe('insufficient-rounds')
+  })
+
+  test('--single-round does not waive a standing repeated phrase', () => {
+    // The override acknowledges a one-round EDIT, never that a duplicated sentence is acceptable.
+    const gate = evaluateRoundsGate(1, true, dirty(['reciben un poema mio']))
+    expect(gate.status).toBe('repeated-phrases-unresolved')
+  })
+
+  test('--single-round with a clean sweep still reaches acknowledged-single-round', () => {
+    const gate = evaluateRoundsGate(1, true, clean)
+    expect(gate.status).toBe('acknowledged-single-round')
+  })
+
+  test('a clean sweep past the floor reaches converged-pending-review, so the gate stays reachable', () => {
+    const gate = evaluateRoundsGate(2, false, clean)
+    expect(gate.status).toBe('converged-pending-review')
+  })
+
+  test('no sweep at all (undefined) never reads as clean OR as a refusal: the gate says nothing about it', () => {
+    // The honest split: `commit` reports whether the sweep ran through listenerChecked, and the
+    // gate only holds when it has findings in hand. Undefined must not silently block, or a
+    // machine without trx could never converge, and must not silently clear either.
+    const gate = evaluateRoundsGate(2, false, undefined)
+    expect(gate.status).toBe('converged-pending-review')
+  })
+
+  test('repeated-phrases-unresolved carries next commands that cut, never approve', () => {
+    const gate = evaluateRoundsGate(2, false, dirty(['reciben un poema mio']))
+    const verbs = (gate.next ?? []).map((hint) => hint.verb).join(' | ')
+    expect(verbs).toContain('vcut cut')
+    expect(verbs).toContain('vcut commit')
+    expect(verbs).not.toContain('--mode master')
+  })
+})
+
 describe('single-round-ack.json: acknowledgeSingleRound / readSingleRoundAck', () => {
   test('a fresh session has no ack', async () => {
     const session = await openSession(mediaPath)

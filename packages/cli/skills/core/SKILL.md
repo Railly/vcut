@@ -151,7 +151,7 @@ never auto-cuts and never blocks a render; the human decision boundary is unchan
 Method, invariants, and the full stopping condition:
 `vcut skills get core --section rounds-methodology`, `--section invariants`.
 
-## Four facts that save a round each
+## Facts that save a round each
 
 **Verify on the audio-only render; mux video once, at the end.** `commit` defaults to
 `--audio-only` and `render --audio-only` is the standalone equivalent. `audit` correlates
@@ -197,6 +197,28 @@ in kept audio — the floor no flag removes. Segment count is nearly free now: 2
 180 segments over the same kept audio cost 6.9s and 8.7s on a 120-second source. Before 0.19.1
 segment count dominated instead (293s at 180 segments against 43s today, same output bytes),
 which is what made per-find commits cost minutes.
+
+**A whole-file transcript averages a repeat away, so `commit` re-listens in short windows for
+you.** Reading the render's transcript end to end catches content that *stopped making sense*.
+It does not catch content that *makes sense twice*: a model reading ninety seconds collapses two
+attempts at the same line into one, because one line is the likelier sentence. The same audio cut
+to sixteen seconds returns both. This is not a redundant check with reading, it is the other half
+of it, and it is the reason `commit` now runs the `verify --windows` sweep over its own render
+every round with no flag, and holds `roundsGate.status` at `repeated-phrases-unresolved` while a
+repeat stands, quoting the offending phrase.
+
+The run that made this a rule shipped a render it had verified as clean, having run `audit`
+(91/91 correlate), `joins`, `nonspeech --verify` twice, and a full re-transcription of the render.
+`verify --windows` on that same file returns 18 repeated phrases, one of them a sentence a human
+had flagged by ear before the run started. That run had the verb installed and never reached for
+it, because it had read the whole manual and `verify` appeared only in the `--help` command table.
+
+Budget for it: the sweep costs roughly **1 second per 5 seconds of render** at the default
+concurrency (measured: 358-second render, 44 windows, 66 seconds, concurrency 4, ~1.16GB resident
+per concurrent whisper process). Round 1 sweeps the whole render; from round 2 on, only the spans
+that round actually changed get re-transcribed, and everything else carries forward from the
+previous round's findings. Re-sweep the whole thing at any time with `vcut verify --windows
+<render> --lang <code>`.
 
 **`--jq <expr>` filters and reshapes, so never reach for `python3 -c`.** `--fields` projects to
 dot paths; `--jq` does the structural work — filter a `nonspeech` list to the
@@ -350,6 +372,7 @@ Run `vcut schema <name>` for the field-by-field contract instead of parsing `--h
 | Where does a retake's boundary really fall? | `converge --phrase "..." --from <s>` |
 | Where does the telling I am keeping start (a retake's near edge)? | `say --transcribe --words` over `converge`'s two edges |
 | What audible sound does the transcript not see at all? | `nonspeech <render> --verify` |
+| What does the render say twice, that reading its transcript once cannot show me? | `verify --windows <render>` (`commit` runs it every round) |
 | What text is a semantic span about to remove? | `cut` at propose time, or `edl build` → `semanticCuts[].removedText` |
 | Did every semantic cut's join land clean, in one call? | `joins --edl <path> --render <path>` |
 | Did the render carry the wrong material at a join? | `audit --edl <path> --render <path>` |

@@ -42,6 +42,7 @@ import type { SurvivingDeadAirReport } from './dead-air.ts'
 import type { DetectReport } from './detect.ts'
 import { packageVersion } from './output.ts'
 import type { MetaSpeechSpan, Proposal } from './semantic.ts'
+import type { VerifyWindowsReport } from './verify.ts'
 
 export const sessionRoot = (): string =>
   process.env.VCUT_SESSIONS_DIR ?? join(homedir(), '.vcut', 'sessions')
@@ -510,6 +511,47 @@ export const readDeadAir = (
     return null
   }
   return JSON.parse(readFileSync(path, 'utf8')) as SurvivingDeadAirReport
+}
+
+// --- Listener sweep (#44) ----------------------------------------------------------------------
+//
+// commit runs the `verify --windows` sweep (verify.ts) against its own render on every round, the
+// third check to take the forced placement #38 proved and #43 repeated: a verb the session loop
+// never forces is optional by construction. #44's forensics are the sharpest version yet, because
+// here the verb existed and was installed and the run still never reached for it: an agnostic run
+// shipped a render it called clean that `verify --windows` finds 18 repeated phrases in, having
+// read the whole manual first, in which `verify` appeared only in the --help command table.
+//
+// Recorded beside the round's EDL, build report, metaSpeech spans, and dead-air report so a
+// caller can read what a round's own render actually said without re-transcribing it, and so
+// `rounds` can answer the same addressed-vs-standing question for a repeated phrase it already
+// answers for a metaSpeech marker. `scope` records which question the sweep answered: `full`
+// swept the whole render, `delta` swept only the spans this round changed plus their
+// surroundings, and `carriedFrom` names the round whose full sweep the untouched material was
+// last cleared by, so a delta result is never mistaken for a full one.
+const listenerPath = (roundDir: string): string => join(roundDir, 'listener.json')
+
+export type ListenerRecord = {
+  scope: 'full' | 'delta'
+  carriedFrom: number | null
+  report: VerifyWindowsReport
+}
+
+export const writeListener = (roundDir: string, record: ListenerRecord): string => {
+  const path = listenerPath(roundDir)
+  writeFileSync(path, `${JSON.stringify(record, null, 2)}\n`)
+  return path
+}
+
+/** A round's recorded listener sweep. Null when the round predates #44 or had no render to
+ * sweep, distinct from a report whose own lists are empty, which means the sweep ran and found
+ * nothing. */
+export const readListener = (sessionDir: string, roundNumber: number): ListenerRecord | null => {
+  const path = listenerPath(join(roundsDir(sessionDir), `round-${roundNumber}`))
+  if (!existsSync(path)) {
+    return null
+  }
+  return JSON.parse(readFileSync(path, 'utf8')) as ListenerRecord
 }
 
 // --- Commit marker -------------------------------------------------------------------------

@@ -182,7 +182,7 @@ export const buildWindows = (
   return windows
 }
 
-type Interval = { startMs: number; endMs: number }
+export type Interval = { startMs: number; endMs: number }
 
 /** Punctuation and case are delivery, not words: matching through them finds real repeats. */
 const normalise = (text: string): string =>
@@ -616,6 +616,56 @@ export const mergeRepeats = (...groups: RepeatedPhrase[][]): RepeatedPhrase[] =>
   return merged.sort((left, right) => left.windowStartMs - right.windowStartMs)
 }
 
+/**
+ * The tiles covering only `spans`, for a caller that already knows which parts of a render are
+ * new (#44 sweeping a commit's delta rather than its whole render).
+ *
+ * Each span is tiled by the same `buildWindows` a whole-file sweep uses, then offset to the
+ * span's own start, so a partial sweep and a full one produce the identical window geometry over
+ * the same audio rather than two alignments that find different things. Each span is also widened
+ * by one window on each side before tiling: a repeat is only visible to a window that contains
+ * both of its occurrences, and the second occurrence of a phrase whose first is just outside a
+ * changed segment lives in the material immediately around it. Overlapping tiles from adjacent
+ * spans are collapsed, so a run of neighbouring changed segments costs one continuous sweep
+ * rather than one sweep per segment with the shared audio transcribed twice.
+ */
+export const spanWindows = (
+  spans: Interval[],
+  durationMs: number,
+  windowMs: number,
+  strideMs: number,
+): Interval[] => {
+  const tiles: Interval[] = []
+  for (const span of spans) {
+    const startMs = Math.max(0, span.startMs - windowMs)
+    const endMs = Math.min(durationMs, span.endMs + windowMs)
+    if (endMs <= startMs) {
+      continue
+    }
+    for (const tile of buildWindows(endMs - startMs, windowMs, strideMs)) {
+      tiles.push({ startMs: startMs + tile.startMs, endMs: startMs + tile.endMs })
+    }
+  }
+  const sorted = tiles.sort((left, right) => left.startMs - right.startMs)
+  const deduped: Interval[] = []
+  for (const tile of sorted) {
+    const last = deduped.at(-1)
+    // Identical tiles only: two overlapping spans tiled independently produce the same tile twice
+    // (transcribing the same audio twice for the same answer), but two merely-overlapping tiles
+    // are the differently-aligned coverage --stride exists to produce and must both survive.
+    if (last !== undefined && last.startMs === tile.startMs && last.endMs === tile.endMs) {
+      continue
+    }
+    deduped.push(tile)
+  }
+  return deduped
+}
+
+/**
+ * `spans` restricts the sweep to the named parts of the media (#44's delta sweep). Undefined
+ * sweeps the whole file, which is what `verify --windows` itself always does: a caller asking
+ * this question directly has no prior round to diff against and no reason to trust one.
+ */
 export const runVerifyWindows = async (
   mediaPath: string,
   windowMs: number,
@@ -623,9 +673,13 @@ export const runVerifyWindows = async (
   lang: string | undefined,
   concurrency: number,
   cachedTranscriptPath: string | undefined,
+  spans?: Interval[],
 ): Promise<VerifyWindowsReport> => {
   const durationMs = await probeDurationMs(mediaPath)
-  const tiles = buildWindows(durationMs, windowMs, strideMs)
+  const tiles =
+    spans === undefined
+      ? buildWindows(durationMs, windowMs, strideMs)
+      : spanWindows(spans, durationMs, windowMs, strideMs)
 
   const windows = await runPooled(tiles, concurrency, async (tile) => {
     const text = await transcribeWindow(mediaPath, tile.startMs, tile.endMs, lang, 'vcut-verify')

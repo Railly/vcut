@@ -44,6 +44,23 @@ vcut semantic review --edl edl.json --detect detect.json \
   --master master.wav --master-transcript <the .srt trx wrote>             # step 3, same as always
 ```
 
+**Reading the render's transcript is step 3, and it is not the whole of step 3.** A whole-file
+pass answers "did this stop making sense". It cannot answer "did this make sense twice", because
+averaging two attempts at a line into the likelier single reading is exactly what a whole-file
+pass does. Those are two different checks and only the first was ever mandatory. `commit` now
+runs the second one for you on every round: the `verify --windows` sweep, over the render it just
+produced, tiling it into sixteen-second windows and reporting any phrase a window says twice.
+
+Read the `listener` field the same way you read `deadAir` and `metaSpeech`: each finding quotes
+the phrase, and `roundsGate.status` holds at `repeated-phrases-unresolved` while any of them
+stands, no matter how many rounds are committed. A gate at that status is not advisory and not a
+formality about round counts. It means the render currently says something twice and the CLI is
+quoting it back to you. Cut it, or say in a `cut --reason` why it stays.
+
+```bash
+vcut verify --windows master.wav --lang es    # the same sweep, whenever you want it whole again
+```
+
 `commit` defaults to `--audio-only`, so this is still the cheap audio path every round, not a
 video render. `vcut rounds recording.mp4 --diff` after a second `commit` answers "what changed
 since the last round" — `removalPercentDelta`, `segmentCountDelta`, and each semantic cut as
