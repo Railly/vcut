@@ -580,8 +580,12 @@ const CONTRACTS: Record<string, unknown> = {
         'the same BuildSummary shape edl build emits (segments, removalPercent, semanticCuts with removedText, warnings, ...)',
       render: 'the same shape render emits (status, outputPath, sha256, duration, ...)',
       roundsGate:
-        '{ status: "insufficient-rounds"|"converged-pending-review"|"acknowledged-single-round", committedRounds, message, next? }',
-      next: '[{ question, verb }] — below 2 committed rounds this IS roundsGate.next (render/transcribe/review/cut/commit), never the approve-shaped hints',
+        '{ status: "insufficient-rounds"|"repeated-phrases-unresolved"|"converged-pending-review"|"acknowledged-single-round", committedRounds, message, next? }',
+      listener:
+        'the round\'s own verify --windows sweep: { scope: "full"|"delta", carriedFrom: number|null, report: the same VerifyWindowsReport shape vcut verify --windows emits }. null only when no sweep ran',
+      listenerChecked:
+        'boolean, false only when trx is not installed and no sweep ran. Always present, so listener being empty can never be read as "not checked"',
+      next: "[{ question, verb }]. Standing repeated phrases come first, then surviving dead air, then metaSpeech, then the gate's own hints; below 2 committed rounds or with a repeat standing, these are the gate's own hints, never the approve-shaped ones",
     },
     notes: [
       "Builds from the session's cached detect report and its accumulated proposals.json, through the same runBuild seam vcut edl build --semantic <path> uses — byte-identical output given the same inputs.",
@@ -590,6 +594,10 @@ const CONTRACTS: Record<string, unknown> = {
       'Approval is a human edit to the EDL followed by vcut render --edl <path> --mode master. This command drafts and previews only; it never writes approval.status.',
       "Takes the session's advisory lock (pid+startedAt+verb in lock.json) for the build+render, released after. A second writer on a session already locked by a live process gets a non-usage error naming the holder's pid, verb, and age. On success the session is marked committed, which vcut session gc reads as a candidate — nothing is deleted here or automatically.",
       "The rounds gate (#36): below 2 committed rounds, roundsGate.status is insufficient-rounds and refuses the converged framing — the second committed round must contain a real propose pass against this round's render transcript, verification of round 1's own output does not count. --single-round records a deliberate override (single-round-ack.json in the session) for a genuine one-round edit, after which roundsGate.status reads acknowledged-single-round instead.",
+      "The listener gate (#44): commit runs the verify --windows sweep over its own render on every round, with no flag, and roundsGate.status holds at repeated-phrases-unresolved while any repeated phrase stands, no matter how many rounds are committed. A whole-file transcript averages two attempts at a line into the likelier single reading, so reading the render's transcript catches content that stopped making sense but never content that makes sense twice. insufficient-rounds still wins over it; --single-round does NOT waive it, because that override acknowledges a one-round edit and was never a declaration that a duplicated sentence is acceptable.",
+      'Every listener finding quotes the offending phrase rather than reporting a count and a span, the same precedent metaSpeech set. Asked whether it would have overridden the gate, the agent that shipped the defect this issue is about said a silent boolean it might have rationalised past, but the phrase quoted verbatim in front of it, no.',
+      "The sweep costs roughly 1 second per 5 seconds of render at the default concurrency (measured: 358s render, 44 windows, 66s, concurrency 4). It runs unconditionally because a flag would put it back off the mandatory path, which is the defect itself; what it scopes instead is how much audio it re-transcribes. Round 1 sweeps whole; from round 2 on only the spans that round changed (deltaSpans from #46, each widened by one window) are re-transcribed, with the previous round's findings carried forward for everything else. A finding does not expire by being ignored for a round: the audio under it did not change, so it is reported again, still quoted, still holding the gate.",
+      'Recorded per round as rounds/round-N/listener.json, beside the EDL, build report, metaspeech.json, and dead-air.json.',
     ],
   },
   rounds: {

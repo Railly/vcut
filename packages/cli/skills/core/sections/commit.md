@@ -149,6 +149,77 @@ two-argument pure function; the commit-level hint above already puts the same in
 in the one place every round reads, so the added coupling did not pay for itself and the gate
 was left alone.
 
+**Runs the `verify --windows` listener sweep over its own render, every round, no flag (#44).**
+Reading the render's transcript end to end catches content that stopped making sense; it cannot
+catch content that makes sense twice, because a model reading ninety seconds collapses two
+attempts at the same line into the one likelier sentence. The same audio cut to sixteen seconds
+returns both. The run that made this mandatory shipped a render it had verified as clean, after
+running `audit` (91/91 correlate), `joins`, `nonspeech --verify` twice, and a full
+re-transcription of the render; `verify --windows` on that file returns 18 repeated phrases, one
+of them a duplicated sentence a human had flagged by ear before the run began. That run had the
+verb installed and never reached for it, because it had read the whole manual and `verify`
+appeared only in the `--help` command table. This is the fifth measured instance of the same
+pattern: capability off the mandatory path is capability that does not exist.
+
+```
+committed  ./edl.json
+  removalPercent          14.2%
+  semantic cuts           2
+  render                  rendered
+  output                  ./master.wav
+  listener                2 repeated phrases in the render (full sweep): cut each or name why it stays
+    216.00-232.00s        x2: "reciben un poema mio"
+    224.00-240.00s        x2: "y bueno"
+  committedRounds         2
+  roundsGate              repeated-phrases-unresolved
+```
+
+**Every finding quotes the offending text.** This is as load-bearing as the gate itself. Asked
+directly whether it would have overridden a gate, the agent that shipped the defect answered that
+a silent boolean (`verified: false`) it might have rationalised past, but the phrase quoted
+verbatim in front of it, no. "Trust me, something is wrong" is arguable; the quote is not.
+`metaSpeech` already set this precedent, and the JSON follows it: `listener.report.repeatedPhrases`
+carries `phrase`, `count`, and the window span for each one.
+
+**The cost, and where it is spent.** The sweep re-transcribes the render in overlapping windows,
+which is not free: roughly **1 second per 5 seconds of render** at the default concurrency
+(measured 2026-08-13: a 358-second render, 44 windows, 66 seconds, concurrency 4, ~1.16GB resident
+per concurrent whisper process). It runs anyway, unconditionally, because a flag would put it back
+off the mandatory path and that is the entire defect. What is negotiable is how much audio it
+sweeps, and #46's delta verification already answers that: round 1 sweeps the whole render, and
+from round 2 on only the spans that round actually changed are re-transcribed (every segment whose
+source-time signature is new, plus the neighbours of every new join, each widened by one window),
+with the previous round's findings carried forward for everything outside those spans. A finding
+does not expire by being ignored for a round: the audio under it did not change, so round N's
+answer is still the current one and round N+1 reports it again, still quoted, still holding the
+gate. `listener.scope` says which question a round answered (`full` or `delta`) and
+`listener.carriedFrom` names the round whose full sweep the untouched material was last cleared by.
+
+Re-sweep the whole render at any time, and the gate's own message names this command:
+
+```bash
+vcut verify --windows master.wav --lang es
+```
+
+`listener` is always present in the JSON, and `listenerChecked` is the separate honest signal for
+the one case the record cannot express: no sweep ran at all, because `trx` is not installed. A
+missing transcriber reports that it did not run rather than failing the commit or, far worse,
+reporting a clean sweep that never happened.
+
+**The gate refuses `converged-pending-review` while a repeated phrase stands (#44).** The rounds
+floor answers "did enough passes run"; it cannot answer "did the passes find anything", and a
+session that ran two rounds and still repeats a sentence twice is exactly as unfinished as one
+that ran one. `roundsGate.status` reads `repeated-phrases-unresolved`, the message quotes the
+phrases and names `vcut verify --windows`, and `next` points at cutting them, never at approval.
+`insufficient-rounds` still wins over it: a missing pass is the first problem. `--single-round`
+does *not* waive it, because that override acknowledges a one-round edit (a trivial clip needing
+no second propose pass) and was never a declaration that a duplicated sentence in the render is
+acceptable. Those are different claims.
+
+**Recorded per round as `rounds/round-N/listener.json`**, beside the EDL, build report,
+`metaspeech.json`, and `dead-air.json`, so a caller can read what a round's render actually said
+without re-transcribing it.
+
 **Carries the rounds gate in `roundsGate` and shapes `next` around it (#36).** Below 2
 committed rounds, `roundsGate.status` is `'insufficient-rounds'` and `next` is the missing
 pass — render, transcribe, `semantic review` against THIS render, read, `cut`, `commit` again —

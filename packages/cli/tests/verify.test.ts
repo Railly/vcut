@@ -14,6 +14,7 @@ import {
   mergeRepeats,
   runPooled,
   runVerifyWindows,
+  spanWindows,
   verifyCommand,
   type Window,
 } from '../src/verify.ts'
@@ -50,6 +51,61 @@ describe('buildWindows', () => {
   test('returns nothing for a zero or negative duration', () => {
     expect(buildWindows(0, 16_000, 16_000)).toEqual([])
     expect(buildWindows(-1, 16_000, 16_000)).toEqual([])
+  })
+})
+
+// #44's delta sweep: commit re-transcribes only the spans a round actually changed, so the tiles
+// have to cover those spans plus enough of their surroundings that a repeat straddling the edge of
+// a change still lands whole inside some window.
+describe('spanWindows', () => {
+  test('a span in the middle of the media is widened by one window on each side', () => {
+    const tiles = spanWindows([{ startMs: 100_000, endMs: 110_000 }], 300_000, 16_000, 8_000)
+    expect(tiles[0]?.startMs).toBe(84_000)
+    expect(tiles.at(-1)?.endMs).toBe(126_000)
+  })
+
+  test('the widening clamps at the media bounds rather than asking for negative time', () => {
+    const tiles = spanWindows([{ startMs: 0, endMs: 5_000 }], 30_000, 16_000, 8_000)
+    expect(tiles[0]?.startMs).toBe(0)
+    expect(tiles.at(-1)?.endMs).toBeLessThanOrEqual(30_000)
+  })
+
+  test('sweeps far less than the whole file for one small change in a long render', () => {
+    const full = buildWindows(358_000, 16_000, 8_000)
+    const delta = spanWindows([{ startMs: 200_000, endMs: 204_000 }], 358_000, 16_000, 8_000)
+    expect(delta.length).toBeLessThan(full.length / 4)
+  })
+
+  test('no spans means no tiles: a round that changed nothing transcribes nothing', () => {
+    expect(spanWindows([], 300_000, 16_000, 8_000)).toEqual([])
+  })
+
+  test('two overlapping spans do not transcribe the identical tile twice', () => {
+    const tiles = spanWindows(
+      [
+        { startMs: 100_000, endMs: 104_000 },
+        { startMs: 102_000, endMs: 106_000 },
+      ],
+      300_000,
+      16_000,
+      8_000,
+    )
+    const keys = tiles.map((tile) => `${tile.startMs}:${tile.endMs}`)
+    expect(new Set(keys).size).toBe(keys.length)
+  })
+
+  test('tiles stay in ascending order so a caller reading them reads the render in order', () => {
+    const tiles = spanWindows(
+      [
+        { startMs: 200_000, endMs: 204_000 },
+        { startMs: 40_000, endMs: 44_000 },
+      ],
+      300_000,
+      16_000,
+      8_000,
+    )
+    const starts = tiles.map((tile) => tile.startMs)
+    expect([...starts].sort((left, right) => left - right)).toEqual(starts)
   })
 })
 

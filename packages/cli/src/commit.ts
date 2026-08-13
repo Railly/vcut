@@ -36,9 +36,17 @@ import { type BuildOptions, type Crop, parseCrop, runBuild } from './build-edl.t
 import { findSurvivingDeadAir, type SurvivingDeadAirReport } from './dead-air.ts'
 import type { CliOptions as DetectOptions, DetectReport, Preset } from './detect.ts'
 import { parseSrt, runDetect } from './detect.ts'
+import { has } from './has.ts'
+import { masterToSource, type Placement, placements, sourceToMaster } from './locate.ts'
 import { emitJson, heading, line, type Mode, nextStep, resolveMode, UsageError } from './output.ts'
 import { type Edl, type RenderOptions, runRender } from './render-edl.ts'
-import { acknowledgeSingleRound, evaluateRoundsGate, type RoundsGate } from './rounds-gate.ts'
+import { deltaSpans } from './rounds.ts'
+import {
+  acknowledgeSingleRound,
+  evaluateRoundsGate,
+  type ListenerFindings,
+  type RoundsGate,
+} from './rounds-gate.ts'
 import {
   buildLines,
   gapsBetween,
@@ -52,18 +60,23 @@ import {
   cachedDetect,
   checkSession,
   deriveRefs,
+  type ListenerRecord,
   listRoundNumbers,
   markCommitted,
   nextRoundDir,
   openSession,
   pointCachedTranscriptAtSession,
+  readListener,
   readProposalsFile,
+  readRound,
   releaseLock,
   writeCachedDetect,
   writeDeadAir,
+  writeListener,
   writeMetaSpeech,
   writeRound,
 } from './session.ts'
+import { defaultConcurrency, runVerifyWindows, type VerifyWindowsReport } from './verify.ts'
 
 const HELP = `vcut commit - build the EDL from a session's proposals, then render it
 
@@ -103,6 +116,20 @@ hints and 'roundsGate.status' say 'insufficient-rounds' instead of a next step t
 polish, until a second committed round exists. '--single-round' is the deliberate escape hatch
 for the genuine one-round case, and it is recorded in the session (single-round-ack.json), not
 inferred from a good-looking run.
+
+**Runs the 'verify --windows' listener sweep over its own render, every round, no flag.** A
+whole-file transcript averages: a model reading ninety seconds collapses two attempts at the same
+line into the one likelier sentence, so reading the render's transcript end to end catches
+content that stopped making sense but never content that makes sense twice. The sweep re-listens
+in sixteen-second windows, which return both. Every finding quotes the offending phrase, and
+'roundsGate.status' holds at 'repeated-phrases-unresolved' while any of them stands, no matter
+how many rounds are committed; '--single-round' does not waive it.
+
+The sweep costs roughly 1 second per 5 seconds of render at the default concurrency. Round 1
+sweeps the whole render; from round 2 on only the spans that round changed are re-transcribed,
+and the previous round's findings carry forward for everything else. Re-sweep whole at any time
+with 'vcut verify --windows <render> --lang <code>'. With trx not installed, the sweep reports
+that it did not run ('listenerChecked': false) rather than failing the commit.
 
 Master mode never happens here. Approving the EDL is a human edit — set approval.status and
 each segment's approval to "approved" — followed by the existing
@@ -156,6 +183,15 @@ const numericFlag = (argv: string[], name: string): number | null => {
 }
 
 const DEFAULT_EDGE_FADE_MS = 50
+
+// The same width and stride `verify --windows` itself defaults to (DEFAULT_WINDOW_S, and #58's
+// half-window stride), not a second set of numbers commit picks for itself: a sweep run here and
+// a sweep a caller runs by hand with `vcut verify --windows <render>` have to be able to find the
+// same things, and two different window geometries over the same audio do not.
+const SWEEP_WINDOW_MS = 16_000
+const SWEEP_STRIDE_MS = 8_000
+
+type Segment = Edl['segments'][number]
 
 type CommitArgs = {
   media: string
@@ -285,6 +321,216 @@ export const deadAirNext = (
         },
       ]
 
+/**
+ * #44: standing repeated-phrase findings go first, ahead of dead air, metaSpeech, and the rounds
+ * gate. This is the only finding class that also holds the gate at `repeated-phrases-unresolved`,
+ * so a run that reads `next[0]` and stops reads the thing that is actually blocking it. The hint
+ * quotes the phrases rather than counting them, for the same reason the gate's message does.
+ */
+export const listenerNext = (
+  report: VerifyWindowsReport | null,
+): Array<{ question: string; verb: string }> => {
+  if (report === null || report.repeatedPhrases.length === 0) {
+    return []
+  }
+  const count = report.repeatedPhrases.length
+  const quoted = report.repeatedPhrases
+    .slice(0, 3)
+    .map((entry) => `"${entry.phrase}"`)
+    .join(', ')
+  const rest = count > 3 ? ` and ${count - 3} more` : ''
+  return [
+    {
+      question: `${count} repeated phrase${count === 1 ? '' : 's'} still in the render: ${quoted}${rest}; cut each or name why it stays`,
+      verb: 'read the listener field above, then vcut cut <media> --start-ms <n> --end-ms <n> --kind repetition --reason "..." per repeat you are removing',
+    },
+  ]
+}
+
+/**
+ * The listener sweep for this round, and the cost decision that shapes it.
+ *
+ * The sweep is expensive in a way nothing else `commit` runs is: it re-transcribes the render in
+ * overlapping windows, one whisper process per concurrent window. Measured on the render that
+ * opened this issue (358s, 2026-08-13, this machine, concurrency 4): 44 windows, 66s wall,
+ * against roughly 25s for the audio-only render of the same material. Sweeping the whole render
+ * every round would roughly triple what a round costs in wall clock.
+ *
+ * It runs anyway, on every commit, because the alternative is the defect. Making it conditional
+ * on a flag, or on the caller being "about to consult the gate", puts it back off the mandatory
+ * path, and off-the-path capability is the exact thing this issue exists to fix for the fifth
+ * measured time. There is also no "about to consult the gate" moment to hang it on: `commit`
+ * evaluates and emits the gate on every single call.
+ *
+ * What is negotiable is how much audio it sweeps, and #46's delta verification already answers
+ * that with the right question. From round 2 on, a render's untouched spans are byte-identical to
+ * material the previous round's sweep already read; re-transcribing them buys a second identical
+ * answer. So a round with a previous round to diff against sweeps only `deltaSpans` (every
+ * segment whose source-time signature is new, plus the neighbours of every new join, each widened
+ * by one window so a repeat straddling the edge of a change is still inside a window that holds
+ * both of its occurrences), and carries the previous round's findings forward for everything
+ * outside those spans. Round 1 has nothing to carry and sweeps whole.
+ *
+ * The carry-forward is what keeps this honest rather than a discount. A phrase found in round 1
+ * and not cut in round 2 is still reported by round 2, still quoted, and still holds the gate,
+ * because the delta says its audio never changed and a finding over unchanged audio does not
+ * expire by being ignored for a round. What a delta sweep can be wrong about is narrow and
+ * stated: a repeat whose two occurrences both sit in untouched audio that the earlier full sweep's
+ * window alignment split between two windows. The full sweep every round-1 pays for, plus the
+ * one-window widening here, is the answer to that; `vcut verify --windows <render>` re-sweeps
+ * whole at any time and the gate's own message names that command.
+ */
+export const sweepForRound = async (
+  renderPath: string,
+  lang: string | undefined,
+  previous: { round: number; segments: Segment[]; record: ListenerRecord | null } | null,
+  current: Segment[],
+): Promise<{ record: ListenerRecord; report: VerifyWindowsReport } | null> => {
+  // The sweep is the one check `commit` runs that needs a binary vcut does not ship. Everything
+  // else here shells to ffmpeg, which the tool already refuses to run without; `trx` is a
+  // separate install, and a machine that has never had it would otherwise find that `commit`
+  // itself stopped working the round this shipped. A missing transcriber reports "the sweep did
+  // not run" (`listenerChecked: false`, and a gate that does not claim to have cleared anything)
+  // rather than either failing the commit or, far worse, reporting a clean sweep that never ran.
+  if ((await has('trx', ['--version'])) === false) {
+    return null
+  }
+  const concurrency = defaultConcurrency()
+  if (previous === null || previous.record === null) {
+    const report = await runVerifyWindows(
+      renderPath,
+      SWEEP_WINDOW_MS,
+      SWEEP_STRIDE_MS,
+      lang,
+      concurrency,
+      undefined,
+    )
+    return { record: { scope: 'full', carriedFrom: null, report }, report }
+  }
+
+  const spans = deltaSpans(previous.segments, current).map((span) => ({
+    startMs: span.masterInMs,
+    endMs: span.masterOutMs,
+  }))
+  const swept = await runVerifyWindows(
+    renderPath,
+    SWEEP_WINDOW_MS,
+    SWEEP_STRIDE_MS,
+    lang,
+    concurrency,
+    undefined,
+    spans,
+  )
+  const report = carryForward(swept, previous.record.report, spans, previous.segments, current)
+  return {
+    record: {
+      scope: 'delta',
+      carriedFrom: previous.record.scope === 'full' ? previous.round : previous.record.carriedFrom,
+      report,
+    },
+    report,
+  }
+}
+
+/**
+ * Where a finding from the previous round's render lands in this round's render, or null if that
+ * audio is gone.
+ *
+ * Two rounds' master timelines are not the same coordinate system, and this is the trap #46's own
+ * header already names: "a cut anywhere shifts every later segment's master position". A finding
+ * recorded at 216000ms of round N's render sits somewhere else entirely in round N+1's render if
+ * anything before it was cut, so comparing round N's window timestamps against round N+1's master
+ * spans directly compares two different timelines and silently misplaces every finding past the
+ * first cut.
+ *
+ * Source time is the shared frame both rounds agree on, so the translation goes through it:
+ * previous master to source (through the previous round's own placements), source to current
+ * master (through this round's). A position whose source no longer survives into this round was
+ * cut, which is the honest answer to "is this finding still standing" and the reason the miss is
+ * reported as null rather than clamped to a neighbour.
+ */
+const relocate = (
+  masterMs: number,
+  previousMap: Placement[],
+  currentMap: Placement[],
+): number | null => {
+  const source = masterToSource(previousMap, masterMs)
+  if (source === null) {
+    return null
+  }
+  const current = sourceToMaster(currentMap, source.sourceMs)
+  return current === null ? null : current.masterMs
+}
+
+/**
+ * This round's own sweep, plus everything the previous round found over audio this round did not
+ * re-listen to.
+ *
+ * A finding whose window overlaps a swept span was re-asked this round and its fresh answer wins:
+ * cut it and it is gone, leave it and this round found it again. A finding outside every swept
+ * span sits over audio this round did not touch, so the previous round's answer is still the
+ * current one, and dropping it would let a defect expire by being ignored for a round. Its
+ * timestamps are rewritten into this round's master timeline on the way through (see `relocate`),
+ * so a carried finding still points at the audio it is about rather than at wherever that
+ * timestamp happens to fall now. A finding whose audio did not survive this round is dropped,
+ * because it was cut, which is exactly the outcome the round was for.
+ */
+export const carryForward = (
+  swept: VerifyWindowsReport,
+  previous: VerifyWindowsReport,
+  spans: Array<{ startMs: number; endMs: number }>,
+  previousSegments: Segment[],
+  currentSegments: Segment[],
+): VerifyWindowsReport => {
+  const previousMap = placements({ segments: previousSegments } as Edl)
+  const currentMap = placements({ segments: currentSegments } as Edl)
+  // One window of slack on each side, matching the widening `spanWindows` applies to the same
+  // spans: a finding whose window merely touches the material this round re-listened to was
+  // covered by that listen, and carrying it forward on top of the fresh answer would report the
+  // same repeat twice.
+  const inSweptSpan = (startMs: number, endMs: number): boolean =>
+    spans.some(
+      (span) => startMs < span.endMs + SWEEP_WINDOW_MS && span.startMs - SWEEP_WINDOW_MS < endMs,
+    )
+
+  const carry = <T extends { windowStartMs: number; windowEndMs: number }>(entries: T[]): T[] => {
+    const kept: T[] = []
+    for (const entry of entries) {
+      const startMs = relocate(entry.windowStartMs, previousMap, currentMap)
+      if (startMs === null) {
+        continue
+      }
+      if (inSweptSpan(startMs, startMs + (entry.windowEndMs - entry.windowStartMs))) {
+        continue
+      }
+      kept.push({
+        ...entry,
+        windowStartMs: startMs,
+        windowEndMs: startMs + (entry.windowEndMs - entry.windowStartMs),
+      })
+    }
+    return kept
+  }
+
+  const byWindow = <T extends { windowStartMs: number }>(left: T, right: T): number =>
+    left.windowStartMs - right.windowStartMs
+  return {
+    ...swept,
+    repeatedPhrases: [...swept.repeatedPhrases, ...carry(previous.repeatedPhrases)].sort(byWindow),
+    discountedRepeats: [...swept.discountedRepeats, ...carry(previous.discountedRepeats)].sort(
+      byWindow,
+    ),
+    truncatedEdges: [...swept.truncatedEdges, ...carry(previous.truncatedEdges)].sort(byWindow),
+  }
+}
+
+/** What the gate needs from a sweep: counts, and the phrases themselves. */
+export const listenerFindings = (report: VerifyWindowsReport): ListenerFindings => ({
+  repeatedPhrases: report.repeatedPhrases.length,
+  truncatedEdges: report.truncatedEdges.length,
+  phrases: report.repeatedPhrases.map((entry) => entry.phrase),
+})
+
 const humanReport = (
   edlPath: string,
   removalPercent: number,
@@ -299,6 +545,7 @@ const humanReport = (
   gate: RoundsGate,
   deadAir: SurvivingDeadAirReport,
   metaSpeechFindings: MetaSpeechSpan[] | null,
+  listener: ListenerRecord | null,
   hints: Array<{ question: string; verb: string }>,
 ): string => {
   const lines = [
@@ -357,6 +604,36 @@ const humanReport = (
           `"${finding.text}"`,
         ),
       )
+    }
+  }
+  // #44: one warning-style line whenever the window sweep over this round's own render still
+  // hears a phrase said twice, with the phrase quoted rather than counted. The quote is the
+  // load-bearing part: a silent count is something a run can rationalise past, and the run that
+  // opened this issue said so directly about a boolean it might have argued with and a quoted
+  // sentence it would not have. listener is null (not printed) when no sweep ran this round,
+  // distinct from a sweep whose lists came back empty.
+  if (listener !== null && listener.report.repeatedPhrases.length > 0) {
+    const found = listener.report.repeatedPhrases.length
+    const scope =
+      listener.scope === 'full'
+        ? 'full sweep'
+        : `delta sweep, untouched spans carried from round ${listener.carriedFrom ?? '?'}`
+    lines.push(
+      line(
+        'listener',
+        `${found} repeated phrase${found === 1 ? '' : 's'} in the render (${scope}): cut each or name why it stays`,
+      ),
+    )
+    for (const finding of listener.report.repeatedPhrases) {
+      lines.push(
+        line(
+          `  ${(finding.windowStartMs / 1000).toFixed(2)}-${(finding.windowEndMs / 1000).toFixed(2)}s`,
+          `x${finding.count}: "${finding.phrase}"`,
+        ),
+      )
+    }
+    for (const edge of listener.report.truncatedEdges) {
+      lines.push(line(`  ${(edge.windowEndMs / 1000).toFixed(2)}s`, `truncated at "${edge.word}"`))
     }
   }
   lines.push(line('committedRounds', String(gate.committedRounds)))
@@ -438,6 +715,20 @@ export const commitCommand = async (argv: string[]): Promise<void> => {
 
     writeFileSync(args.edlPath, `${JSON.stringify(edl, null, 2)}\n`)
 
+    // #44: the round this one follows, read BEFORE nextRoundDir allocates the new one (after
+    // which listRoundNumbers already counts this round as the latest). Its EDL segments and its
+    // recorded sweep are what let this round sweep only the spans it actually changed; null on
+    // round 1, or when the previous round predates #44 and recorded no sweep to carry forward.
+    const previousRoundNumber = listRoundNumbers(session.dir).at(-1) ?? null
+    const previousRound =
+      previousRoundNumber === null
+        ? null
+        : {
+            round: previousRoundNumber,
+            data: readRound(session.dir, previousRoundNumber),
+            record: readListener(session.dir, previousRoundNumber),
+          }
+
     const roundDir = nextRoundDir(session.dir)
     writeRound(roundDir, edl, summary)
 
@@ -478,6 +769,29 @@ export const commitCommand = async (argv: string[]): Promise<void> => {
     const deadAir = await findSurvivingDeadAir(render.outputPath)
     writeDeadAir(roundDir, deadAir)
 
+    // #44: the listener-grade window sweep, over the render this call just produced, on every
+    // commit. `verify --windows` existed, was installed, appeared in --help, and was still never
+    // run by the agnostic run that shipped a render carrying 18 repeated phrases it had called
+    // clean: capability off the mandatory path is capability that does not exist, and this is the
+    // fifth measured instance of that same pattern. See `sweepForRound` for the cost decision
+    // (unconditional, but scoped to the spans this round changed from round 2 on) and why the
+    // cheap alternatives were all a version of putting it back off the path.
+    const sweep = await sweepForRound(
+      render.outputPath,
+      report.lang,
+      previousRound === null || previousRound.data === null
+        ? null
+        : {
+            round: previousRound.round,
+            segments: (previousRound.data.edl as Edl).segments,
+            record: previousRound.record,
+          },
+      (edl as Edl).segments,
+    )
+    if (sweep !== null) {
+      writeListener(roundDir, sweep.record)
+    }
+
     // A successful commit marks the session as a gc candidate (B7-Q2): the round it just wrote
     // is state `session gc` may now consider clearing, never state it deletes on its own.
     markCommitted(session.dir)
@@ -486,25 +800,35 @@ export const commitCommand = async (argv: string[]): Promise<void> => {
     // `rounds` itself reads, so a caller cannot see a converged framing before the round that
     // earns it is actually on disk. `--single-round` is recorded here — a deliberate act visible
     // in the session (single-round-ack.json), never a default that silently waives the floor.
+    // #44 adds the sweep's own findings as the second thing that can hold the same status back:
+    // a session that ran two rounds and still repeats a sentence twice is exactly as unfinished
+    // as one that ran one, and only the gate says so where a run will read it.
     const committedRounds = listRoundNumbers(session.dir).length
     if (args.singleRound) {
       acknowledgeSingleRound(session.dir, committedRounds)
     }
-    const gate = evaluateRoundsGate(committedRounds, args.singleRound)
+    const gate = evaluateRoundsGate(
+      committedRounds,
+      args.singleRound,
+      sweep === null ? undefined : listenerFindings(sweep.report),
+    )
 
     // Below the floor, the hints ARE the missing pass — the exact defect this gate exists for is
     // a caller reading "transcribe, review, approve" after round 1 and treating review of round
     // 1's own output as the second round. commitNext's approve-shaped hints only apply once the
-    // gate has cleared.
+    // gate has cleared, and #44 adds the second status that must not reach them: a render with a
+    // standing repeated phrase gets the gate's own cut-then-recommit sequence, not approval.
     const baseHints =
-      gate.status === 'insufficient-rounds' && gate.next !== undefined
+      (gate.status === 'insufficient-rounds' || gate.status === 'repeated-phrases-unresolved') &&
+      gate.next !== undefined
         ? gate.next
         : commitNext(args.edlPath, render.outputPath)
-    // #43/#38: surviving-dead-air findings are named before metaSpeech and before the rounds
-    // gate's own hints. Dead air is this tool's founding target, and it is evidence about the
-    // render that was just produced, not a heuristic marker scan. metaSpeechNext follows,
-    // unchanged, per #38.
+    // #44/#43/#38, in priority order. Repeated phrases go first: they are the only finding class
+    // that also holds the gate, so a run that reads hint[0] and stops reads what is blocking it.
+    // Surviving dead air follows (this tool's founding target), then metaSpeech, then the gate's
+    // own hints, each unchanged.
     const hints = [
+      ...listenerNext(sweep === null ? null : sweep.report),
       ...deadAirNext(deadAir),
       ...metaSpeechNext(metaSpeechFindings ?? []),
       ...baseHints,
@@ -527,6 +851,15 @@ export const commitCommand = async (argv: string[]): Promise<void> => {
         // cannot distinguish on its own: a session with no transcript to check yet.
         metaSpeech: metaSpeechFindings ?? [],
         metaSpeechChecked: metaSpeechFindings !== null,
+        // Always present (#44), the same rule metaSpeech follows: absence can never be read as
+        // "not checked", because it is never absent. `scope` says which question this answered
+        // (`full` swept the whole render, `delta` swept what this round changed and carried the
+        // rest forward from `carriedFrom`), and every repeated phrase carries its own text, so a
+        // caller reading this JSON reads the offending words rather than a count it can argue
+        // with. `listenerChecked` is the separate honest signal for the one case the record
+        // itself cannot express: no sweep ran at all, because trx is not installed.
+        listener: sweep === null ? null : sweep.record,
+        listenerChecked: sweep !== null,
         next: hints,
       })
       return
@@ -540,6 +873,7 @@ export const commitCommand = async (argv: string[]): Promise<void> => {
         gate,
         deadAir,
         metaSpeechFindings,
+        sweep === null ? null : sweep.record,
         hints,
       ),
     )

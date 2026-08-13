@@ -1,8 +1,8 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from 'bun:test'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { commitCommand } from '../src/commit.ts'
+import { carryForward, commitCommand } from '../src/commit.ts'
 import { cutCommand } from '../src/cut.ts'
 import { runDetect } from '../src/detect.ts'
 import { run } from '../src/exec.ts'
@@ -13,9 +13,11 @@ import {
   openSession,
   pointCachedTranscriptAtSession,
   readDeadAir,
+  readListener,
   readMetaSpeech,
   writeCachedDetect,
 } from '../src/session.ts'
+import type { VerifyWindowsReport } from '../src/verify.ts'
 
 // A tiny, real, ffprobe-able clip: runBuild/runRender shell to ffprobe/ffmpeg for real, so this
 // generates a genuine source rather than mocking that boundary. 1s is enough for detect/build to
@@ -129,11 +131,55 @@ beforeAll(async () => {
     '-shortest',
     quietSourcePath,
   ])
+
+  stubDir = mkdtempSync(join(tmpdir(), 'vcut-commit-stub-'))
+  const binDir = join(stubDir, 'bin')
+  mkdirSync(binDir, { recursive: true })
+  writeFileSync(
+    join(binDir, 'trx'),
+    `#!/usr/bin/env bash
+set -euo pipefail
+if [ "\${1:-}" = "--version" ]; then
+  printf 'trx 0.0.0-test\\n'
+  exit 0
+fi
+printf '{"success":true,"files":{},"text":" %s"}\\n' "\${VCUT_TEST_TRX_TEXT:-nothing to report here at all}"
+`,
+  )
+  chmodSync(join(binDir, 'trx'), 0o755)
+  originalPath = process.env.PATH
+  process.env.PATH = `${binDir}:${originalPath ?? ''}`
 })
 
 afterAll(() => {
   rmSync(fixtureDir, { recursive: true, force: true })
+  rmSync(stubDir, { recursive: true, force: true })
+  if (originalPath === undefined) {
+    delete process.env.PATH
+  } else {
+    process.env.PATH = originalPath
+  }
 })
+
+// #44: commit now sweeps its own render with `verify --windows`, which shells to trx. Same policy
+// verify.test.ts and transcribe-window.test.ts already apply: ffmpeg is real (every window is
+// really cut), only the transcriber is stubbed, at the boundary vcut actually owns (a binary
+// named trx on PATH). Without this the suite would either need whisper on every machine that runs
+// it, or would take the real ~1.5s per window this issue's own cost note measures.
+//
+// The stub reads what to say from VCUT_TEST_TRX_TEXT, so one test can hand the sweep a duplicated
+// sentence and the next a clean line, without a second fixture audio file per case: what the
+// sweep finds is a property of the text it gets back, and this file's subject is what commit does
+// with those findings, not whether whisper hears them (verify.test.ts owns that).
+let stubDir: string
+let originalPath: string | undefined
+
+const CLEAN_TEXT = 'una linea perfectamente limpia sin nada repetido aqui.'
+const REPEATED_TEXT = 'si reciben un poema mio, reciben un poema mio por whatsapp.'
+
+const sweepSays = (text: string) => {
+  process.env.VCUT_TEST_TRX_TEXT = text
+}
 
 let workDir: string
 let mediaPath: string
@@ -150,6 +196,9 @@ beforeEach(() => {
   process.env.VCUT_SESSIONS_DIR = join(workDir, 'sessions')
   originalCwd = process.cwd()
   process.chdir(workDir)
+  // Default: a sweep that finds nothing, so every test written before #44 sees the same gate it
+  // always did. A test about the listener gate opts into a dirty render by calling sweepSays.
+  sweepSays(CLEAN_TEXT)
   originalLog = console.log
   logged = ''
   console.log = (...args: unknown[]) => {
@@ -201,6 +250,16 @@ const commit = async (extraArgs: string[] = []) => {
       minSilenceMs: number
       pauses: Array<{ startMs: number; endMs: number; durationMs: number }>
     }
+    listener: {
+      scope: 'full' | 'delta'
+      carriedFrom: number | null
+      report: {
+        repeatedPhrases: Array<{ phrase: string; count: number; windowStartMs: number }>
+        truncatedEdges: Array<{ word: string; windowEndMs: number }>
+        windows: Array<{ startMs: number; endMs: number; text: string }>
+      }
+    } | null
+    listenerChecked: boolean
     next: Array<{ question: string; verb: string }>
   }
 }
@@ -510,5 +569,268 @@ describe('commit auto-runs findSurvivingDeadAir against its own render (#43)', (
     expect(secondDurations.reduce((total, ms) => total + ms, 0)).toBeLessThan(
       firstDurations.reduce((total, ms) => total + ms, 0),
     )
+  })
+})
+
+describe('commit auto-runs the listener sweep over its own render (#44)', () => {
+  test('the sweep runs on every commit with no flag, and reports listenerChecked even when clean', async () => {
+    useLongMedia()
+    const output = await commit()
+    expect(output.listenerChecked).toBe(true)
+    expect(output.listener).not.toBeNull()
+    expect(output.listener?.scope).toBe('full')
+    expect(output.listener?.report.windows.length).toBeGreaterThan(0)
+    expect(output.listener?.report.repeatedPhrases).toEqual([])
+  })
+
+  test('a repeated phrase in the render holds the gate at repeated-phrases-unresolved past 2 rounds', async () => {
+    useLongMedia()
+    sweepSays(REPEATED_TEXT)
+    await commit()
+    logged = ''
+    const second = await commit()
+    // Two committed rounds: the rounds floor is cleared, and this is exactly the state the run
+    // that opened #44 shipped from. Without the listener gate this reads converged-pending-review.
+    expect(second.roundsGate.committedRounds).toBe(2)
+    expect(second.roundsGate.status).toBe('repeated-phrases-unresolved')
+  })
+
+  test('the gate message quotes the offending text verbatim, not a count', async () => {
+    useLongMedia()
+    sweepSays(REPEATED_TEXT)
+    await commit()
+    logged = ''
+    const second = await commit()
+    // The load-bearing half of #44: asked whether it would have overridden the gate, the agent
+    // said a silent boolean it might have rationalised past, but the phrase quoted in front of
+    // it, no. A message that only counts findings is the boolean with extra steps.
+    expect(second.roundsGate.message).toContain('reciben un poema mio')
+    expect(second.roundsGate.message).toContain('vcut verify --windows')
+  })
+
+  test('standing repeated phrases are named first in next, ahead of the gate own hints', async () => {
+    useLongMedia()
+    sweepSays(REPEATED_TEXT)
+    const output = await commit()
+    expect(output.next[0].question).toContain('repeated phrase')
+    expect(output.next[0].question).toContain('reciben un poema mio')
+    // Never the approve-shaped hint while a repeat stands, the same refusal #36 already makes
+    // below the rounds floor.
+    expect(output.next.map((hint) => hint.verb).join(' | ')).not.toContain('--mode master')
+  })
+
+  test('every finding carries its own phrase in the JSON, not just a span and a count', async () => {
+    useLongMedia()
+    sweepSays(REPEATED_TEXT)
+    const output = await commit()
+    expect(output.listener?.report.repeatedPhrases.length).toBeGreaterThan(0)
+    for (const finding of output.listener?.report.repeatedPhrases ?? []) {
+      expect(finding.phrase.length).toBeGreaterThan(0)
+    }
+    expect(
+      output.listener?.report.repeatedPhrases.some((entry) =>
+        entry.phrase.includes('reciben un poema mio'),
+      ),
+    ).toBe(true)
+  })
+
+  test('the human report prints the quoted phrase, not only a listener count', async () => {
+    useLongMedia()
+    sweepSays(REPEATED_TEXT)
+    commitCallIndex += 1
+    await openSession(mediaPath)
+    await commitCommand([
+      mediaPath,
+      '--output',
+      join(workDir, `master-${commitCallIndex}.mp4`),
+      '--campaign',
+      'gate-test',
+      '--edl',
+      join(workDir, `edl-${commitCallIndex}.json`),
+      '--human',
+    ])
+    expect(logged).toContain('listener')
+    expect(logged).toContain('reciben un poema mio')
+  })
+
+  test('writes listener.json into the round directory, readable by readListener', async () => {
+    useLongMedia()
+    sweepSays(REPEATED_TEXT)
+    const output = await commit()
+    const record = readListener(output.sessionDir, 1)
+    expect(record).not.toBeNull()
+    expect(record?.scope).toBe('full')
+    expect(record?.report.repeatedPhrases.length).toBeGreaterThan(0)
+  })
+
+  test('round 2 sweeps the delta and carries the untouched spans forward from round 1', async () => {
+    useLongMedia()
+    sweepSays(REPEATED_TEXT)
+    const first = await commit()
+    expect(first.listener?.scope).toBe('full')
+    const firstFindings = first.listener?.report.repeatedPhrases.length ?? 0
+    expect(firstFindings).toBeGreaterThan(0)
+
+    // Round 2 proposes nothing, so deltaSpans names nothing and the whole round-1 result is
+    // carried: a finding does not expire by being ignored for a round, which is the property
+    // that makes the cheaper delta sweep honest rather than a discount.
+    logged = ''
+    const second = await commit()
+    expect(second.listener?.scope).toBe('delta')
+    expect(second.listener?.carriedFrom).toBe(1)
+    expect(second.listener?.report.repeatedPhrases.length).toBe(firstFindings)
+    expect(second.roundsGate.status).toBe('repeated-phrases-unresolved')
+  })
+
+  test('--single-round does not waive a standing repeated phrase', async () => {
+    useLongMedia()
+    sweepSays(REPEATED_TEXT)
+    const output = await commit(['--single-round'])
+    // --single-round acknowledges a one-round EDIT (a trivial clip needing no second propose
+    // pass). It was never a declaration that a duplicated sentence in the render is acceptable.
+    expect(output.roundsGate.status).toBe('repeated-phrases-unresolved')
+  })
+
+  test('a clean sweep past the rounds floor still reaches converged-pending-review', async () => {
+    useLongMedia()
+    await commit()
+    logged = ''
+    const second = await commit()
+    // The gate must not become unreachable: a session with two rounds and nothing standing is
+    // exactly the state converged-pending-review exists to name.
+    expect(second.listener?.report.repeatedPhrases).toEqual([])
+    expect(second.roundsGate.status).toBe('converged-pending-review')
+  })
+})
+
+// The pure half of the delta sweep, tested without a transcriber in the room: what a round keeps
+// from the previous round's findings when it only re-listened to part of the render.
+describe('carryForward (#44)', () => {
+  const report = (
+    repeated: Array<{ phrase: string; windowStartMs: number }>,
+    truncated: Array<{ word: string; windowStartMs: number }> = [],
+  ) =>
+    ({
+      version: 1,
+      input: 'render.wav',
+      durationMs: 300_000,
+      windowMs: 16_000,
+      strideMs: 8_000,
+      windows: [],
+      repeatedPhrases: repeated.map((entry) => ({
+        phrase: entry.phrase,
+        count: 2,
+        windowStartMs: entry.windowStartMs,
+        windowEndMs: entry.windowStartMs + 16_000,
+      })),
+      discountedRepeats: [],
+      truncatedEdges: truncated.map((entry) => ({
+        windowStartMs: entry.windowStartMs,
+        windowEndMs: entry.windowStartMs + 16_000,
+        edge: 'end' as const,
+        word: entry.word,
+      })),
+      anomalies: [],
+    }) satisfies VerifyWindowsReport
+
+  // One source, one kept segment covering it whole: previous and current master timelines are
+  // identical, so a test about carry rules alone is not also a test about relocation.
+  const unchanged = [{ id: 's1', sourceId: 'a', inMs: 0, outMs: 300_000 }] as unknown as Parameters<
+    typeof carryForward
+  >[3]
+
+  test('a previous finding over audio this round did not touch is carried, never dropped', () => {
+    const merged = carryForward(
+      report([]),
+      report([{ phrase: 'reciben un poema mio', windowStartMs: 216_000 }]),
+      [{ startMs: 20_000, endMs: 24_000 }],
+      unchanged,
+      unchanged,
+    )
+    // The property that makes the cheaper sweep honest: a defect does not expire by being
+    // ignored for a round, and its audio is byte-identical to what round N already flagged.
+    expect(merged.repeatedPhrases.map((entry) => entry.phrase)).toEqual(['reciben un poema mio'])
+  })
+
+  test('a previous finding inside a swept span is replaced by this round fresh answer', () => {
+    const merged = carryForward(
+      report([]),
+      report([{ phrase: 'reciben un poema mio', windowStartMs: 216_000 }]),
+      [{ startMs: 214_000, endMs: 226_000 }],
+      unchanged,
+      unchanged,
+    )
+    // The span was re-listened to and came back clean: the cut worked, and carrying the stale
+    // finding forward would leave the gate held by a defect that no longer exists.
+    expect(merged.repeatedPhrases).toEqual([])
+  })
+
+  test('this round own findings survive alongside carried ones, in time order', () => {
+    const merged = carryForward(
+      report([{ phrase: 'nuevo hallazgo aqui', windowStartMs: 40_000 }]),
+      report([{ phrase: 'reciben un poema mio', windowStartMs: 216_000 }]),
+      [{ startMs: 40_000, endMs: 48_000 }],
+      unchanged,
+      unchanged,
+    )
+    expect(merged.repeatedPhrases.map((entry) => entry.phrase)).toEqual([
+      'nuevo hallazgo aqui',
+      'reciben un poema mio',
+    ])
+  })
+
+  test('truncated edges carry on the same rule as repeated phrases', () => {
+    const merged = carryForward(
+      report([]),
+      report([], [{ word: 'entonc', windowStartMs: 90_000 }]),
+      [{ startMs: 10_000, endMs: 14_000 }],
+      unchanged,
+      unchanged,
+    )
+    expect(merged.truncatedEdges.map((entry) => entry.word)).toEqual(['entonc'])
+  })
+
+  test('a carried finding is rewritten into THIS round master timeline, not left in the previous one', () => {
+    // Round N kept 0..300s of source whole. Round N+1 cut source 10s..30s, so everything after
+    // that sits 20s earlier in master time. A finding the previous round recorded at master 216s
+    // is source 216s, which now lands at master 196s. Comparing the two timelines directly (the
+    // bug this test exists for) would report it at 216s, pointing 20 seconds past its own audio.
+    const before = [{ id: 's1', sourceId: 'a', inMs: 0, outMs: 300_000 }] as unknown as Parameters<
+      typeof carryForward
+    >[3]
+    const after = [
+      { id: 's1', sourceId: 'a', inMs: 0, outMs: 10_000 },
+      { id: 's2', sourceId: 'a', inMs: 30_000, outMs: 300_000 },
+    ] as unknown as Parameters<typeof carryForward>[3]
+
+    const merged = carryForward(
+      report([]),
+      report([{ phrase: 'reciben un poema mio', windowStartMs: 216_000 }]),
+      [{ startMs: 8_000, endMs: 12_000 }],
+      before,
+      after,
+    )
+    expect(merged.repeatedPhrases).toHaveLength(1)
+    expect(merged.repeatedPhrases[0]?.windowStartMs).toBe(196_000)
+  })
+
+  test('a carried finding whose audio this round removed is dropped, because it was cut', () => {
+    const before = [{ id: 's1', sourceId: 'a', inMs: 0, outMs: 300_000 }] as unknown as Parameters<
+      typeof carryForward
+    >[3]
+    // Round N+1 removed source 210s..240s, which is exactly where the finding lived.
+    const after = [
+      { id: 's1', sourceId: 'a', inMs: 0, outMs: 210_000 },
+      { id: 's2', sourceId: 'a', inMs: 240_000, outMs: 300_000 },
+    ] as unknown as Parameters<typeof carryForward>[3]
+
+    const merged = carryForward(
+      report([]),
+      report([{ phrase: 'reciben un poema mio', windowStartMs: 216_000 }]),
+      [{ startMs: 100_000, endMs: 104_000 }],
+      before,
+      after,
+    )
+    expect(merged.repeatedPhrases).toEqual([])
   })
 })
