@@ -4,12 +4,14 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   COVERED_AT,
+  checkReferenceDuration,
   classifyReference,
   compareCommand,
   compareCuts,
   edlCuts,
   edlSourcePath,
   headlineOf,
+  KEPT_TOLERANCE,
   keptMs,
   transcribeReference,
 } from '../src/compare.ts'
@@ -263,6 +265,46 @@ describe('headlineOf', () => {
   })
 })
 
+// Issue #60. referenceKeptMs is derived (source duration minus what the recovery claims) and the
+// reference's duration is measurable directly. When they disagree, the derived number is wrong
+// and every verdict computed from it is wrong in the same direction, silently.
+describe('checkReferenceDuration', () => {
+  test('a recovery that matches the measured reference passes', () => {
+    const check = checkReferenceDuration(263_000, 263_381)
+    expect(check?.withinTolerance).toBe(true)
+    expect(check?.deltaMs).toBe(-381)
+  })
+
+  // The measured failure that opened the issue: 524.6s claimed against a 263.4s file.
+  test('the inflation this guard exists to catch fails it', () => {
+    const check = checkReferenceDuration(524_586, 263_381)
+    expect(check?.withinTolerance).toBe(false)
+    expect(check?.relative).toBeGreaterThan(0.9)
+  })
+
+  // Both approved masters leave under 1% of their own media unvoiced at the edges, which is the
+  // irreducible gap this tolerance allows for. The guard must not fire on either.
+  test('the unvoiced head and tail of a real reference stay inside the tolerance', () => {
+    expect(checkReferenceDuration(263_381 - 861, 263_381)?.withinTolerance).toBe(true)
+    expect(checkReferenceDuration(551_500 - 450, 551_500)?.withinTolerance).toBe(true)
+  })
+
+  test('the check is symmetric: understating the reference fails too', () => {
+    expect(checkReferenceDuration(100_000, 263_381)?.withinTolerance).toBe(false)
+  })
+
+  test('nothing to check against yields no check rather than a passing one', () => {
+    expect(checkReferenceDuration(null, 263_381)).toBe(null)
+    expect(checkReferenceDuration(263_000, null)).toBe(null)
+    expect(checkReferenceDuration(263_000, 0)).toBe(null)
+  })
+
+  test('the tolerance sits an order of magnitude above the measured edge error', () => {
+    expect(KEPT_TOLERANCE).toBe(0.05)
+    expect(861 / 263_381).toBeLessThan(KEPT_TOLERANCE / 10)
+  })
+})
+
 // --- End to end -------------------------------------------------------------------------------
 //
 // Real ffmpeg, real fixtures, a stub standing in for trx: the same policy
@@ -280,6 +322,10 @@ describe.if(hasFfmpeg)('compare end to end', () => {
   const binDir = join(dir, 'bin')
   const sourcePath = join(dir, 'source.wav')
   const referencePath = join(dir, 'reference.wav')
+  // A reference that cut nothing: same length as the source, for the overcut direction, where
+  // the point is an EDL removing speech a reference kept. Its media has to be as long as its
+  // transcript claims, or the sanity check correctly refuses to grade against it.
+  const referenceAllPath = join(dir, 'reference-all.wav')
   const sourceSrt = join(dir, 'source.srt')
   const originalPath = process.env.PATH
   const originalSessions = process.env.VCUT_SESSIONS_DIR
@@ -311,6 +357,7 @@ describe.if(hasFfmpeg)('compare end to end', () => {
     for (const [path, seconds] of [
       [sourcePath, 8],
       [referencePath, 4],
+      [referenceAllPath, 8],
     ] as const) {
       const built = await run('ffmpeg', [
         '-v',
@@ -488,7 +535,7 @@ printf '{"success":true,"files":{"srt":"%s"},"text":"${referenceCues.join(' ')}"
       '--edl',
       edl,
       '--reference',
-      referencePath,
+      referenceAllPath,
       '--reference-transcript',
       referenceSrtAll,
       '--transcript',
@@ -501,6 +548,42 @@ printf '{"success":true,"files":{"srt":"%s"},"text":"${referenceCues.join(' ')}"
     expect(result.referenceTranscriptFrom).toBe('flag')
     expect(result.overcut.length).toBeGreaterThan(0)
     expect(result.overcut[0]?.keptText).toContain('tres')
+  })
+
+  // Issue #60, end to end: a recovery that accounts for only half the reference must not produce
+  // a verdict. Here the transcript claims all eight words survived while the reference media is
+  // four seconds long, the same shape as the real failure (524.6s claimed, 263.4s of file).
+  test('a recovery that contradicts the reference media withholds the verdict', async () => {
+    const edl = edlAt(join(dir, 'agent-guard.json'), [
+      { inMs: 0, outMs: 2_000 },
+      { inMs: 6_900, outMs: 8_000 },
+    ])
+    const inflated = join(dir, 'reference-inflated.srt')
+    writeFileSync(inflated, srtFor(sourceCues, 1_000))
+    const result = (await capture([
+      '--edl',
+      edl,
+      '--reference',
+      referencePath,
+      '--reference-transcript',
+      inflated,
+      '--transcript',
+      sourceSrt,
+      '--json',
+    ])) as {
+      verdictWithheld: boolean
+      referenceCheck: { measuredMs: number; withinTolerance: boolean } | null
+      headline: { referenceKeptMs: number }
+      missed: unknown[]
+      overcut: unknown[]
+    }
+    expect(result.verdictWithheld).toBe(true)
+    expect(result.referenceCheck?.withinTolerance).toBe(false)
+    expect(result.referenceCheck?.measuredMs).toBeGreaterThan(3_500)
+    // The numbers still come back; it is the verdict that is withheld.
+    expect(result.headline.referenceKeptMs).toBeGreaterThan(0)
+    expect(result.missed).toEqual([])
+    expect(result.overcut).toEqual([])
   })
 
   // The documented bypass: a caller who already has the reference's SRT never pays for the

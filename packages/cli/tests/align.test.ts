@@ -8,6 +8,7 @@ import {
   opcodes,
   type RecoveredSpan,
   recoverCuts,
+  referencePauseMs,
   toTokens,
 } from '../src/align.ts'
 import type { Word } from '../src/detect.ts'
@@ -284,6 +285,84 @@ describe('recoverCuts', () => {
     const source = stream('uno dos tres cuatro cinco')
     const reference = [...stream('uno dos tres cuatro cinco'), word('extra', 9_000, 9_400)]
     expect(recoverCuts(source, reference)).toEqual([])
+  })
+
+  // Issue #60. A source region with no words in it carries no token for the opcodes walk to mark
+  // as deleted, so it is never claimed and silently reads as kept. This is the whole class of
+  // failure that inverted the Cueva verdict: 46.5s of an API generating a poem, charged to the
+  // agent as an overcut because the alignment could not see it.
+  test('a word-free source region the reference does not carry is recovered from silence', () => {
+    const source = [word('uno', 0, 400), word('dos', 20_000, 20_400)]
+    const reference = [word('uno', 0, 400), word('dos', 900, 1_300)]
+    expect(recoverCuts(source, reference)).toEqual([])
+
+    const seeded = recoverCuts(source, reference, {
+      sourceSilences: [{ startMs: 500, endMs: 19_900 }],
+    })
+    expect(seeded).toHaveLength(1)
+    expect(seeded[0]?.startMs).toBe(500)
+    expect(seeded[0]?.endMs).toBe(19_900)
+    expect(seeded[0]?.wordCount).toBe(0)
+  })
+
+  // Whisper emits gapless cues, so a source word's cue absorbs the pause after it. Silence
+  // measured on the audio is what says where the speech actually stopped, and a cue boundary
+  // cannot overrule it.
+  test('silence inside a padded cue is recovered rather than read as kept speech', () => {
+    const source = [word('uno', 0, 10_000), word('dos', 10_000, 10_400)]
+    const reference = [word('uno', 0, 400), word('dos', 400, 800)]
+    const seeded = recoverCuts(source, reference, {
+      sourceSilences: [{ startMs: 500, endMs: 9_900 }],
+    })
+    expect(seeded).toHaveLength(1)
+    expect(seeded[0]?.durationMs).toBe(9_400)
+  })
+
+  // A region both mechanisms find must be one span, not two: the text walk's span and the
+  // silence seed go through the same merge, so the recovered total cannot double-count it.
+  test('a silence overlapping a text-derived span does not double-count it', () => {
+    const source = stream('uno dos tres cuatro cinco seis siete ocho')
+    const reference = stream('uno dos siete ocho')
+    const textOnly = recoverCuts(source, reference)
+    const withSilence = recoverCuts(source, reference, {
+      sourceSilences: [{ startMs: 1_100, endMs: 2_800 }],
+    })
+    expect(withSilence).toHaveLength(textOnly.length)
+    const total = (spans: RecoveredSpan[]) => spans.reduce((sum, span) => sum + span.durationMs, 0)
+    expect(total(withSilence)).toBe(total(textOnly))
+  })
+
+  test('silence shorter than the minimum span is still dropped as noise', () => {
+    const source = stream('uno dos tres')
+    expect(recoverCuts(source, source, { sourceSilences: [{ startMs: 450, endMs: 900 }] })).toEqual(
+      [],
+    )
+  })
+
+  // The pre-#60 path: no silence supplied is the text walk alone, unchanged.
+  test('no silences supplied recovers exactly what the text walk alone recovers', () => {
+    const source = stream('uno dos tres cuatro cinco seis siete ocho')
+    const reference = stream('uno dos siete ocho')
+    expect(recoverCuts(source, reference, { sourceSilences: [] })).toEqual(
+      recoverCuts(source, reference),
+    )
+  })
+})
+
+// A human editing for delivery removes nearly every pause, which is what makes source silence
+// map to a cut so reliably. Measured on both approved masters: 2.2s of inter-word gap across
+// 263.4s (Cueva), 4.0s across 551.5s (the issue #39 hand run).
+describe('referencePauseMs', () => {
+  test('sums the gaps between consecutive words, ignoring the leading edge', () => {
+    expect(referencePauseMs([word('uno', 100, 500), word('dos', 1_500, 1_900)])).toBe(1_000)
+  })
+
+  test('a gapless stream carries no pause at all', () => {
+    expect(referencePauseMs(stream('uno dos tres', 0, 400))).toBe(0)
+  })
+
+  test('an empty stream has no pause rather than throwing', () => {
+    expect(referencePauseMs([])).toBe(0)
   })
 })
 

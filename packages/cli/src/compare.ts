@@ -33,7 +33,14 @@ import { coverage, type RecoveredSpan, recoverCuts, type Span } from './align.ts
 import { parseSrt, probeDurationMs, type Word } from './detect.ts'
 import { duration, emitJson, heading, line, type Mode, resolveMode, UsageError } from './output.ts'
 import type { Edl } from './render-edl.ts'
-import { cachedTranscriptPath, readMeta, sessionRoot, sha256File, shaDirName } from './session.ts'
+import {
+  cachedDetect,
+  cachedTranscriptPath,
+  readMeta,
+  sessionRoot,
+  sha256File,
+  shaDirName,
+} from './session.ts'
 import { transcribeWindowWords } from './transcribe-window.ts'
 
 const HELP = `vcut compare - grade an EDL against an approved human edit
@@ -65,6 +72,12 @@ Transcribing a reference is real wall-clock time. It streams progress to stderr,
 
 A missed or overcut span is a place to look, not a verdict: it rests on two independent
 transcriptions of the same speech agreeing about what was said.
+
+The recovered cut list is cross-checked against the reference media's own measured duration.
+When the two disagree by more than 5%, the recovery has not accounted for the reference and the
+verdict is withheld rather than reported with a caveat. A session's detect report supplies the
+source's measured silence, which is what lets a cut be recovered in a stretch with no words to
+anchor it.
 
 Also accepts --fields/--jq. See vcut --help for the full picture.`
 
@@ -167,13 +180,13 @@ export const edlSourceDurationMs = (edl: Edl): number | null => {
 export const resolveSourceWords = async (
   transcriptFlag: string | undefined,
   sourcePath: string | null,
-): Promise<{ words: Word[]; from: 'flag' | 'session'; path: string }> => {
+): Promise<{ words: Word[]; from: 'flag' | 'session'; path: string; silences: Span[] }> => {
   if (transcriptFlag !== undefined) {
     const path = resolve(transcriptFlag)
     if (!existsSync(path)) {
       throw new UsageError(`no transcript at ${path}`)
     }
-    return { words: parseSrt(readFileSync(path, 'utf8')).words, from: 'flag', path }
+    return { words: parseSrt(readFileSync(path, 'utf8')).words, from: 'flag', path, silences: [] }
   }
   if (sourcePath === null || !existsSync(sourcePath)) {
     throw new UsageError(
@@ -187,7 +200,36 @@ export const resolveSourceWords = async (
       `no session transcript for ${sourcePath}. Run vcut open ${sourcePath} --transcript <srt> first, or pass --transcript <srt> here.`,
     )
   }
-  return { words: parseSrt(readFileSync(cached, 'utf8')).words, from: 'session', path: cached }
+  return {
+    words: parseSrt(readFileSync(cached, 'utf8')).words,
+    from: 'session',
+    path: cached,
+    silences: sessionSilences(sessionDir),
+  }
+}
+
+/**
+ * The source's measured silence, read from the session's own `detect.json` rather than probed
+ * again here.
+ *
+ * `recoverCuts` needs to know where the source is quiet to recover a cut in a region no word
+ * anchors (issue #60), and `open` already measured exactly that, at the threshold the operator
+ * chose for this recording and recorded alongside it. Re-probing would either repeat that work
+ * or, worse, pick a different threshold and grade against silence the session never saw. No new
+ * constant is introduced: the number this recovery leans on is the one already in the session.
+ *
+ * A session without a detect report yields no silences, which is the pre-#60 behaviour: the
+ * text walk alone, and the sanity guard to catch what it misses.
+ */
+const sessionSilences = (sessionDir: string): Span[] => {
+  const detected = cachedDetect(sessionDir)
+  if (detected === null) {
+    return []
+  }
+  return detected.silences.map((silence) => ({
+    startMs: silence.startMs,
+    endMs: silence.endMs,
+  }))
 }
 
 // --- Reference word stream ---------------------------------------------------------------------
@@ -344,6 +386,65 @@ export type Headline = {
   overcutMs: number
 }
 
+/**
+ * How far the recovered arithmetic may sit from the reference media's own measured duration
+ * before the verdict stops being reported.
+ *
+ * `referenceKeptMs` is derived: source duration minus everything the recovery claims. The
+ * reference's duration is also measurable directly, by ffprobe, and the two must agree. They
+ * never agree exactly, and the gap has one irreducible cause worth allowing for: a word stream
+ * does not cover its own media edge to edge. Speech starts after the file does and stops before
+ * it ends, so the recovery cannot account for the unvoiced head and tail.
+ *
+ * Measured on both approved masters this command has: the Cueva reference's word stream leaves
+ * 861ms of its 263.381s unvoiced at the edges (0.33%), the issue #39 hand run 450ms of 551.5s
+ * (0.08%). 5% is an order of magnitude above both, which is what a guard against a broken
+ * recovery wants: it must not fire on the healthy case it was measured against, and the failure
+ * it exists to catch was not a few percent but 99.2% (524.6s claimed against 263.4s of file).
+ * Anything between those two scales is a recovery whose arithmetic cannot be trusted, and the
+ * point of the guard is that nobody can tell which by reading the number.
+ */
+export const KEPT_TOLERANCE = 0.05
+
+export type ReferenceCheck = {
+  measuredMs: number
+  recoveredKeptMs: number
+  deltaMs: number
+  relative: number
+  withinTolerance: boolean
+  toleranceRelative: number
+}
+
+/**
+ * Cross-check the recovered arithmetic against the reference media's own duration.
+ *
+ * The recovery can only place a cut where a source token or a measured silence gives it a
+ * timestamp, so a reference whose removals the alignment cannot see comes back understated, and
+ * `referenceKeptMs` comes back inflated by exactly that much. Nothing downstream can detect
+ * that: an inflated denominator produces a verdict that reads as authoritative and charges the
+ * EDL for cuts the reference genuinely made. This is the one check that can, because the
+ * reference's real duration is a fact about a file rather than an inference from a transcript.
+ */
+export const checkReferenceDuration = (
+  recoveredKeptMs: number | null,
+  measuredMs: number | null,
+  tolerance = KEPT_TOLERANCE,
+): ReferenceCheck | null => {
+  if (recoveredKeptMs === null || measuredMs === null || measuredMs <= 0) {
+    return null
+  }
+  const deltaMs = recoveredKeptMs - measuredMs
+  const relative = Math.abs(deltaMs) / measuredMs
+  return {
+    measuredMs,
+    recoveredKeptMs,
+    deltaMs,
+    relative: Number(relative.toFixed(4)),
+    withinTolerance: relative <= tolerance,
+    toleranceRelative: tolerance,
+  }
+}
+
 export const headlineOf = (
   sourceDurationMs: number | null,
   edlKept: number,
@@ -374,6 +475,7 @@ const humanReport = (
   referencePath: string,
   headline: Headline,
   verdict: CompareVerdict,
+  check: ReferenceCheck | null,
 ): string => {
   const lines = [heading(`compare  ${edlPath}`)]
   lines.push(line('reference', referencePath))
@@ -391,6 +493,33 @@ const humanReport = (
   lines.push(
     line('cuts', `EDL ${headline.edlCutCount}, reference ${headline.referenceCutCount} recovered`),
   )
+
+  // The verdict is withheld rather than printed with a caveat. A reader who sees counts takes
+  // the counts; a warning above a number that still reads as a grade is how the inflated verdict
+  // in issue #60 got quoted as fact for a whole improvement arc.
+  if (check !== null && !check.withinTolerance) {
+    lines.push(heading('recovery failed its own sanity check - no verdict'))
+    lines.push(
+      line(
+        'reference',
+        `${duration(check.measuredMs)} measured, ${duration(check.recoveredKeptMs)} recovered (${check.deltaMs >= 0 ? '+' : ''}${seconds(check.deltaMs)}s, ${(check.relative * 100).toFixed(1)}% off, tolerance ${(check.toleranceRelative * 100).toFixed(0)}%)`,
+      ),
+    )
+    lines.push(
+      line(
+        'why',
+        'the recovered cut list does not account for the reference. Grading an EDL against it would charge cuts the reference genuinely made, so the missed/overcut verdict is withheld.',
+      ),
+    )
+    lines.push(
+      line(
+        'next',
+        'run vcut open <source> so the session carries a detect report: the recovery reads its measured silence to place cuts in stretches with no words to anchor them.',
+      ),
+    )
+    return lines.join('\n')
+  }
+
   lines.push(
     line(
       'verdict',
@@ -486,6 +615,8 @@ export const compareCommand = async (argv: string[]): Promise<void> => {
       edlSpans,
       verdict,
     )
+    // No check on this path: both cut lists are stated in source time, so there is no recovery
+    // whose arithmetic could drift from a file the reference EDL does not even have.
     report(mode, {
       edlPath,
       referencePath,
@@ -493,11 +624,12 @@ export const compareCommand = async (argv: string[]): Promise<void> => {
       referenceTranscriptFrom: null,
       headline,
       verdict,
+      check: null,
     })
     return
   }
 
-  const { words: sourceWords } = await resolveSourceWords(
+  const { words: sourceWords, silences: sourceSilences } = await resolveSourceWords(
     flagValue(argv, '--transcript'),
     sourcePath,
   )
@@ -506,6 +638,12 @@ export const compareCommand = async (argv: string[]): Promise<void> => {
       'the source transcript carries no words. compare recovers the reference cut list by aligning word streams; without one there is nothing to align against.',
     )
   }
+
+  // Probed whatever the reference turns out to be, and whether or not it is transcribed here:
+  // the sanity check needs the file's own duration, and only media has one. An SRT reference
+  // has no measurable duration of its own, so it goes unchecked rather than checked against a
+  // number inferred from the same transcript the recovery already used.
+  const referenceMediaMs = referenceKind === 'media' ? await probeDurationMs(referencePath) : null
 
   let referenceWords: Word[]
   let referenceTranscriptFrom: 'flag' | 'transcribed'
@@ -521,11 +659,10 @@ export const compareCommand = async (argv: string[]): Promise<void> => {
     referenceWords = parseSrt(readFileSync(referencePath, 'utf8')).words
     referenceTranscriptFrom = 'flag'
   } else {
-    const referenceDurationMs = await probeDurationMs(referencePath)
     const chunkMs = (numericFlag(argv, '--chunk') ?? DEFAULT_CHUNK_S) * 1000
     referenceWords = await transcribeReference(
       referencePath,
-      referenceDurationMs,
+      referenceMediaMs ?? (await probeDurationMs(referencePath)),
       chunkMs,
       flagValue(argv, '--lang'),
       (message) => console.error(message),
@@ -533,9 +670,10 @@ export const compareCommand = async (argv: string[]): Promise<void> => {
     referenceTranscriptFrom = 'transcribed'
   }
 
-  const recovered = recoverCuts(sourceWords, referenceWords)
+  const recovered = recoverCuts(sourceWords, referenceWords, { sourceSilences })
   const verdict = compareCuts(recovered, edlSpans, sourceWords)
   const headline = headlineOf(sourceDurationMs, keptMs(edl.segments), recovered, edlSpans, verdict)
+  const check = checkReferenceDuration(headline.referenceKeptMs, referenceMediaMs)
   report(mode, {
     edlPath,
     referencePath,
@@ -543,6 +681,7 @@ export const compareCommand = async (argv: string[]): Promise<void> => {
     referenceTranscriptFrom,
     headline,
     verdict,
+    check,
   })
 }
 
@@ -571,22 +710,35 @@ const report = (
     referenceTranscriptFrom: 'flag' | 'transcribed' | null
     headline: Headline
     verdict: CompareVerdict
+    check: ReferenceCheck | null
   },
 ): void => {
+  const trusted = payload.check === null || payload.check.withinTolerance
   if (mode === 'json') {
+    // `referenceCheck` and `verdictWithheld` are stated rather than implied by empty lists: a
+    // consumer that reads `missed`/`overcut` and finds them empty must be able to tell "the EDL
+    // agrees with the reference" from "the recovery is not good enough to say".
     emitJson({
       version: 1,
       edl: payload.edlPath,
       reference: payload.referencePath,
       referenceKind: payload.referenceKind,
       referenceTranscriptFrom: payload.referenceTranscriptFrom,
+      referenceCheck: payload.check,
+      verdictWithheld: !trusted,
       headline: payload.headline,
-      missed: payload.verdict.missed,
-      overcut: payload.verdict.overcut,
+      missed: trusted ? payload.verdict.missed : [],
+      overcut: trusted ? payload.verdict.overcut : [],
     })
     return
   }
   console.log(
-    humanReport(payload.edlPath, payload.referencePath, payload.headline, payload.verdict),
+    humanReport(
+      payload.edlPath,
+      payload.referencePath,
+      payload.headline,
+      payload.verdict,
+      payload.check,
+    ),
   )
 }
