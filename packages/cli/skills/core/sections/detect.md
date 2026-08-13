@@ -65,7 +65,7 @@ whisper-cli -m ggml-large-v3-turbo.bin -f audio.wav -l es \
   --max-len 1 --split-on-word --output-srt
 ```
 
-`trx transcribe <input> --words --language es -m large-v3-turbo` produces word-level cues from
+`trx transcribe <input> --words --language es -m large-v3-turbo --output-dir "$(dirname <input>)"` produces word-level cues from
 `trx@0.7.1` on. Earlier versions passed `--max-len` without `--split-on-word`, which is worth
 knowing because of what that produces.
 
@@ -76,7 +76,7 @@ unprompted run collapsed into a single phrase, which was the largest cut availab
 take: a semantic round is blind to what it never sees.
 
 ```bash
-trx transcribe <input> --words --language es --preset verbatim
+trx transcribe <input> --words --language es --preset verbatim --output-dir "$(dirname <input>)"
 ```
 
 `--preset verbatim` carries the prompt for the language being transcribed. On a `trx` too old

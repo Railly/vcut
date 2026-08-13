@@ -332,7 +332,10 @@ const humanAccepted = (
 ): string => {
   const lines = [
     heading(`${input.split('/').pop()}  proposed`),
-    line('span', `${(proposal.startMs / 1000).toFixed(2)}-${(proposal.endMs / 1000).toFixed(2)}s`),
+    line(
+      'startMs..endMs',
+      `${(proposal.startMs / 1000).toFixed(2)}-${(proposal.endMs / 1000).toFixed(2)}s`,
+    ),
     line('kind', proposal.kind),
     line('reason', proposal.reason),
     line('removedText', proposal.removedText || '(no transcript cached in this session)'),

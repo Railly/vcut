@@ -23,6 +23,7 @@ import { join } from 'node:path'
 
 import { parseSrt, type Word } from './detect.ts'
 import { run } from './exec.ts'
+import { has } from './has.ts'
 import { UsageError } from './output.ts'
 
 /**
@@ -106,6 +107,56 @@ export const toAbsolute = (words: Word[], offsetMs: number): Word[] =>
  */
 export const carriesAWord = (word: Word): boolean => /[\p{L}\p{N}]/u.test(word.text)
 
+/**
+ * trx's own error, when it has one.
+ *
+ * trx writes a failure as `{"success": false, "error": "..."}` on stdout, not stderr: a caller
+ * whose exit code check only reads stderr sees nothing and cannot tell trx's own diagnosis from
+ * silence. Missing `--language` under `--preset verbatim` and a file it could not find both come
+ * back this way, with exit 1 and empty stderr, which is exactly the shape that used to collapse
+ * into "could not transcribe the window, install it".
+ */
+export const trxStdoutError = (stdout: string): string | undefined => {
+  try {
+    const parsed = JSON.parse(stdout) as { success?: unknown; error?: unknown }
+    return parsed.success === false && typeof parsed.error === 'string' ? parsed.error : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * What actually happened, in order of how much trx told us.
+ *
+ * 1. trx's own stderr, when it wrote one.
+ * 2. trx's own structured error on stdout (see trxStdoutError), which is where the two
+ *    measured causes of this failure (missing --language, a window too wide for it to finish)
+ *    both showed up with an empty stderr.
+ * 3. If neither stream says anything, whether trx is even on PATH at all: only now does
+ *    "install it" become an honest thing to say, checked rather than assumed.
+ * 4. If trx is installed and still silent, the width of the window asked for, since the one
+ *    measured case that reaches this branch (a wide --window succeeding at --window 10) has no
+ *    documented ceiling to name, only what was actually asked for.
+ */
+export const explainTrxFailure = async (
+  said: { stderr: string; stdout: string },
+  windowMs: number,
+): Promise<string> => {
+  const stderr = said.stderr.trim()
+  if (stderr) {
+    return stderr
+  }
+  const stdoutError = trxStdoutError(said.stdout)
+  if (stdoutError) {
+    return stdoutError
+  }
+  if ((await has('trx', ['--version'])) === false) {
+    return 'trx is not on PATH. Install it, or drop --transcribe and pass --transcript'
+  }
+  const windowSeconds = (windowMs / 1000).toFixed(1)
+  return `trx is installed but exited with no output transcribing a ${windowSeconds}s window. Try a narrower --window; this is the same shape a window too wide for it to finish took.`
+}
+
 const parseWordsFromReply = (stdout: string): Word[] => {
   const parsed = JSON.parse(stdout) as { files?: { srt?: unknown } }
   const srtPath = parsed.files?.srt
@@ -149,10 +200,7 @@ const transcribeClip = async (
     }
     const said = await run('trx', args)
     if (said.exitCode !== 0) {
-      throw new UsageError(
-        said.stderr.trim() ||
-          'trx could not transcribe the window. Install it, or drop --transcribe and pass --transcript',
-      )
+      throw new UsageError(await explainTrxFailure(said, endMs - startMs))
     }
     return {
       text: readText(said.stdout),

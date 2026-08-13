@@ -9,6 +9,7 @@ import { convergeCommand } from './converge.ts'
 import { cutCommand } from './cut.ts'
 import { detectCommand, positional } from './detect.ts'
 import { run, runInherit } from './exec.ts'
+import { has } from './has.ts'
 import { joinsCommand } from './joins.ts'
 import { JQ_HELP } from './jq.ts'
 import { locateCommand } from './locate.ts'
@@ -261,15 +262,6 @@ const step = async (
   } catch (error) {
     console.log(line(label, 'failed'))
     return { ok: false, detail: error instanceof Error ? error.message : 'failed' }
-  }
-}
-
-const has = async (command: string, args: string[]): Promise<boolean> => {
-  try {
-    const { exitCode } = await run(command, args)
-    return exitCode === 0
-  } catch {
-    return false
   }
 }
 
