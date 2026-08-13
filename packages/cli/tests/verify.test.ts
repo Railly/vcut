@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { run } from '../src/exec.ts'
 import {
   buildWindows,
+  corroborateRepeats,
   defaultConcurrency,
   findAnomalies,
   findRepeatedPhrases,
@@ -66,28 +67,27 @@ describe('findRepeatedPhrases', () => {
           'reciben un poema mío por WhatsApp, probablemente sea normal.',
       ),
     ]
-    const repeats = findRepeatedPhrases(windows)
-    expect(repeats.length).toBeGreaterThan(0)
-    expect(repeats.some((entry) => entry.phrase.includes('reciben un poema'))).toBe(true)
-    expect(repeats[0]?.windowStartMs).toBe(220_000)
+    const { repeated } = findRepeatedPhrases(windows, 'es')
+    expect(repeated.length).toBeGreaterThan(0)
+    expect(repeated.some((entry) => entry.phrase.includes('reciben un poema'))).toBe(true)
+    expect(repeated[0]?.windowStartMs).toBe(220_000)
   })
 
   test('reports how many times the run repeats', () => {
     const windows = [window(0, 10_000, 'vamos ahora mismo vamos ahora mismo a ver esto')]
-    const repeats = findRepeatedPhrases(windows)
-    expect(repeats.find((entry) => entry.phrase === 'vamos ahora mismo')?.count).toBe(2)
+    const { repeated } = findRepeatedPhrases(windows, 'es')
+    expect(repeated.find((entry) => entry.phrase === 'vamos ahora mismo')?.count).toBe(2)
   })
 
   test('reads through case, punctuation and accents', () => {
-    const windows = [window(0, 10_000, '¡Vamos ahora YA! Vamos ahora ya, de nuevo.')]
-    expect(findRepeatedPhrases(windows).some((entry) => entry.phrase === 'vamos ahora ya')).toBe(
-      true,
-    )
+    const windows = [window(0, 10_000, '¡Copiamos ESTO ahora! Copiamos esto ahora, de nuevo.')]
+    const { repeated } = findRepeatedPhrases(windows, 'es')
+    expect(repeated.some((entry) => entry.phrase === 'copiamos esto ahora')).toBe(true)
   })
 
   test('does not report a phrase said only once', () => {
     const windows = [window(0, 10_000, 'una frase distinta sin repeticiones aquí')]
-    expect(findRepeatedPhrases(windows)).toEqual([])
+    expect(findRepeatedPhrases(windows, 'es').repeated).toEqual([])
   })
 
   // Two overlapping windows (--stride < --window) legitimately share audio; a phrase said once
@@ -98,11 +98,11 @@ describe('findRepeatedPhrases', () => {
       window(0, 10_000, 'vamos ahora mismo a comenzar con todo'),
       window(5_000, 15_000, 'a comenzar con todo el equipo listo'),
     ]
-    expect(findRepeatedPhrases(windows)).toEqual([])
+    expect(findRepeatedPhrases(windows, 'es').repeated).toEqual([])
   })
 
   test('an empty window reports nothing', () => {
-    expect(findRepeatedPhrases([window(0, 1000, '')])).toEqual([])
+    expect(findRepeatedPhrases([window(0, 1000, '')], 'es').repeated).toEqual([])
   })
 
   test('sorts by window start time', () => {
@@ -110,8 +110,80 @@ describe('findRepeatedPhrases', () => {
       window(20_000, 30_000, 'una cosa distinta una cosa distinta'),
       window(0, 10_000, 'otra cosa nueva otra cosa nueva'),
     ]
-    const repeats = findRepeatedPhrases(windows)
-    expect(repeats.map((entry) => entry.windowStartMs)).toEqual([0, 20_000])
+    const { repeated } = findRepeatedPhrases(windows, 'es')
+    expect(repeated.map((entry) => entry.windowStartMs)).toEqual([0, 20_000])
+  })
+
+  // #57: a duplicated sentence produces one overlapping RUN_LENGTH-word match per sliding
+  // position, not one repeat per position. "en la base de datos" said twice used to read as
+  // three separate findings ("en la base", "la base de", "base de datos"); it must read as one,
+  // spanning the phrase both occurrences actually share.
+  test('collapses overlapping RUN_LENGTH fragments of one repeated phrase into a single finding', () => {
+    const windows = [
+      window(
+        0,
+        16_000,
+        'en el servidor y en la base de datos esto está cifrado, si me hackeé en la base ' +
+          'de datos nadie va a poder ver tus mensajes.',
+      ),
+    ]
+    const { repeated } = findRepeatedPhrases(windows, 'es')
+    const baseFindings = repeated.filter((entry) => entry.phrase.includes('base de datos'))
+    expect(baseFindings).toHaveLength(1)
+    expect(baseFindings[0]?.phrase).toBe('en la base de datos')
+    expect(baseFindings[0]?.count).toBe(2)
+  })
+
+  // A 7-word sentence said twice slides across five overlapping RUN_LENGTH probes; all five
+  // must collapse to the one repeat they were always describing, not five findings.
+  test('collapses a whole repeated sentence into one finding, not one per sliding probe', () => {
+    const windows = [
+      window(
+        0,
+        16_000,
+        'De normal, pues este es un producto para personas, pues este es un producto para ' +
+          'personas no técnicas.',
+      ),
+    ]
+    const { repeated } = findRepeatedPhrases(windows, 'es')
+    expect(repeated).toHaveLength(1)
+    expect(repeated[0]?.phrase).toBe('pues este es un producto para personas')
+    expect(repeated[0]?.count).toBe(2)
+  })
+
+  // "que la gente" and "va a ser" measured zero and one content word respectively in
+  // semantic.ts's own corpus, never a real repetition: below MIN_CONTENT_WORDS, so this reports
+  // through `discounted` rather than `repeated`, and is never silently dropped.
+  test('discounts a repeated run below the content-word floor instead of dropping it', () => {
+    const windows = [window(0, 16_000, 'y ese es el, y ese es el, ¿verdad?')]
+    const { repeated, discounted } = findRepeatedPhrases(windows, 'es')
+    expect(repeated.some((entry) => entry.phrase.includes('ese es'))).toBe(false)
+    expect(discounted).toHaveLength(1)
+    expect(discounted[0]?.phrase).toBe('y ese es el')
+    expect(discounted[0]?.reason).toContain('content word')
+  })
+
+  // A repeat carrying two content words (the measured floor) still reports as a candidate
+  // retake, the same threshold semantic.ts's own repeatedPhrases already validated.
+  test('keeps a repeated run at exactly the content-word floor', () => {
+    const windows = [window(0, 16_000, 'le damos clic a Create. Le damos clic a Sign In.')]
+    const { repeated, discounted } = findRepeatedPhrases(windows, 'es')
+    expect(repeated.some((entry) => entry.phrase === 'le damos clic a')).toBe(true)
+    expect(discounted).toEqual([])
+  })
+
+  test('uses the English stopword set when lang starts with en', () => {
+    const windows = [window(0, 16_000, 'and that is it, and that is it, right?')]
+    const { repeated, discounted } = findRepeatedPhrases(windows, 'en')
+    expect(repeated).toEqual([])
+    expect(discounted).toHaveLength(1)
+  })
+
+  test('defaults to the Spanish stopword set when lang is not given', () => {
+    const windows = [window(0, 16_000, 'y ese es el, y ese es el, ¿verdad?')]
+    const { repeated, discounted } = findRepeatedPhrases(windows)
+    expect(repeated).toEqual([])
+    expect(discounted).toHaveLength(1)
   })
 })
 
@@ -297,6 +369,43 @@ describe('findAnomalies', () => {
   })
 })
 
+// #57: findAnomalies already answers "does this window's own text show up in the cached
+// transcript" for its own separate list; corroborateRepeats asks the same question scoped to
+// each repeated-phrase finding and writes the answer onto the finding rather than a separate
+// list, never dropping the ones the cache disagrees with.
+describe('corroborateRepeats', () => {
+  const cachedWord = (text: string, startMs: number, endMs: number) => ({ text, startMs, endMs })
+  const repeat = (phrase: string, windowStartMs: number, windowEndMs: number) => ({
+    phrase,
+    count: 2,
+    windowStartMs,
+    windowEndMs,
+  })
+
+  test('marks a finding corroborated when the cached transcript contains its words', () => {
+    const cached = [
+      cachedWord('reciben', 0, 500),
+      cachedWord('un', 500, 700),
+      cachedWord('poema', 700, 1100),
+    ]
+    const result = corroborateRepeats([repeat('reciben un poema', 0, 2000)], cached)
+    expect(result[0]?.corroborated).toBe(true)
+  })
+
+  test('marks a finding uncorroborated without dropping it', () => {
+    const cached = [cachedWord('algo', 0, 500), cachedWord('distinto', 500, 1000)]
+    const result = corroborateRepeats([repeat('reciben un poema', 0, 2000)], cached)
+    expect(result).toHaveLength(1)
+    expect(result[0]?.corroborated).toBe(false)
+  })
+
+  test('only checks cached words that overlap the finding window', () => {
+    const cached = [cachedWord('reciben', 10_000, 10_500), cachedWord('poema', 10_500, 11_000)]
+    const result = corroborateRepeats([repeat('reciben un poema', 0, 2000)], cached)
+    expect(result[0]?.corroborated).toBe(false)
+  })
+})
+
 describe('defaultConcurrency', () => {
   test('is at least 1 and at most 4', () => {
     const value = defaultConcurrency()
@@ -431,20 +540,17 @@ printf '{"success":true,"files":{},"text":" reciben un poema mio reciben un poem
 
   // The same stub text on every tile, now with --stride 4 (half of --window 8): every window
   // overlaps its neighbor, so the identical duplicated-sentence finding is heard by all five
-  // tiles but each distinct phrase must be reported once, not once per window that heard it.
-  // The stub text carries two distinct 3-word runs ("reciben un poema", "un poema mio"), so the
-  // dedup proof is that each collapses on its own, not that the whole defect collapses to one.
+  // tiles but must be reported once, not once per window that heard it. #57's own within-window
+  // collapse already folds the stub's two overlapping RUN_LENGTH runs ("reciben un poema",
+  // "un poema mio") into one finding ("reciben un poema mio") before cross-window dedup ever
+  // runs, so the proof here is that the single collapsed phrase itself still reports once.
   test('overlapping windows report each real repeat once, not once per window', async () => {
     const report = await runVerifyWindows(mediaPath, 8_000, 4_000, 'es', 2, undefined)
     expect(report.windows.length).toBeGreaterThan(3)
-    const recibenFindings = report.repeatedPhrases.filter(
-      (entry) => entry.phrase === 'reciben un poema',
-    )
-    const poemaMioFindings = report.repeatedPhrases.filter(
-      (entry) => entry.phrase === 'un poema mio',
+    const recibenFindings = report.repeatedPhrases.filter((entry) =>
+      entry.phrase.includes('reciben un poema'),
     )
     expect(recibenFindings).toHaveLength(1)
-    expect(poemaMioFindings).toHaveLength(1)
   })
 
   test('durationMs comes from a real ffprobe measurement of the media', async () => {
