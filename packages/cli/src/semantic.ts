@@ -702,7 +702,10 @@ const STOPWORDS_EN = new Set([
 // the front of whatever string arrives rather than requiring an exact match: 'en', 'eng',
 // 'english', and 'en-US' all land on the English list the same way. Anything else, including no
 // lang at all, gets Spanish, matching the CLI's own default everywhere else --lang appears.
-const stopwordsFor = (lang: string | undefined): Set<string> =>
+// Exported so verify.ts's own repeat detector shares the identical stopword decision rather than
+// growing a second copy of it: the two commands answer the same question ("is this run a
+// candidate retake or connective tissue") over the same kind of transcribed text.
+export const stopwordsFor = (lang: string | undefined): Set<string> =>
   lang !== undefined && foldDiacritics(lang).toLowerCase().startsWith('en')
     ? STOPWORDS_EN
     : STOPWORDS_ES
@@ -714,10 +717,11 @@ const stopwordsFor = (lang: string | undefined): Set<string> =>
 // "automatizar mis skills") each carry 2, so it still triggers. Not "content words == RUN_LENGTH"
 // (3): a run built from one connective and two content words, e.g. a name repeated with "de" or
 // "the" beside it, is still worth a human's eyes, and RUN_LENGTH itself may change independently
-// of where noise starts.
-const MIN_CONTENT_WORDS = 2
+// of where noise starts. Exported for the same reason as stopwordsFor: verify.ts's own repeat
+// detector reuses this exact floor instead of picking its own.
+export const MIN_CONTENT_WORDS = 2
 
-const contentWordCount = (run: string, stopwords: Set<string>): number =>
+export const contentWordCount = (run: string, stopwords: Set<string>): number =>
   run.split(' ').filter((word) => !stopwords.has(foldDiacritics(word))).length
 
 export type DiscountedRepeat = {

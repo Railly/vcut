@@ -38,6 +38,20 @@
  *
  * vcut still calls no model of its own: every call here shells out to `trx`, already on the
  * caller's PATH, the same way every measurement in this codebase runs ffmpeg.
+ *
+ * #57: a fixed 3-word probe over a repeated sentence produces one finding per overlapping probe
+ * rather than one finding per repeat (measured: 26 findings on a real render, three of them for
+ * one phrase, "en la base de datos", said twice), because "en la base de datos" said twice reads
+ * as three separate findings ("en la base", "la base de", "base de datos") and a 7-word sentence
+ * repeated whole reads as five. `findRepeatedPhrases` grows each matched probe to the full span
+ * both occurrences share and collapses overlapping grown spans, the same shape semantic.ts's own
+ * repeatedPhrases already solved for a whole-file transcript; the stopword floor it measured
+ * there (MIN_CONTENT_WORDS, `stopwordsFor`) is reused rather than reinvented, and a finding that
+ * falls under it is reported through `discountedRepeats` rather than silently dropped. When
+ * `--transcript` is given, each repeated-phrase finding is also marked `corroborated` against the
+ * cached whole-file SRT, the same disagreement `findAnomalies` already surfaces for its own list;
+ * an uncorroborated finding is a place to look, not a reason to drop it, since the cache is
+ * exactly the whole-file pass that averages a repeat away in the first place.
  */
 
 import { existsSync, readFileSync } from 'node:fs'
@@ -46,7 +60,7 @@ import { resolve } from 'node:path'
 
 import { parseSrt, probeDurationMs } from './detect.ts'
 import { emitJson, heading, line, type Mode, nextStep, resolveMode, UsageError } from './output.ts'
-import { foldDiacritics } from './semantic.ts'
+import { contentWordCount, foldDiacritics, MIN_CONTENT_WORDS, stopwordsFor } from './semantic.ts'
 import { transcribeWindow } from './transcribe-window.ts'
 
 const HELP = `vcut verify --windows - the listener-grade window sweep over a render
@@ -70,6 +84,11 @@ share no state, unlike every other trx caller in this codebase, which stays sequ
 each call loads a whisper model). Reports repeated phrases, truncated edges, and anomalies
 against the cached transcript when --transcript is given.
 
+A repeated phrase below the content-word floor (connective tissue like "es que" or "va a") is
+reported through discountedRepeats instead of repeatedPhrases, never silently dropped. With
+--transcript, each repeated phrase is also marked corroborated against the cached transcript:
+false means the cache disagrees, a place to look rather than a verdict.
+
 A whole-file transcript averages: a model reading ninety seconds collapses three attempts at a
 line into one, because one is the likelier sentence. The same audio cut to sixteen seconds
 returns what was actually said. This is the instrument that reads the short way every round.
@@ -87,6 +106,22 @@ export type RepeatedPhrase = {
   count: number
   windowStartMs: number
   windowEndMs: number
+  // Undefined when no --transcript was given: there was nothing to corroborate against. true/false
+  // only after corroborateRepeats' own cached-transcript comparison actually ran over this
+  // finding's span. A disagreement is a place to look, not a verdict, the same stance
+  // findAnomalies already takes on its own: this is never used to drop a finding, only to mark it.
+  corroborated?: boolean
+}
+
+// The same shape semantic.ts's own DiscountedRepeat reports for the identical question (a
+// repeated run too thin on content words to be a candidate retake): kept rather than dropped, so
+// a caller can see what was filtered and why, the precedent this reuses rather than reimplements.
+export type DiscountedRepeat = {
+  phrase: string
+  count: number
+  windowStartMs: number
+  windowEndMs: number
+  reason: string
 }
 
 export type TruncatedEdge = {
@@ -111,6 +146,7 @@ export type VerifyWindowsReport = {
   strideMs: number
   windows: Window[]
   repeatedPhrases: RepeatedPhrase[]
+  discountedRepeats: DiscountedRepeat[]
   truncatedEdges: TruncatedEdge[]
   anomalies: TranscriptAnomaly[]
 }
@@ -163,6 +199,87 @@ const normalise = (text: string): string =>
 const RUN_LENGTH = 3
 
 /**
+ * Every pair of equal-length word runs that matches, grown to the longest span both occurrences
+ * actually share.
+ *
+ * A sentence repeated whole ("pues este es un producto para personas") produces five overlapping
+ * RUN_LENGTH-word matches at once ("pues este es", "este es un", "es un producto", "un producto
+ * para", "producto para personas"): five 3-word windows sliding over one 7-word repeat, not five
+ * different repeats. Reporting each fixed-width run as its own finding is what inflated one real
+ * render's count to 26 (#57). Growing each matched pair left and right while the words on both
+ * sides keep agreeing recovers the sentence the fixed width was only ever a probe into, and
+ * collapsing overlapping grown spans in `mergeAdjacentSpans` turns the five probes back into the
+ * one repeat they were always describing.
+ */
+const growMatch = (
+  words: string[],
+  left: number,
+  right: number,
+): { start: number; end: number } => {
+  let start = left
+  let matchStart = right
+  while (start > 0 && matchStart > 0 && words[start - 1] === words[matchStart - 1]) {
+    start -= 1
+    matchStart -= 1
+  }
+  let end = left + RUN_LENGTH
+  let matchEnd = right + RUN_LENGTH
+  while (end < matchStart && matchEnd < words.length && words[end] === words[matchEnd]) {
+    end += 1
+    matchEnd += 1
+  }
+  return { start, end }
+}
+
+type MatchSpan = { start: number; end: number }
+
+/**
+ * Grown spans that overlap (share any word index) describe the same underlying repeat, seen
+ * through differently-aligned RUN_LENGTH probes: kept once, at the widest bounds any of them
+ * reached. Two grown spans that do not overlap are two different repeated phrases in the same
+ * window and stay separate.
+ */
+const mergeAdjacentSpans = (spans: MatchSpan[]): MatchSpan[] => {
+  const sorted = [...spans].sort((left, right) => left.start - right.start)
+  const merged: MatchSpan[] = []
+  for (const span of sorted) {
+    const last = merged.at(-1)
+    if (last !== undefined && span.start < last.end) {
+      last.end = Math.max(last.end, span.end)
+      continue
+    }
+    merged.push({ ...span })
+  }
+  return merged
+}
+
+/**
+ * How many times `phraseWords` recurs in `words`, counted fresh over the phrase's own width
+ * rather than carried over from the narrower RUN_LENGTH probes that found it (those probes
+ * overlap each other by construction, so summing their own occurrence counts double-counts one
+ * repeat of a phrase longer than RUN_LENGTH). Non-overlapping: a match consumes its own words
+ * before the scan continues past them, so a phrase that happens to repeat with no gap between
+ * occurrences ("vamos vamos vamos") is not counted as more occurrences than actually fit.
+ */
+const countNonOverlapping = (words: string[], phraseWords: string[]): number => {
+  if (phraseWords.length === 0) {
+    return 0
+  }
+  let count = 0
+  let index = 0
+  while (index + phraseWords.length <= words.length) {
+    const matches = phraseWords.every((word, offset) => words[index + offset] === word)
+    if (matches) {
+      count += 1
+      index += phraseWords.length
+    } else {
+      index += 1
+    }
+  }
+  return count
+}
+
+/**
  * Repeats found by scanning each window's own text for a run of words the window says more than
  * once. Unlike semantic.ts's repeatedPhrases (which scans a transcript already split into
  * sentence-shaped lines and reports a phrase recurring ACROSS lines), this scans one window's
@@ -175,23 +292,75 @@ const RUN_LENGTH = 3
  * Deliberately not cross-window: two adjacent windows built with `--stride < --window`
  * legitimately share audio, and a phrase said once but covered by two overlapping windows would
  * otherwise report as a false repeat with no way to tell it from a real one.
+ *
+ * Below MIN_CONTENT_WORDS content words (the same floor and stopword sets semantic.ts's own
+ * repeatedPhrases already measured for the identical question), a repeated span is connective
+ * tissue rather than a candidate retake and is reported through `discounted` instead of silently
+ * dropped, the same precedent semantic.ts's own DiscountedRepeat sets.
  */
-export const findRepeatedPhrases = (windows: Window[]): RepeatedPhrase[] => {
-  const result: RepeatedPhrase[] = []
+export const findRepeatedPhrases = (
+  windows: Window[],
+  lang?: string,
+): { repeated: RepeatedPhrase[]; discounted: DiscountedRepeat[] } => {
+  const stopwords = stopwordsFor(lang)
+  const repeated: RepeatedPhrase[] = []
+  const discounted: DiscountedRepeat[] = []
   for (const window of windows) {
     const words = normalise(window.text).split(' ').filter(Boolean)
-    const counts = new Map<string, number>()
+    const positions = new Map<string, number[]>()
     for (let start = 0; start + RUN_LENGTH <= words.length; start += 1) {
       const run = words.slice(start, start + RUN_LENGTH).join(' ')
-      counts.set(run, (counts.get(run) ?? 0) + 1)
+      const where = positions.get(run) ?? []
+      where.push(start)
+      positions.set(run, where)
     }
-    for (const [phrase, count] of counts) {
-      if (count > 1) {
-        result.push({ phrase, count, windowStartMs: window.startMs, windowEndMs: window.endMs })
+
+    const spans: MatchSpan[] = []
+    for (const where of positions.values()) {
+      if (where.length < 2) {
+        continue
+      }
+      for (let i = 0; i < where.length - 1; i += 1) {
+        const left = where[i]
+        const right = where[i + 1]
+        if (left === undefined || right === undefined) {
+          continue
+        }
+        spans.push(growMatch(words, left, right))
       }
     }
+
+    for (const span of mergeAdjacentSpans(spans)) {
+      const phraseWords = words.slice(span.start, span.end)
+      const phrase = phraseWords.join(' ')
+      const contentWords = contentWordCount(phrase, stopwords)
+      // How many times the merged, full-length phrase itself recurs in the window, counted fresh
+      // over the phrase's own width rather than carried over from the narrower RUN_LENGTH probes
+      // that found it: those probes overlap each other, so summing their occurrence counts would
+      // count one repeat of a long phrase multiple times.
+      const count = countNonOverlapping(words, phraseWords)
+      if (contentWords < MIN_CONTENT_WORDS) {
+        discounted.push({
+          phrase,
+          count,
+          windowStartMs: window.startMs,
+          windowEndMs: window.endMs,
+          reason: `${contentWords} content word${contentWords === 1 ? '' : 's'}, below the ${MIN_CONTENT_WORDS} needed to read as a candidate retake rather than connective tissue`,
+        })
+        continue
+      }
+      repeated.push({
+        phrase,
+        count,
+        windowStartMs: window.startMs,
+        windowEndMs: window.endMs,
+      })
+    }
   }
-  return result.sort((left, right) => left.windowStartMs - right.windowStartMs)
+  return {
+    repeated: repeated.sort((left, right) => left.windowStartMs - right.windowStartMs),
+    discounted: discounted.sort((left, right) => left.windowStartMs - right.windowStartMs),
+  }
 }
 
 // Two words, not RUN_LENGTH's three: a stacked filler is a short discourse marker ("Y bueno",
@@ -311,6 +480,36 @@ export const findAnomalies = (
   }
   return anomalies
 }
+
+/**
+ * Marks each repeated-phrase finding with whether the cached whole-file transcript corroborates
+ * it, without dropping the ones it does not.
+ *
+ * findAnomalies already answers "does this window's own text show up in the cached transcript"
+ * for the anomalies list; this asks the same question, scoped to the phrase itself rather than
+ * the window's whole text, and writes the answer onto the finding instead of feeding a separate
+ * list. A repeat the cache does not corroborate is not thereby false: the cache is a whole-file
+ * pass, and #57's own finding is that averaging is exactly what a whole-file pass does to a
+ * repeated line, which is the entire reason `--windows` exists. Uncorroborated stays in
+ * `repeated`, marked, never moved out: the same "place to look, not a verdict" stance
+ * findAnomalies already takes, applied to this list instead of a separate one.
+ */
+export const corroborateRepeats = (
+  entries: RepeatedPhrase[],
+  cachedWords: { text: string; startMs: number; endMs: number }[],
+): RepeatedPhrase[] =>
+  entries.map((entry) => {
+    const cachedText = cachedWords
+      .filter((word) => word.endMs > entry.windowStartMs && word.startMs < entry.windowEndMs)
+      .map((word) => word.text)
+      .join(' ')
+    const cachedNormalised = new Set(normalise(cachedText).split(' ').filter(Boolean))
+    const phraseWords = entry.phrase.split(' ').filter(Boolean)
+    const hits = phraseWords.filter((word) => cachedNormalised.has(word)).length
+    // Same 0.6 bar findAnomalies and converge's own containsPhrase already use for this question.
+    const corroborated = phraseWords.length > 0 && hits / phraseWords.length >= 0.6
+    return { ...entry, corroborated }
+  })
 
 const numberFlag = (argv: string[], flag: string, fallback: number): number => {
   const index = argv.indexOf(flag)
@@ -433,12 +632,17 @@ export const runVerifyWindows = async (
     return { startMs: tile.startMs, endMs: tile.endMs, text }
   })
 
-  const repeated = mergeRepeats(findRepeatedPhrases(windows), findStackedOpeners(windows))
-  const truncated = findTruncatedEdges(windows)
-  const anomalies =
+  const phrases = findRepeatedPhrases(windows, lang)
+  const cachedWords =
     cachedTranscriptPath === undefined
-      ? []
-      : findAnomalies(windows, parseSrt(readFileSync(cachedTranscriptPath, 'utf8')).words)
+      ? undefined
+      : parseSrt(readFileSync(cachedTranscriptPath, 'utf8')).words
+
+  const mergedRepeats = mergeRepeats(phrases.repeated, findStackedOpeners(windows))
+  const repeated =
+    cachedWords === undefined ? mergedRepeats : corroborateRepeats(mergedRepeats, cachedWords)
+  const truncated = findTruncatedEdges(windows)
+  const anomalies = cachedWords === undefined ? [] : findAnomalies(windows, cachedWords)
 
   return {
     version: 1,
@@ -448,6 +652,7 @@ export const runVerifyWindows = async (
     strideMs,
     windows,
     repeatedPhrases: repeated,
+    discountedRepeats: phrases.discounted,
     truncatedEdges: truncated,
     anomalies,
   }
@@ -526,14 +731,24 @@ export const verifyCommand = async (argv: string[]): Promise<void> => {
     heading('verify --windows'),
     line('windows', String(report.windows.length)),
     line('repeated phrases', String(report.repeatedPhrases.length)),
+    line('discounted repeats', String(report.discountedRepeats.length)),
     line('truncated edges', String(report.truncatedEdges.length)),
     line('anomalies', String(report.anomalies.length)),
   ]
   for (const repeat of report.repeatedPhrases) {
+    const corroboration = repeat.corroborated === false ? ' (uncorroborated)' : ''
     lines.push(
       line(
         `${(repeat.windowStartMs / 1000).toFixed(2)}s`,
-        `repeated x${repeat.count}: "${repeat.phrase}"`,
+        `repeated x${repeat.count}: "${repeat.phrase}"${corroboration}`,
+      ),
+    )
+  }
+  for (const discounted of report.discountedRepeats) {
+    lines.push(
+      line(
+        `${(discounted.windowStartMs / 1000).toFixed(2)}s`,
+        `discounted: "${discounted.phrase}" (${discounted.reason})`,
       ),
     )
   }
