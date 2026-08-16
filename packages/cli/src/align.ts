@@ -34,9 +34,15 @@ import type { Word } from './detect.ts'
  * deletions with one survivor word wedged between them that both takes happened to transcribe
  * the same way.
  *
- * MIN_SPAN_MS: a recovered span shorter than this is not reported. Below a second, the
- * difference between the two streams is transcription noise (a dropped "y", a "de" that became
- * "que") far more often than it is an edit anyone made on purpose.
+ * MIN_SPAN_MS: a recovered span shorter than this is not reported *unless something outside the
+ * text inference corroborates it*. Below a second, the difference between the two streams is
+ * transcription noise (a dropped "y", a "de" that became "que") far more often than it is an
+ * edit anyone made on purpose. That reasoning holds only where the reference offers a competing
+ * account of the same speech, which is exactly a `replace` opcode; it does not hold for a
+ * `delete`, where the reference carries nothing at all, nor for a span measured silent on the
+ * audio. Applying it to those was the second half of issue #60: on the Cueva pair the threshold
+ * discarded 15.3s of real removals, and every short span it dropped there was a word the
+ * reference carries fewer of, or none of, rather than a word it merely spells differently.
  */
 export const MERGE_GAP_MS = 800
 export const MIN_SPAN_MS = 1000
@@ -263,16 +269,30 @@ export const opcodes = (a: string[], b: string[]): Opcode[] => {
 
 // --- Recovery -------------------------------------------------------------------------------
 
-/** A span of source time the reference does not carry, with the words it removed. */
+/**
+ * A span of source time the reference does not carry, with the words it removed.
+ *
+ * `corroborated` records whether anything beyond a contested text inference supports the span:
+ * the reference carrying nothing at all in its place (a `delete` opcode), or the audio measuring
+ * silent there. It is what lets `MIN_SPAN_MS` suppress transcription noise without also
+ * suppressing the short removals a human really made, and it is deliberately not part of the
+ * reported shape's meaning beyond that: a caller reads `startMs`/`removedText`, not this.
+ */
 export type RecoveredSpan = {
   startMs: number
   endMs: number
   durationMs: number
   removedText: string
   wordCount: number
+  corroborated: boolean
 }
 
-const spanFrom = (tokens: AlignToken[], from: number, to: number): RecoveredSpan | null => {
+const spanFrom = (
+  tokens: AlignToken[],
+  from: number,
+  to: number,
+  corroborated: boolean,
+): RecoveredSpan | null => {
   const slice = tokens.slice(from, to)
   if (slice.length === 0) {
     return null
@@ -285,6 +305,7 @@ const spanFrom = (tokens: AlignToken[], from: number, to: number): RecoveredSpan
     durationMs: endMs - startMs,
     removedText: slice.map((entry) => entry.text).join(' '),
     wordCount: slice.length,
+    corroborated,
   }
 }
 
@@ -300,6 +321,10 @@ const spanFrom = (tokens: AlignToken[], from: number, to: number): RecoveredSpan
  * The merged span's `removedText` is joined with a middle dot so a reader can see the join
  * happened rather than reading two removals as one continuous quote that was never spoken that
  * way.
+ *
+ * Corroboration unions across a merge: a span any part of which is measured silent, or which the
+ * reference answers with nothing, is corroborated as a whole. The alternative would let a
+ * contested fragment merged onto a measured one relitigate ground the audio already settled.
  */
 export const mergeAdjacent = (spans: RecoveredSpan[], gapMs = MERGE_GAP_MS): RecoveredSpan[] => {
   if (spans.length === 0) {
@@ -314,6 +339,7 @@ export const mergeAdjacent = (spans: RecoveredSpan[], gapMs = MERGE_GAP_MS): Rec
       previous.durationMs = previous.endMs - previous.startMs
       previous.removedText = `${previous.removedText} · ${span.removedText}`.trim()
       previous.wordCount += span.wordCount
+      previous.corroborated = previous.corroborated || span.corroborated
       continue
     }
     merged.push({ ...span })
@@ -361,7 +387,18 @@ export const referencePauseMs = (reference: Word[]): number => {
  * `source` is the source recording's own word stream; `reference` is the approved edit's. Both
  * are folded to tokens, aligned, and every non-equal opcode's source-side range becomes a
  * candidate span with the words it removed. Adjacent candidates are merged, then anything under
- * `minSpanMs` is dropped as transcription noise rather than reported as an edit.
+ * `minSpanMs` that nothing corroborates is dropped as transcription noise rather than reported
+ * as an edit.
+ *
+ * The corroboration carve-out is the second half of issue #60. `minSpanMs` exists because two
+ * transcriptions of the same speech disagree in fragments, but that is an argument about spans
+ * where the reference offers a rival account of the same audio: a `replace`, where "cra"+"fter"
+ * met "crafter". A `delete` is not that. There the reference says nothing at all, which is what
+ * a removal looks like, and on the Cueva pair every short `delete` the threshold discarded was a
+ * word the reference carries fewer of ("ChatGPT", 11 in the source against 6) or none of
+ * ("hackeé", 1 against 0). Measured silence is likewise a fact about the audio that no cue
+ * boundary or token count can outvote. So the threshold now guards only the case it was
+ * reasoned about, and 15.3s of real removals stop being invisible.
  *
  * `insert` opcodes are ignored on purpose: tokens present in the reference and absent from the
  * source are the transcriber hearing the edit's audio differently, never material a human
@@ -381,7 +418,9 @@ export const referencePauseMs = (reference: Word[]): number => {
  * word's cue: silencedetect reports where the audio is quiet, which no cue boundary can
  * contradict, and a cue that spans quiet audio is padding rather than speech. Seeds go through
  * the same `mergeAdjacent` pass as every other candidate, so a region both mechanisms find is
- * one span rather than two, and `minSpanMs` still applies to the merged result.
+ * one span rather than two, and they carry corroboration through it: a measured span is reported
+ * at whatever width it has, because `minSpanMs` is a statement about contested text and a
+ * silence seed is not contested.
  */
 export const recoverCuts = (
   source: Word[],
@@ -407,7 +446,7 @@ export const recoverCuts = (
     if (opcode.tag === 'equal' || opcode.tag === 'insert') {
       continue
     }
-    const span = spanFrom(sourceTokens, opcode.aStart, opcode.aEnd)
+    const span = spanFrom(sourceTokens, opcode.aStart, opcode.aEnd, opcode.tag === 'delete')
     if (span !== null) {
       candidates.push(span)
     }
@@ -421,13 +460,14 @@ export const recoverCuts = (
         durationMs: silence.endMs - silence.startMs,
         removedText: '',
         wordCount: 0,
+        corroborated: true,
       })
     }
   }
 
   const minSpanMs = options.minSpanMs ?? MIN_SPAN_MS
   return mergeAdjacent(candidates, options.mergeGapMs ?? MERGE_GAP_MS).filter(
-    (span) => span.durationMs >= minSpanMs,
+    (span) => span.corroborated || span.durationMs >= minSpanMs,
   )
 }
 

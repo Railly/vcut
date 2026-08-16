@@ -606,6 +606,9 @@ export const compareCommand = async (argv: string[]): Promise<void> => {
       wordCount: sourceWords.filter(
         (word) => word.endMs > span.startMs && word.startMs < span.endMs,
       ).length,
+      // A reference EDL states its cuts outright, so nothing here is a contested inference from
+      // two transcriptions: there is no alignment on this path to be noisy in the first place.
+      corroborated: true,
     }))
     const verdict = compareCuts(recovered, edlSpans, sourceWords)
     const headline = headlineOf(
