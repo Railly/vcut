@@ -139,12 +139,35 @@ describe('opcodes', () => {
 })
 
 describe('mergeAdjacent', () => {
-  const span = (startMs: number, endMs: number, removedText: string): RecoveredSpan => ({
+  const span = (
+    startMs: number,
+    endMs: number,
+    removedText: string,
+    corroborated = false,
+  ): RecoveredSpan => ({
     startMs,
     endMs,
     durationMs: endMs - startMs,
     removedText,
     wordCount: removedText.split(' ').length,
+    corroborated,
+  })
+
+  // Corroboration unions across a merge: a contested fragment joined onto a measured one must
+  // not relitigate ground the audio already settled.
+  test('a merged span is corroborated when any part of it was', () => {
+    const merged = mergeAdjacent([
+      span(1_000, 1_400, 'contested'),
+      span(1_500, 2_000, 'measured', true),
+    ])
+    expect(merged).toHaveLength(1)
+    expect(merged[0]?.corroborated).toBe(true)
+  })
+
+  test('a merge of two contested spans stays contested', () => {
+    const merged = mergeAdjacent([span(1_000, 1_400, 'uno'), span(1_500, 2_000, 'dos')])
+    expect(merged).toHaveLength(1)
+    expect(merged[0]?.corroborated).toBe(false)
   })
 
   // The case this exists for: a human's single cut comes back as two deletions with one
@@ -232,10 +255,34 @@ describe('recoverCuts', () => {
     expect(recoverCuts(source, reference)).toEqual([])
   })
 
-  test('a span shorter than the minimum is dropped as transcription noise', () => {
+  // Issue #60, second half. The threshold guards against two transcriptions disagreeing, which
+  // is a `replace`: the reference answers the same audio with different tokens. A short
+  // `delete` is not that disagreement, and treating it as one hid real removals. Measured on
+  // the Cueva pair: the words dropped this way were ones the reference carries fewer of
+  // ("ChatGPT", 11 in the source against 6) or none of ("hackeé", 1 against 0).
+  test('a short span the reference answers with different tokens is dropped as noise', () => {
+    const source = [
+      word('cra', 0, 200),
+      word('fter', 200, 400),
+      word('station', 500, 900),
+      word('construye', 1_000, 1_400),
+    ]
+    const reference = [
+      word('crafter', 0, 400),
+      word('station', 500, 900),
+      word('construye', 1_000, 1_400),
+    ]
+    expect(recoverCuts(source, reference)).toEqual([])
+  })
+
+  test('a short span the reference answers with nothing is reported as a real removal', () => {
     const source = stream('uno dos tres cuatro', 0, 200)
     const reference = stream('uno tres cuatro', 0, 200)
-    expect(recoverCuts(source, reference)).toEqual([])
+    const spans = recoverCuts(source, reference)
+    expect(spans).toHaveLength(1)
+    expect(spans[0]?.removedText).toBe('dos')
+    expect(spans[0]?.durationMs).toBeLessThan(MIN_SPAN_MS)
+    expect(spans[0]?.corroborated).toBe(true)
     // The same disagreement over a wide enough span is a real edit and is reported.
     const wide = recoverCuts(stream('uno dos tres cuatro', 0, 900), stream('uno cuatro', 0, 900))
     expect(wide).toHaveLength(1)
@@ -332,11 +379,18 @@ describe('recoverCuts', () => {
     expect(total(withSilence)).toBe(total(textOnly))
   })
 
-  test('silence shorter than the minimum span is still dropped as noise', () => {
+  // Sub-second silence is where the human editor did much of the work: the Cueva reference keeps
+  // 2.2s of inter-word gap across 263.4s, while the surviving source words carry 614.2s of it.
+  // A measured silence is a fact about the audio, so the noise threshold, which is an argument
+  // about contested text, does not apply to it. Dropping these cost 10.0s of real removals.
+  test('silence shorter than the minimum span is reported, because it is measured not inferred', () => {
     const source = stream('uno dos tres')
-    expect(recoverCuts(source, source, { sourceSilences: [{ startMs: 450, endMs: 900 }] })).toEqual(
-      [],
-    )
+    const spans = recoverCuts(source, source, { sourceSilences: [{ startMs: 450, endMs: 900 }] })
+    expect(spans).toHaveLength(1)
+    expect(spans[0]?.startMs).toBe(450)
+    expect(spans[0]?.endMs).toBe(900)
+    expect(spans[0]?.wordCount).toBe(0)
+    expect(spans[0]?.corroborated).toBe(true)
   })
 
   // The pre-#60 path: no silence supplied is the text walk alone, unchanged.

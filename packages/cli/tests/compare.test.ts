@@ -147,6 +147,7 @@ describe('compareCuts', () => {
           durationMs: 2_000,
           removedText: 'tres cuatro',
           wordCount: 2,
+          corroborated: true,
         },
       ],
       [{ startMs: 8_000, endMs: 9_000 }],
@@ -166,6 +167,7 @@ describe('compareCuts', () => {
           durationMs: 2_000,
           removedText: 'tres cuatro',
           wordCount: 2,
+          corroborated: true,
         },
       ],
       [{ startMs: 1_900, endMs: 4_100 }],
@@ -178,7 +180,16 @@ describe('compareCuts', () => {
   // most of what the human removed in the render, which is a finding.
   test('a partly covered reference span below the bar is still missed', () => {
     const verdict = compareCuts(
-      [{ startMs: 0, endMs: 10_000, durationMs: 10_000, removedText: 'largo', wordCount: 1 }],
+      [
+        {
+          startMs: 0,
+          endMs: 10_000,
+          durationMs: 10_000,
+          removedText: 'largo',
+          wordCount: 1,
+          corroborated: true,
+        },
+      ],
       [{ startMs: 0, endMs: 2_000 }],
       sourceWords,
     )
@@ -203,7 +214,16 @@ describe('compareCuts', () => {
 
   test('an EDL cut the reference corroborates is not an overcut', () => {
     const verdict = compareCuts(
-      [{ startMs: 1_000, endMs: 3_000, durationMs: 2_000, removedText: 'dos tres', wordCount: 2 }],
+      [
+        {
+          startMs: 1_000,
+          endMs: 3_000,
+          durationMs: 2_000,
+          removedText: 'dos tres',
+          wordCount: 2,
+          corroborated: true,
+        },
+      ],
       [{ startMs: 1_000, endMs: 3_000 }],
       sourceWords,
     )
@@ -212,7 +232,16 @@ describe('compareCuts', () => {
 
   test('two EDLs that agree completely produce no findings in either direction', () => {
     const verdict = compareCuts(
-      [{ startMs: 1_000, endMs: 3_000, durationMs: 2_000, removedText: 'dos tres', wordCount: 2 }],
+      [
+        {
+          startMs: 1_000,
+          endMs: 3_000,
+          durationMs: 2_000,
+          removedText: 'dos tres',
+          wordCount: 2,
+          corroborated: true,
+        },
+      ],
       [{ startMs: 1_000, endMs: 3_000 }],
       sourceWords,
     )
@@ -225,7 +254,16 @@ describe('headlineOf', () => {
     const headline = headlineOf(
       10_000,
       7_000,
-      [{ startMs: 1_000, endMs: 3_000, durationMs: 2_000, removedText: 'dos', wordCount: 1 }],
+      [
+        {
+          startMs: 1_000,
+          endMs: 3_000,
+          durationMs: 2_000,
+          removedText: 'dos',
+          wordCount: 1,
+          corroborated: true,
+        },
+      ],
       [{ startMs: 1_000, endMs: 4_000 }],
       { missed: [], overcut: [] },
     )
@@ -251,6 +289,7 @@ describe('headlineOf', () => {
           durationMs: 2_000,
           removedText: 'x',
           wordCount: 1,
+          corroborated: true,
           coveragePercent: 0,
         },
       ],
