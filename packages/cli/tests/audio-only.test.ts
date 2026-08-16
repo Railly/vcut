@@ -31,6 +31,7 @@ let longAudioOnlyPath: string
 let silentImagePath: string
 // A real video+audio fixture, to prove the video path is completely unchanged by this work.
 let videoPath: string
+let originalClassifierHome: string | undefined
 
 beforeAll(async () => {
   fixtureDir = mkdtempSync(join(tmpdir(), 'vcut-audio-only-fixture-'))
@@ -134,10 +135,23 @@ beforeAll(async () => {
     '-shortest',
     videoPath,
   ])
+
+  // #63: same reason commit.test.ts points this at a path that does not exist. The deterministic
+  // pass commit now runs shells to the PANNs classifier, which loads a 300MB model per call
+  // (measured 3245ms on an 8s fixture), and this file's end-to-end commit lands well past bun's
+  // default per-test timeout with it in the budget. The subject here is that an audio-only source
+  // survives the whole session flow, which is orthogonal to whether a classifier is installed.
+  originalClassifierHome = process.env.VCUT_CLASSIFIER_HOME
+  process.env.VCUT_CLASSIFIER_HOME = join(fixtureDir, 'no-classifier-here')
 })
 
 afterAll(() => {
   rmSync(fixtureDir, { recursive: true, force: true })
+  if (originalClassifierHome === undefined) {
+    delete process.env.VCUT_CLASSIFIER_HOME
+  } else {
+    process.env.VCUT_CLASSIFIER_HOME = originalClassifierHome
+  }
 })
 
 let workDir: string
