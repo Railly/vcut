@@ -540,6 +540,7 @@ const humanReport = (
     kind: string
     removedText: string
     literal?: true
+    driftSuspect?: true
   }>,
   render: { status: string; outputPath: string; sha256?: string; duration?: string },
   gate: RoundsGate,
@@ -554,10 +555,12 @@ const humanReport = (
     line('semantic cuts', String(semanticCuts.length)),
   ]
   for (const cut of semanticCuts) {
+    const removedLabel =
+      cut.driftSuspect === true ? 'removedText (driftSuspect, unverified)' : 'removedText'
     lines.push(
       line(
         `  ${(cut.startMs / 1000).toFixed(2)}-${(cut.endMs / 1000).toFixed(2)}s`,
-        `${cut.kind}${cut.literal === true ? ' (literal)' : ''}: "${cut.removedText || '(no transcript)'}"`,
+        `${cut.kind}${cut.literal === true ? ' (literal)' : ''}: ${removedLabel} = "${cut.removedText || '(no transcript)'}"`,
       ),
     )
   }

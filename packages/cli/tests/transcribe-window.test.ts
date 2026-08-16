@@ -4,7 +4,12 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Word } from '../src/detect.ts'
 import { run } from '../src/exec.ts'
-import { carriesAWord, toAbsolute, transcribeWindowWords } from '../src/transcribe-window.ts'
+import {
+  carriesAWord,
+  toAbsolute,
+  transcribeWindowWords,
+  translateTrxFlags,
+} from '../src/transcribe-window.ts'
 
 const word = (text: string, startMs: number, endMs: number): Word => ({
   text,
@@ -69,6 +74,29 @@ describe('carriesAWord', () => {
 
   test('keeps a number, which is a word a boundary can fall on', () => {
     expect(carriesAWord(word('2026', 0, 100))).toBe(true)
+  })
+})
+
+// #54 follow-up: trx names its own flag in the errors it writes, and vcut renames some of
+// those at its own CLI surface. A message passed through verbatim sends the caller looking for
+// a flag vcut does not have (--language, when vcut's own flag is --lang).
+describe('translateTrxFlags', () => {
+  test('appends --lang when trx names its own --language flag', () => {
+    const message = translateTrxFlags(
+      '--preset verbatim needs the spoken language: pass --language',
+    )
+    expect(message).toContain('--preset verbatim needs the spoken language: pass --language')
+    expect(message).toContain('--lang')
+  })
+
+  test('leaves a message with no renamed flag untouched', () => {
+    const message = translateTrxFlags('could not find the input file')
+    expect(message).toBe('could not find the input file')
+  })
+
+  test('never drops trx wording it is naming a flag inside', () => {
+    const upstream = 'trx exited: --language is required for --preset verbatim'
+    expect(translateTrxFlags(upstream)).toContain(upstream)
   })
 })
 

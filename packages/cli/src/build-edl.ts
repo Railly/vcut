@@ -113,10 +113,12 @@ export const humanSummary = (summary: BuildSummary): string => {
     line('approval', 'draft, every segment proposed'),
   ]
   for (const cut of summary.semanticCuts) {
+    const removedLabel =
+      cut.driftSuspect === true ? 'removedText (driftSuspect, unverified)' : 'removedText'
     lines.push(
       line(
         `  ${(cut.startMs / 1000).toFixed(2)}-${(cut.endMs / 1000).toFixed(2)}s`,
-        `${cut.kind}${cut.literal === true ? ' (literal)' : ''}: "${cut.removedText || '(no transcript)'}"`,
+        `${cut.kind}${cut.literal === true ? ' (literal)' : ''}: ${removedLabel} = "${cut.removedText || '(no transcript)'}"`,
       ),
     )
   }
