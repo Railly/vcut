@@ -2,6 +2,17 @@
 
 Notable changes to `@crafter/vcut`. Entries say what changed and, where it is not obvious, what measurement led to it.
 
+## 0.25.0
+
+### Added
+
+- **A deterministic pass now cuts what an instrument can prove, before the model judges anything (#63).** A human listened end to end to a render that `audit`, `joins`, `nonspeech --verify`, `verify --windows` and the rounds gate had all certified clean, and found 27 defects in six minutes. Classifying them decided this release: **20 of the 27 were already reported by an existing instrument**. `vcut nonspeech` returns 40 spans on that render and all six coughs the listener named are in it at near-identical timestamps; a calibrated silence sweep returns 19 spans totalling 33.9s including every pause he flagged. The tool saw them, the model was handed them, and the model talked itself out of cutting them, six consecutive runs on the same material. The failure was never detection. It was asking a model to ratify a proof. `commit` now runs an auto-cut pass unconditionally, in the placement `metaSpeech` (#38), `deadAir` (#43) and the listener sweep (#44) already established, and it cuts rather than proposes: measured silence over a threshold anchored to the render's median rather than its minimum, classifier spans intersected with measured silence, exact repeated runs already reported by the sweep, and orphan fragments below 300ms (the value `invertToSegments` already calls "a fragment too short to carry a word", checked against this material's own word-duration distribution: p25 150ms, median 380ms). Every automatic cut records the instrument that fired and the measurement that justified it, written to `rounds/round-N/auto-cut.json` and to `autoCut` in the commit payload, with a `considered` block so declines stay visible: `silence: 2.25s below -40.83dB at 297.79-300.04s`, `nonspeech: classifier span 344.00-346.24s, 2.24s, intersected with 1.50s below -40.83dB`. On the annotated render it cuts 19 spans totalling 33.9s, catching 9 of the 20 deterministic entries; six of its cuts were not on the listener's list and each was measured at -61 to -68dB, real dead air rather than false positives.
+- **The pass cuts only the intersection of a classifier span with measured silence, which is what keeps it safe.** An earlier working version cut the classifier's own generous bounds and removed audio averaging -32.6dB with peaks to -6.6dB, which is speech. Cutting the overlap instead fixed it. Repetition auto-cut refuses any pair separated by even one word (`MAX_FUMBLE_WORDS` is 0), which costs a real retake on this material and preserves legitimate reuse like "le damos clic a Create" followed by "le damos clic a Sign in", where a content-word count cannot separate the two.
+
+### Fixed
+
+- **`probeNoiseFloor` underreports on assembled renders, and the silence threshold no longer depends on it.** #43's floor is anchored to the quietest window, which on a render is an assembly artefact rather than the room. Measured on the annotated render: it returns -68.7dB and finds 4 pauses totalling 6.8s, missing every silence the human named, while a median-anchored threshold of -40.83dB finds 19 pauses totalling 33.9s and matches the human's list. Both thresholds are still measured and reported; the auto-cut pass uses the one that agrees with the audio. The `deadAir` warning shipped in 0.22.0 inherits the same underreporting and is filed separately.
+
 ## 0.24.0
 
 ### Fixed
