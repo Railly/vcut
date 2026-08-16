@@ -745,7 +745,7 @@ const CONTRACTS: Record<string, unknown> = {
     notes: [
       'The map is derived from the EDL, which records intent rather than what was produced.',
       'Deriving it by hand is the trap this replaces: the accumulated total can match the rendered file to the millisecond while individual positions land seconds away.',
-      'Pass --render to compare the map against a file that exists. Agreement on the total is necessary, not sufficient.',
+      'Pass --render to compare the map against a file that exists. Agreement on the total is necessary, not sufficient: it says the EDL is internally consistent with the render, not that the position or phrase you asked about is the content actually sitting there. locate never verifies content itself; confirm a position with vcut peek or say --transcribe.',
       'A --source position that was cut is reported as removed with the next surviving segment, not as an error.',
     ],
   },

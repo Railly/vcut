@@ -303,6 +303,14 @@ export const cutNext = (input: string, span: Span): Array<{ question: string; ve
 const driftWarning = (proposal: SessionProposal): string =>
   `[${(proposal.startMs / 1000).toFixed(2)}-${(proposal.endMs / 1000).toFixed(2)}s] removedText is driftSuspect: built from cues that claim a word starts inside measured silence. Do not trust it without a check (vcut peek or say --transcribe over the span). This proposal's own span, not commit's merged one — a clean read here does not guarantee a clean read once commit builds it.`
 
+// The label a driftSuspect proposal's quote carries. A trailing warnings block, read after every
+// quote on the screen, let a reader take the quote as fact before reaching the line that says
+// not to (issue #61: 16 of 18 proposals on one run were driftSuspect and the quote was read as
+// the removed text anyway). Marking the quote itself at the point it is printed means there is
+// no read of removedText that does not also see the caveat.
+const removedTextLabel = (proposal: SessionProposal): string =>
+  proposal.driftSuspect === true ? 'removedText (driftSuspect, unverified)' : 'removedText'
+
 const humanList = (input: string, proposals: SessionProposal[]): string => {
   if (proposals.length === 0) {
     return heading(`${input.split('/').pop()}  no proposals yet`)
@@ -312,7 +320,7 @@ const humanList = (input: string, proposals: SessionProposal[]): string => {
     lines.push(
       line(
         `[${index}] ${(proposal.startMs / 1000).toFixed(2)}-${(proposal.endMs / 1000).toFixed(2)}s`,
-        `${proposal.kind}${proposal.literal === true ? ' (literal)' : ''}: "${proposal.removedText || '(no transcript)'}"`,
+        `${proposal.kind}${proposal.literal === true ? ' (literal)' : ''}: ${removedTextLabel(proposal)} = "${proposal.removedText || '(no transcript)'}"`,
       ),
     )
     lines.push(line('', `reason: ${proposal.reason}`))
@@ -338,7 +346,10 @@ const humanAccepted = (
     ),
     line('kind', proposal.kind),
     line('reason', proposal.reason),
-    line('removedText', proposal.removedText || '(no transcript cached in this session)'),
+    line(
+      removedTextLabel(proposal),
+      proposal.removedText || '(no transcript cached in this session)',
+    ),
   ]
   if (proposal.literal === true) {
     lines.push(line('literal', 'true — exact span trusted, clamp-expansion skipped at build time'))

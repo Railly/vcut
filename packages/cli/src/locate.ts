@@ -32,7 +32,9 @@ Flags:
   --source <sec>     Position in the source to translate
   --sources <list>   Several source positions at once, comma separated
   --all              Emit the whole segment map instead of one position
-  --render <path>    Check the map against a rendered file
+  --render <path>    Check the EDL's timing-map total against the render's measured
+                      duration. Confirms the map is internally consistent with the file,
+                      not that any position holds the content you asked for
   --explain          Report the neighbourhood, not only the number
   --json / --human   Output mode
   --help             Show this message
@@ -297,10 +299,10 @@ export const locateCommand = async (argv: string[]): Promise<void> => {
     if (check !== null) {
       lines.push(
         line(
-          'against render',
+          'timing map vs render',
           check.agrees
-            ? `map total ${seconds(check.expectedMs)} matches the file`
-            : `map total ${seconds(check.expectedMs)} but the file runs ${seconds(check.observedMs)} (${seconds(check.deltaMs)} off)`,
+            ? `EDL total ${seconds(check.expectedMs)} agrees with the render's measured duration ${seconds(check.observedMs)}. This checks the map's timing total, not that this position holds what you were looking for`
+            : `EDL total ${seconds(check.expectedMs)} disagrees with the render's measured duration ${seconds(check.observedMs)} (${seconds(check.deltaMs)} off)`,
         ),
       )
     }

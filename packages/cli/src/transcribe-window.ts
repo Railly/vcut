@@ -125,6 +125,29 @@ export const trxStdoutError = (stdout: string): string | undefined => {
   }
 }
 
+// trx names its own flags in the errors it writes. vcut renames some of them at its own CLI
+// surface (--lang here for trx's --language), so a message passed through verbatim sends the
+// caller looking for a flag vcut does not have (#54 follow-up: `vcut peek --lang es` failed
+// with "pass --language", which does not exist in vcut).
+const TRX_FLAG_TRANSLATIONS: Array<{ trxFlag: string; vcutFlag: string }> = [
+  { trxFlag: '--language', vcutFlag: '--lang' },
+]
+
+/**
+ * Appends vcut's own flag name wherever trx's message names a flag vcut renames, without
+ * altering trx's text: the message still diagnoses the real cause, it just also names the flag
+ * that exists here.
+ */
+export const translateTrxFlags = (message: string): string => {
+  let translated = message
+  for (const { trxFlag, vcutFlag } of TRX_FLAG_TRANSLATIONS) {
+    if (translated.includes(trxFlag)) {
+      translated = `${translated} (vcut's own flag for this is ${vcutFlag})`
+    }
+  }
+  return translated
+}
+
 /**
  * What actually happened, in order of how much trx told us.
  *
@@ -137,6 +160,10 @@ export const trxStdoutError = (stdout: string): string | undefined => {
  * 4. If trx is installed and still silent, the width of the window asked for, since the one
  *    measured case that reaches this branch (a wide --window succeeding at --window 10) has no
  *    documented ceiling to name, only what was actually asked for.
+ *
+ * Every returned string passes through translateTrxFlags first: trx's diagnosis is right, but
+ * trx names its own flag, not vcut's, and a caller sent hunting for a flag that does not exist
+ * here is exactly the friction passing the raw message through was supposed to fix.
  */
 export const explainTrxFailure = async (
   said: { stderr: string; stdout: string },
@@ -144,11 +171,11 @@ export const explainTrxFailure = async (
 ): Promise<string> => {
   const stderr = said.stderr.trim()
   if (stderr) {
-    return stderr
+    return translateTrxFlags(stderr)
   }
   const stdoutError = trxStdoutError(said.stdout)
   if (stdoutError) {
-    return stdoutError
+    return translateTrxFlags(stdoutError)
   }
   if ((await has('trx', ['--version'])) === false) {
     return 'trx is not on PATH. Install it, or drop --transcribe and pass --transcript'
