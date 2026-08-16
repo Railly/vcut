@@ -38,6 +38,7 @@ import {
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
+import type { AutoCutReport } from './auto-cut.ts'
 import type { SurvivingDeadAirReport } from './dead-air.ts'
 import type { DetectReport } from './detect.ts'
 import { packageVersion } from './output.ts'
@@ -552,6 +553,38 @@ export const readListener = (sessionDir: string, roundNumber: number): ListenerR
     return null
   }
   return JSON.parse(readFileSync(path, 'utf8')) as ListenerRecord
+}
+
+// --- Deterministic auto-cut pass (#63) ---------------------------------------------------------
+//
+// commit runs the deterministic pass (auto-cut.ts) against its own render on every round, the
+// fourth check to take the forced placement #38 proved and #43/#44 repeated. Unlike those three it
+// does not report and wait: what an instrument can prove is cut directly, because #63's forensics
+// are that all four classes WERE reported by instruments that ran and the model declined to act on
+// them six consecutive runs.
+//
+// Recorded beside the round's EDL, build report, metaSpeech spans, dead-air report and listener
+// sweep, and it is the record that makes the cuts traceable: every entry carries the instrument
+// that fired and the measurement it fired on, so a reader can answer "why is this gone" from the
+// session alone rather than from the prose of a reason string. `considered` keeps the counts each
+// instrument offered against what became a cut, so what the pass DECLINED is as visible as what it
+// took, which is the ambiguous remainder the model is supposed to work.
+const autoCutPath = (roundDir: string): string => join(roundDir, 'auto-cut.json')
+
+export const writeAutoCut = (roundDir: string, report: AutoCutReport): string => {
+  const path = autoCutPath(roundDir)
+  writeFileSync(path, `${JSON.stringify(report, null, 2)}\n`)
+  return path
+}
+
+/** A round's recorded deterministic pass. Null when the round predates #63 or the pass could not
+ * run (no classifier, no transcriber), distinct from a report whose own `cuts` came back empty. */
+export const readAutoCut = (sessionDir: string, roundNumber: number): AutoCutReport | null => {
+  const path = autoCutPath(join(roundsDir(sessionDir), `round-${roundNumber}`))
+  if (!existsSync(path)) {
+    return null
+  }
+  return JSON.parse(readFileSync(path, 'utf8')) as AutoCutReport
 }
 
 // --- Commit marker -------------------------------------------------------------------------

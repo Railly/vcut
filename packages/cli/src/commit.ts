@@ -32,12 +32,14 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { basename, dirname, extname, join, resolve } from 'node:path'
 
+import { type AutoCut, type AutoCutReport, runAutoCut } from './auto-cut.ts'
 import { type BuildOptions, type Crop, parseCrop, runBuild } from './build-edl.ts'
 import { findSurvivingDeadAir, type SurvivingDeadAirReport } from './dead-air.ts'
 import type { CliOptions as DetectOptions, DetectReport, Preset } from './detect.ts'
 import { parseSrt, runDetect } from './detect.ts'
 import { has } from './has.ts'
 import { masterToSource, type Placement, placements, sourceToMaster } from './locate.ts'
+import { type Span as AutoSpan, classifierMissing, runClassifier } from './nonspeech.ts'
 import { emitJson, heading, line, type Mode, nextStep, resolveMode, UsageError } from './output.ts'
 import { type Edl, type RenderOptions, runRender } from './render-edl.ts'
 import { deltaSpans } from './rounds.ts'
@@ -54,6 +56,7 @@ import {
   LINE_BREAK_MS,
   type MetaSpeechSpan,
   metaSpeech,
+  type Proposal,
 } from './semantic.ts'
 import {
   acquireLock,
@@ -70,12 +73,14 @@ import {
   readProposalsFile,
   readRound,
   releaseLock,
+  writeAutoCut,
   writeCachedDetect,
   writeDeadAir,
   writeListener,
   writeMetaSpeech,
   writeRound,
 } from './session.ts'
+import { skillsDir } from './skills-dir.ts'
 import { defaultConcurrency, runVerifyWindows, type VerifyWindowsReport } from './verify.ts'
 
 const HELP = `vcut commit - build the EDL from a session's proposals, then render it
@@ -524,6 +529,108 @@ export const carryForward = (
   }
 }
 
+/**
+ * The classifier's spans for a render, or none when it cannot run.
+ *
+ * Same optional-by-design stance `nonspeech` itself takes: an absent classifier is a supported
+ * state that costs one finding class, never a failed commit. A classifier that runs and errors is
+ * treated the same way here rather than thrown, because #63's pass is additive to a commit that
+ * already worked without it.
+ */
+const classifierSpansFor = async (renderPath: string): Promise<AutoSpan[]> => {
+  try {
+    const scriptPath = join(skillsDir(), 'core', 'scripts', 'non-speech.py')
+    if (!existsSync(scriptPath)) {
+      return []
+    }
+    const outcome = await runClassifier(scriptPath, renderPath)
+    return 'error' in outcome ? [] : outcome.spans
+  } catch {
+    return []
+  }
+}
+
+/**
+ * #63: the deterministic pass over the round's own render, and the translation back to source time.
+ *
+ * Everything the pass measures is measured on the RENDER (the classifier's spans, the silence
+ * sweep, the repeat windows), so every span it emits is in master time. A proposal is in source
+ * time, because that is the coordinate system `build-edl` cuts against. The translation goes
+ * through the round's own placements, exactly the way `relocate` above already translates a
+ * carried-forward finding, and for the same reason: master and source are different coordinate
+ * systems and comparing them directly misplaces every span past the first cut.
+ *
+ * A master span is translated PER SEGMENT, not by its two endpoints, and that distinction is
+ * load-bearing rather than defensive. A master cut can straddle a join, because the material the
+ * previous rounds removed is not in the master's coordinate system at all; translating its start
+ * and end independently then produces a source span that also swallows everything already cut
+ * between them. Measured on this render: the 2.74s master cut at 52.80s spans segment-011 to
+ * segment-013 and reads back as a 43.2s source span, and the 1.05s cut at 65.74s reads back as
+ * 18.3s. Both would remove material the EDL deliberately kept. Intersecting the master span with
+ * each placement it touches, and emitting one proposal per intersected segment, keeps every
+ * emitted span inside a single continuous stretch of source, which is the only shape a source-time
+ * cut can honestly take.
+ *
+ * A span whose master position no longer maps into the source is dropped rather than clamped. That
+ * cannot normally happen for a span measured on this very render, and dropping is the honest
+ * outcome if it ever does: an untranslatable span is one this pass cannot prove the position of,
+ * and #63's whole premise is that only a provable span gets cut.
+ */
+export const autoCutProposals = (
+  cuts: AutoCut[],
+  map: Placement[],
+): Array<Proposal & { removedText: string; proposedAt: string }> => {
+  const proposals: Array<Proposal & { removedText: string; proposedAt: string }> = []
+  const proposedAt = new Date().toISOString()
+  for (const cut of cuts) {
+    for (const placement of map) {
+      const startMs = Math.max(cut.startMs, placement.masterInMs)
+      const endMs = Math.min(cut.endMs, placement.masterOutMs)
+      if (endMs <= startMs) {
+        continue
+      }
+      const sourceInMs = placement.sourceInMs + (startMs - placement.masterInMs)
+      const sourceOutMs = placement.sourceInMs + (endMs - placement.masterInMs)
+      if (sourceOutMs <= sourceInMs) {
+        continue
+      }
+      proposals.push({
+        startMs: sourceInMs,
+        endMs: sourceOutMs,
+        kind: cut.kind,
+        reason: cut.reason,
+        // Quoted from nothing: this pass never reads cue text (#61), and the evidence a reader
+        // needs is the measurement in `reason`, not a transcript quote that would be unverified
+        // here.
+        removedText: '',
+        proposedAt,
+      })
+    }
+  }
+  return proposals
+}
+
+/**
+ * #63: one warning-style hint whenever the deterministic pass cut anything, so a run reading the
+ * output knows material was removed without it asking. Unlike every other hint here this is not a
+ * request for the reader to act: the cuts are already in the EDL. It names what was removed and
+ * on whose evidence, which is the traceability requirement the issue makes non-negotiable.
+ */
+export const autoCutNext = (
+  report: AutoCutReport | null,
+): Array<{ question: string; verb: string }> => {
+  if (report === null || report.cuts.length === 0) {
+    return []
+  }
+  const removedMs = report.cuts.reduce((total, cut) => total + (cut.endMs - cut.startMs), 0)
+  return [
+    {
+      question: `${report.cuts.length} span${report.cuts.length === 1 ? '' : 's'} (${(removedMs / 1000).toFixed(1)}s) were cut automatically on measured evidence; read autoCut to see which instrument fired on each`,
+      verb: 'read the autoCut field above; every cut names its instrument and the measurement it fired on',
+    },
+  ]
+}
+
 /** What the gate needs from a sweep: counts, and the phrases themselves. */
 export const listenerFindings = (report: VerifyWindowsReport): ListenerFindings => ({
   repeatedPhrases: report.repeatedPhrases.length,
@@ -547,6 +654,7 @@ const humanReport = (
   deadAir: SurvivingDeadAirReport,
   metaSpeechFindings: MetaSpeechSpan[] | null,
   listener: ListenerRecord | null,
+  autoCut: AutoCutReport | null,
   hints: Array<{ question: string; verb: string }>,
 ): string => {
   const lines = [
@@ -568,6 +676,28 @@ const humanReport = (
   lines.push(line('output', render.outputPath))
   if (render.duration !== undefined) {
     lines.push(line('duration', `${render.duration}s`))
+  }
+  // #63: what the deterministic pass removed, with the instrument and measurement per span. This
+  // is the only block here describing material that is already gone rather than a finding awaiting
+  // a decision, so each line reads as a record rather than a request, and the measurement is
+  // printed rather than summarised: a span removed automatically has to be traceable to its
+  // evidence by reading this alone. autoCut is null (not printed) when the pass could not run.
+  if (autoCut !== null && autoCut.cuts.length > 0) {
+    const removedMs = autoCut.cuts.reduce((total, cut) => total + (cut.endMs - cut.startMs), 0)
+    lines.push(
+      line(
+        'autoCut',
+        `${autoCut.cuts.length} span${autoCut.cuts.length === 1 ? '' : 's'} cut automatically (${(removedMs / 1000).toFixed(1)}s), each on measured evidence`,
+      ),
+    )
+    for (const cut of autoCut.cuts) {
+      lines.push(
+        line(
+          `  ${(cut.startMs / 1000).toFixed(2)}-${(cut.endMs / 1000).toFixed(2)}s`,
+          `${cut.instrument}: ${cut.measurement}`,
+        ),
+      )
+    }
   }
   // #43: one warning-style line whenever this round's own render still carries silence over the
   // calibrated threshold, the check `joins`/`audit`/`nonspeech` never ran, on the one artefact
@@ -795,6 +925,60 @@ export const commitCommand = async (argv: string[]): Promise<void> => {
       writeListener(roundDir, sweep.record)
     }
 
+    // #63: the deterministic pass, unconditional, the fourth check to take the forced placement
+    // #38 proved and #43/#44 repeated. It runs LAST among the checks because it consumes what they
+    // produced: the classifier's spans and the sweep's repeated phrases are both measured on this
+    // round's own render, and re-running them here would be paying twice for the same answer.
+    //
+    // Unlike those three, this one does not report and wait. A finding an instrument can prove is
+    // cut, and the EDL is rebuilt and re-rendered with those cuts folded in, because the measured
+    // failure #63 exists for is not detection: all four classes were already reported and the model
+    // declined to act on them six runs in a row. The proposals it produces are session proposals
+    // like any other, so `rounds --diff`, `joins`, and the build report see them the same way they
+    // see a hand-written `vcut cut`, and each one carries the instrument and measurement that
+    // produced it in its own `reason`.
+    const autoCut =
+      classifierMissing() === null && sweep !== null
+        ? await runAutoCut({
+            renderPath: render.outputPath,
+            classifierSpans: await classifierSpansFor(render.outputPath),
+            repeats: sweep.report.repeatedPhrases,
+            words: joinWords(
+              report.transcript.path !== null && existsSync(report.transcript.path)
+                ? parseSrt(readFileSync(report.transcript.path, 'utf8'))
+                : { words: [], wordLevel: false },
+            ),
+            lang: report.lang,
+            // findSurvivingDeadAir just measured this same render's floor; handing it over keeps
+            // the round to one astats pass instead of two identical ones.
+            knownFloor: deadAir.floor,
+          })
+        : null
+    if (autoCut !== null) {
+      writeAutoCut(roundDir, autoCut)
+    }
+
+    // The rebuild is what makes this a cutting pass rather than a reporting one. Everything the
+    // pass measured was measured on the render just produced, so its spans are in master time and
+    // become proposals through the round's own placements (`autoCutProposals`); the EDL is then
+    // rebuilt from the session's proposals plus these, and re-rendered, so the artefact a human
+    // reads is the already-clean one. `edl` and `render` are rebound so every check and report
+    // below this point describes what actually shipped.
+    let finalEdl = edl
+    let finalRender = render
+    let autoCutSummary = summary
+    if (autoCut !== null && autoCut.cuts.length > 0) {
+      const added = autoCutProposals(autoCut.cuts, placements(edl as Edl))
+      if (added.length > 0) {
+        const rebuilt = await runBuild(report, [...proposals, ...added], buildOptions)
+        finalEdl = rebuilt.edl
+        autoCutSummary = rebuilt.summary
+        writeFileSync(args.edlPath, `${JSON.stringify(finalEdl, null, 2)}\n`)
+        writeRound(roundDir, finalEdl, autoCutSummary)
+        finalRender = await runRender(finalEdl as Edl, renderOptions)
+      }
+    }
+
     // A successful commit marks the session as a gc candidate (B7-Q2): the round it just wrote
     // is state `session gc` may now consider clearing, never state it deletes on its own.
     markCommitted(session.dir)
@@ -825,12 +1009,14 @@ export const commitCommand = async (argv: string[]): Promise<void> => {
       (gate.status === 'insufficient-rounds' || gate.status === 'repeated-phrases-unresolved') &&
       gate.next !== undefined
         ? gate.next
-        : commitNext(args.edlPath, render.outputPath)
-    // #44/#43/#38, in priority order. Repeated phrases go first: they are the only finding class
-    // that also holds the gate, so a run that reads hint[0] and stops reads what is blocking it.
-    // Surviving dead air follows (this tool's founding target), then metaSpeech, then the gate's
-    // own hints, each unchanged.
+        : commitNext(args.edlPath, finalRender.outputPath)
+    // #63/#44/#43/#38, in priority order. The deterministic pass goes first because it is the only
+    // one describing material that is already GONE: everything below it asks the reader to act,
+    // and a reader who acts without first knowing what was cut for them is working from a stale
+    // picture of the render. Repeated phrases follow (the only class that also holds the gate),
+    // then surviving dead air, then metaSpeech, then the gate's own hints, each unchanged.
     const hints = [
+      ...autoCutNext(autoCut),
       ...listenerNext(sweep === null ? null : sweep.report),
       ...deadAirNext(deadAir),
       ...metaSpeechNext(metaSpeechFindings ?? []),
@@ -843,9 +1029,16 @@ export const commitCommand = async (argv: string[]): Promise<void> => {
         edlPath: args.edlPath,
         sessionDir: session.dir,
         roundDir,
-        build: summary,
-        render,
+        build: autoCutSummary,
+        render: finalRender,
         roundsGate: gate,
+        // Always present (#63), the same rule metaSpeech and listener follow: absence can never be
+        // read as "not checked". Every cut names the instrument that fired and the measurement it
+        // fired on, so a reader can trace any removed span back to its evidence without leaving
+        // this payload. `autoCutChecked` is the separate honest signal for the case the report
+        // itself cannot express: the pass never ran, because the classifier or trx is absent.
+        autoCut,
+        autoCutChecked: autoCut !== null,
         // Always present. floor is null only when the render was too short to calibrate a
         // threshold against (#43); pauses is [] whenever the check ran and found nothing.
         deadAir,
@@ -870,13 +1063,14 @@ export const commitCommand = async (argv: string[]): Promise<void> => {
     console.log(
       humanReport(
         args.edlPath,
-        summary.removalPercent,
-        summary.semanticCuts,
-        render,
+        autoCutSummary.removalPercent,
+        autoCutSummary.semanticCuts,
+        finalRender,
         gate,
         deadAir,
         metaSpeechFindings,
         sweep === null ? null : sweep.record,
+        autoCut,
         hints,
       ),
     )

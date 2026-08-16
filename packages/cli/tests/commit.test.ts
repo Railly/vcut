@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } fr
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { carryForward, commitCommand } from '../src/commit.ts'
+import { autoCutNext, autoCutProposals, carryForward, commitCommand } from '../src/commit.ts'
 import { cutCommand } from '../src/cut.ts'
 import { runDetect } from '../src/detect.ts'
 import { run } from '../src/exec.ts'
@@ -149,6 +149,18 @@ printf '{"success":true,"files":{},"text":" %s"}\\n' "\${VCUT_TEST_TRX_TEXT:-not
   chmodSync(join(binDir, 'trx'), 0o755)
   originalPath = process.env.PATH
   process.env.PATH = `${binDir}:${originalPath ?? ''}`
+
+  // #63: commit now also runs the deterministic pass, whose nonspeech class shells to the PANNs
+  // classifier. Unlike trx that one is not stubbable at a binary boundary (it is a python script
+  // plus a 300MB model) and it loads the model on every call: measured 3245ms for a single 8s
+  // fixture on this machine, which alone exceeds bun's default per-test timeout once a render and
+  // a sweep are already in the budget. This file's subject is what commit does with findings, not
+  // whether the classifier hears them (nonspeech.test.ts owns that), so it points the classifier
+  // home at a path that does not exist. The pass then reports classifier-absent and contributes no
+  // nonspeech class, exactly the supported degraded state a machine without the model already has,
+  // which is itself worth exercising here.
+  originalClassifierHome = process.env.VCUT_CLASSIFIER_HOME
+  process.env.VCUT_CLASSIFIER_HOME = join(stubDir, 'no-classifier-here')
 })
 
 afterAll(() => {
@@ -158,6 +170,11 @@ afterAll(() => {
     delete process.env.PATH
   } else {
     process.env.PATH = originalPath
+  }
+  if (originalClassifierHome === undefined) {
+    delete process.env.VCUT_CLASSIFIER_HOME
+  } else {
+    process.env.VCUT_CLASSIFIER_HOME = originalClassifierHome
   }
 })
 
@@ -173,6 +190,7 @@ afterAll(() => {
 // with those findings, not whether whisper hears them (verify.test.ts owns that).
 let stubDir: string
 let originalPath: string | undefined
+let originalClassifierHome: string | undefined
 
 const CLEAN_TEXT = 'una linea perfectamente limpia sin nada repetido aqui.'
 const REPEATED_TEXT = 'si reciben un poema mio, reciben un poema mio por whatsapp.'
@@ -832,5 +850,98 @@ describe('carryForward (#44)', () => {
       after,
     )
     expect(merged.repeatedPhrases).toEqual([])
+  })
+})
+
+describe('the deterministic pass inside commit (#63)', () => {
+  // Master and source are different coordinate systems, and a master cut can straddle a join
+  // because the material earlier rounds removed is not in the master timeline at all. Translating
+  // by endpoints alone produced a 43.2s source span from a 2.74s master cut on the render that
+  // opened #63, swallowing material the EDL deliberately kept.
+  const map = [
+    {
+      id: 's1',
+      sourceId: 'a',
+      sourceInMs: 1_000,
+      sourceOutMs: 3_000,
+      masterInMs: 0,
+      masterOutMs: 2_000,
+    },
+    {
+      id: 's2',
+      sourceId: 'a',
+      sourceInMs: 50_000,
+      sourceOutMs: 52_000,
+      masterInMs: 2_000,
+      masterOutMs: 4_000,
+    },
+  ]
+
+  const cut = (startMs: number, endMs: number) => ({
+    startMs,
+    endMs,
+    kind: 'filler' as const,
+    instrument: 'silence' as const,
+    measurement: '1.00s below -40.00dB',
+    reason: 'silence: 1.00s below -40.00dB',
+  })
+
+  test('a cut inside one segment translates to that segment source time', () => {
+    const proposals = autoCutProposals([cut(500, 1_500)], map)
+    expect(proposals).toHaveLength(1)
+    expect(proposals[0]?.startMs).toBe(1_500)
+    expect(proposals[0]?.endMs).toBe(2_500)
+  })
+
+  test('a cut straddling a join splits per segment instead of spanning the gap', () => {
+    const proposals = autoCutProposals([cut(1_500, 2_500)], map)
+    expect(proposals).toHaveLength(2)
+    expect(proposals[0]?.startMs).toBe(2_500)
+    expect(proposals[0]?.endMs).toBe(3_000)
+    expect(proposals[1]?.startMs).toBe(50_000)
+    expect(proposals[1]?.endMs).toBe(50_500)
+    // The removed duration survives the translation exactly: no gap material is absorbed.
+    const total = proposals.reduce((sum, entry) => sum + (entry.endMs - entry.startMs), 0)
+    expect(total).toBe(1_000)
+  })
+
+  test('every proposal carries the instrument and measurement that produced it', () => {
+    const proposals = autoCutProposals([cut(500, 1_500)], map)
+    expect(proposals[0]?.reason).toContain('silence:')
+    expect(proposals[0]?.reason).toContain('-40.00dB')
+    // Never a transcript quote: #61, this pass does not read cue text.
+    expect(proposals[0]?.removedText).toBe('')
+  })
+
+  test('a cut outside every placement is dropped rather than clamped somewhere', () => {
+    expect(autoCutProposals([cut(90_000, 91_000)], map)).toEqual([])
+  })
+
+  test('the hint names how much was removed, and points at the evidence field', () => {
+    const hints = autoCutNext({
+      version: 1,
+      cuts: [cut(0, 2_000)],
+      silence: {
+        floorDb: null,
+        floorThresholdDb: null,
+        medianDb: -20,
+        medianThresholdDb: -40,
+        thresholdDb: -40,
+        minPauseMs: 800,
+      },
+      considered: {
+        nonspeech: { offered: 0, cut: 0 },
+        silence: { offered: 1, cut: 1 },
+        repetition: { offered: 0, cut: 0 },
+        fragment: { offered: 0, cut: 0 },
+      },
+    })
+    expect(hints).toHaveLength(1)
+    expect(hints[0]?.question).toContain('2.0s')
+    expect(hints[0]?.verb).toContain('autoCut')
+  })
+
+  test('a pass that cut nothing adds no hint at all', () => {
+    expect(autoCutNext(null)).toEqual([])
   })
 })
