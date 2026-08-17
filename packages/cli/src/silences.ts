@@ -23,7 +23,16 @@ import { resolve } from 'node:path'
 
 import { parseSilenceLog, probeDurationMs, type SilenceCandidate } from './detect.ts'
 import { run } from './exec.ts'
-import { duration, emitJson, heading, line, type Mode, resolveMode, UsageError } from './output.ts'
+import {
+  duration,
+  emitJson,
+  heading,
+  line,
+  type Mode,
+  rejectUnknownFlags,
+  resolveMode,
+  UsageError,
+} from './output.ts'
 
 const HELP = `vcut silences - speech and silence blocks over a range, at a resolution you choose
 
@@ -168,6 +177,7 @@ const parseCli = (args: string[]): CliOptions => {
     }
     return parsed
   }
+  rejectUnknownFlags(args, ['--from', '--to', '--noise', '--min'], 'silences')
   return {
     input: resolve(input),
     fromS: numeric('--from', null),
