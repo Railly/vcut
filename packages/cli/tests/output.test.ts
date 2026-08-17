@@ -13,6 +13,7 @@ import {
   parseFields,
   parseJqExpr,
   projectFields,
+  rejectUnknownFlags,
   requireHumanOnly,
   requireJson,
   requireRawOutput,
@@ -468,5 +469,59 @@ describe('classifierStatus', () => {
   test('says the check has a fallback rather than reading as broken', () => {
     // Absent is a supported state, not a failure: invariant 7 falls back to a human ear.
     expect(classifierStatus([false, false]).detail).toContain('optional')
+  })
+})
+
+// Issue #67: `silences --threshold -80` ran, exited 0, and reported thresholdDb -30 — the
+// default, shaped exactly like a measurement. The real flag is --noise.
+describe('rejectUnknownFlags', () => {
+  const known = ['--from', '--to', '--noise', '--min']
+
+  test('rejects a flag the command does not read, naming it and the help', () => {
+    expect(() => rejectUnknownFlags(['--threshold', '-80'], known, 'silences')).toThrow(
+      'silences does not take --threshold',
+    )
+  })
+
+  test('names every unknown flag at once rather than one per run', () => {
+    try {
+      rejectUnknownFlags(['--threshold', '-80', '--min-silence', '800'], known, 'silences')
+      throw new Error('expected a UsageError')
+    } catch (error) {
+      expect((error as Error).message).toContain('--threshold, --min-silence')
+    }
+  })
+
+  test('accepts the flags the command declares', () => {
+    expect(() =>
+      rejectUnknownFlags(['--from', '0', '--noise', '-80'], known, 'silences'),
+    ).not.toThrow()
+  })
+
+  // The trap this helper must not fall into: a negative dB value reads as a token starting
+  // with '-', not '--', so --noise -30 must not report -30 as an unknown flag.
+  test('reads a negative value as a value, not as a flag', () => {
+    expect(() => rejectUnknownFlags(['--noise', '-30'], known, 'silences')).not.toThrow()
+  })
+
+  test('accepts the global flags a command inherits without declaring them', () => {
+    expect(() =>
+      rejectUnknownFlags(
+        ['--json', '--fields', 'blocks', '--jq', '.', '--help'],
+        known,
+        'silences',
+      ),
+    ).not.toThrow()
+  })
+
+  test('reads --flag=value, the form parseFields and parseJqExpr already accept', () => {
+    expect(() => rejectUnknownFlags(['--noise=-80'], known, 'silences')).not.toThrow()
+    expect(() => rejectUnknownFlags(['--threshold=-80'], known, 'silences')).toThrow('--threshold')
+  })
+
+  test('leaves the positional media path alone', () => {
+    expect(() =>
+      rejectUnknownFlags(['/tmp/master.wav', '--noise', '-80'], known, 'silences'),
+    ).not.toThrow()
   })
 })

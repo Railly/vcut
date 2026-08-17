@@ -975,7 +975,7 @@ export const commitCommand = async (argv: string[]): Promise<void> => {
         autoCutSummary = rebuilt.summary
         writeFileSync(args.edlPath, `${JSON.stringify(finalEdl, null, 2)}\n`)
         writeRound(roundDir, finalEdl, autoCutSummary)
-        finalRender = await runRender(finalEdl as Edl, renderOptions)
+        finalRender = await runRender(finalEdl as Edl, { ...renderOptions, allowExisting: true })
       }
     }
 

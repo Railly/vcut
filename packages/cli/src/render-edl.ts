@@ -1009,6 +1009,12 @@ export type RenderOptions = {
   // this CLI prints; a test swaps this in to capture the lines instead of the process's own
   // stderr.
   onProgressLine?: (line: string) => void
+  // A caller that renders the same round twice on purpose — commit folds its deterministic cuts
+  // into the EDL and renders again over the same path — is not the accident the existing-output
+  // guard protects against. The render still writes to a temp sibling and still has to pass
+  // probeOutput, so the file already on disk survives a failed second attempt: only the final
+  // rename replaces it.
+  allowExisting?: boolean
 }
 
 export type RenderResult = {
@@ -1074,7 +1080,7 @@ export const runRender = async (edl: Edl, options: RenderOptions): Promise<Rende
   }
   // A dry run writes nothing, so refusing it because the output is already there leaves no way
   // to inspect the command after a failed attempt — which is exactly when it is needed.
-  if (!options.dryRun && existsSync(outputPath)) {
+  if (!options.dryRun && !options.allowExisting && existsSync(outputPath)) {
     errors.push('output already exists')
   }
   if (errors.length > 0) {

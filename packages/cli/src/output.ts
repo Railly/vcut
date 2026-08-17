@@ -121,6 +121,33 @@ export const parseFields = (args: string[]): string[] | null => {
     .filter((path) => path.length > 0)
 }
 
+// Every global flag a command inherits without declaring it: the four output flags plus the
+// two a command answers before parsing anything of its own.
+const GLOBAL_FLAGS = ['--json', '--human', '--fields', '--jq', '--help', '--version']
+
+// A flag a command does not read is a question it did not answer. `silences --threshold -80`
+// ran, exited 0, and reported `thresholdDb: -30` back — the default, formatted exactly like a
+// measurement, with the real flag named --noise. Nothing downstream could tell the difference
+// between a threshold that was honoured and one that was never seen (#67).
+//
+// This is the same silent-acceptance bug requireJson and requireRawOutput each close for one
+// flag, widened to the flags a command declares itself. Values are skipped rather than
+// validated: a command's own parser owns what its flags mean, and this only asks whether the
+// flag exists at all. A bare `-` or a negative number reads as a value, never as a flag, so
+// `--noise -30` does not report -30 as unknown.
+export const rejectUnknownFlags = (args: string[], known: string[], commandLabel: string): void => {
+  const allowed = new Set([...known, ...GLOBAL_FLAGS])
+  const unknown = args.filter(
+    (arg) => arg.startsWith('--') && !allowed.has(arg.split('=')[0] as string),
+  )
+  if (unknown.length > 0) {
+    const named = unknown.join(', ')
+    throw new UsageError(
+      `${commandLabel} does not take ${named}; see \`vcut ${commandLabel} --help\``,
+    )
+  }
+}
+
 // --jq <expr> alongside --jq=<expr>, the same two forms --fields reads. Only the last flag
 // wins when repeated, matching how `value()` helpers across every command read a flag today.
 export const parseJqExpr = (args: string[]): string | null => {

@@ -9,6 +9,7 @@ import {
   nonspeechCuts,
   planAutoCuts,
   repetitionCuts,
+  seamBetween,
   silenceCuts,
   snapToWords,
 } from '../src/auto-cut.ts'
@@ -173,6 +174,79 @@ describe('continuesTheSame', () => {
   })
 })
 
+// #73: the repetition cut used to run to the SECOND occurrence's start, which removes every word
+// spoken between the two readings. Those words are not only the trailing-off: when the speaker got
+// further into the first attempt than the repeated phrase itself, they are the continuation the
+// surviving sentence was going to complete. Measured over one master, 5 of 5 repetition cuts ate
+// real words, one removing "cual es la diferencia" outright.
+//
+// These test seamBetween directly because MAX_FUMBLE_WORDS is 0, so repetitionCuts declines every
+// finding with anything between the readings. That is precisely why #73 is latent rather than
+// shipping, and why the geometry has to be right BEFORE #71 and #72 raise the sensitivity.
+describe('seamBetween', () => {
+  test('ends at the micro-pause, so the words after the abandoned attempt survive (#73)', () => {
+    // The defect verbatim from the issue: a cut that removed "cual es la diferencia". The speaker
+    // abandons after "y bueno", pauses, then says the words that belong to the surviving sentence,
+    // then retakes. Ending at the retake's own start (the old geometry) deletes all four.
+    const words = [
+      word('y', 0, 100),
+      word('bueno', 100, 300),
+      word('cual', 900, 1100),
+      word('es', 1110, 1200),
+      word('la', 1210, 1290),
+      word('diferencia', 1300, 1600),
+      word('y', 1620, 1720),
+      word('bueno', 1720, 1900),
+    ]
+    const seam = seamBetween(words, { startMs: 0, endMs: 300 }, { startMs: 1620, endMs: 1900 })
+    // The widest boundary is 300 -> 900, so the cut ends at 900 rather than at the retake's 1620.
+    expect(seam).toBe(900)
+    // Which is the whole point: the four words the old span ate are on the keeping side now.
+    expect(words.filter((entry) => entry.startMs >= seam).map((entry) => entry.text)).toEqual([
+      'cual',
+      'es',
+      'la',
+      'diferencia',
+      'y',
+      'bueno',
+    ])
+  })
+
+  test('ends before the intervening words when the pause precedes them', () => {
+    // The speaker stops dead after the abandoned attempt, then says the retake's own run-up.
+    // The widest boundary is 300 -> 1200, so only the abandoned attempt goes.
+    const words = [
+      word('y', 0, 100),
+      word('bueno', 100, 300),
+      word('cual', 1200, 1400),
+      word('es', 1410, 1500),
+      word('y', 1520, 1620),
+      word('bueno', 1620, 1800),
+    ]
+    const seam = seamBetween(words, { startMs: 0, endMs: 300 }, { startMs: 1520, endMs: 1800 })
+    expect(seam).toBe(1200)
+    // The words after the seam are kept, which is the whole point of #73.
+    expect(words.filter((entry) => entry.startMs >= seam).map((entry) => entry.text)).toEqual([
+      'cual',
+      'es',
+      'y',
+      'bueno',
+    ])
+  })
+
+  test('falls back to the retake start when the readings are adjacent', () => {
+    // Nothing between them, so there is nothing to preserve and the old span was already right.
+    const words = [word('si', 0, 100), word('si', 800, 900)]
+    expect(seamBetween(words, { startMs: 0, endMs: 100 }, { startMs: 800, endMs: 900 })).toBe(800)
+  })
+
+  test('never returns a seam past the retake', () => {
+    const words = [word('a', 0, 100), word('b', 200, 300), word('a', 400, 500)]
+    const seam = seamBetween(words, { startMs: 0, endMs: 100 }, { startMs: 400, endMs: 500 })
+    expect(seam).toBeLessThanOrEqual(400)
+  })
+})
+
 describe('repetitionCuts', () => {
   const retake = [
     word('si', 0, 100),
@@ -204,10 +278,11 @@ describe('repetitionCuts', () => {
     )
     expect(cuts).toHaveLength(1)
     expect(cuts[0]?.startMs).toBe(0)
-    // Ends where the second reading begins, so the second reading survives whole.
+    // Nothing is spoken between the two readings here, so the seam IS the second reading's start
+    // and the span is unchanged by #73. The second reading survives whole either way.
     expect(cuts[0]?.endMs).toBe(800)
     expect(cuts[0]?.kind).toBe('repetition')
-    expect(cuts[0]?.measurement).toContain('earlier removed, later kept')
+    expect(cuts[0]?.measurement).toContain('later kept')
   })
 
   test('declines a repeat below the content-word floor (#57)', () => {

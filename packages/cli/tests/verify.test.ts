@@ -9,6 +9,7 @@ import {
   defaultConcurrency,
   findAnomalies,
   findRepeatedPhrases,
+  findRestarts,
   findStackedOpeners,
   findTruncatedEdges,
   mergeRepeats,
@@ -288,6 +289,65 @@ describe('findStackedOpeners', () => {
 
   test('a single sentence has nothing to compare against', () => {
     expect(findStackedOpeners([window(0, 1000, 'una sola frase sin puntos')])).toEqual([])
+  })
+})
+
+// #72: a speaker who backs up mid-clause and restarts with a different destination. The 3-word
+// scan cannot see it, and not because the width is wrong: normalised, the only runs occurring
+// twice in this shape are bigrams, so no trigram repeats at all.
+describe('findRestarts', () => {
+  test('catches a restart whose attempts diverge at word three', () => {
+    const windows = [
+      window(0, 16_000, 'para simplemente cifrar, para simplemente detectar con asteriscos'),
+    ]
+    // The measurement that makes this a separate detector: the shipped 3-word scan returns
+    // nothing at all on this text, so the finding is new rather than a duplicate reported twice.
+    expect(findRepeatedPhrases(windows, 'es').repeated).toEqual([])
+    const restarts = findRestarts(windows, 'es')
+    expect(restarts).toHaveLength(1)
+    expect(restarts[0]?.phrase).toBe('para simplemente')
+  })
+
+  test('catches the "la ia tendria" restart from the annotated list', () => {
+    const restarts = findRestarts([window(0, 16_000, 'la ia tendria, la ia tendria acceso')], 'es')
+    expect(restarts.map((entry) => entry.phrase)).toContain('ia tendria')
+  })
+
+  // The three connectives #72 names as the bulk of the 8-to-64 false-positive explosion a bare
+  // RUN_LENGTH=2 produces. Structure refuses all three; a content-word floor cannot, since
+  // "voy a" and "de normal" score exactly what several of the real restarts score.
+  test('stays silent on the connectives a bare 2-word run would flood with', () => {
+    for (const text of [
+      'no se si para que sirve esto pero bueno para que veas',
+      'voy a mostrar una cosa y despues voy a cerrar',
+      'el mcp de normal responde bien y el modo de normal tambien',
+    ]) {
+      expect(findRestarts([window(0, 16_000, text)], 'es')).toEqual([])
+    }
+  })
+
+  // The class #63 explicitly forbids cutting: an opening reused for a different button, with the
+  // first clause COMPLETED in between. The abandoned attempt runs longer than the shared prefix,
+  // which is what tells reuse from a restart without any picked constant.
+  test('refuses legitimate reuse that completes its first clause', () => {
+    const windows = [
+      window(0, 16_000, 'le damos clic aqui a open chatgpt, eso nos lleva, le damos clic a plus'),
+    ]
+    expect(findRestarts(windows, 'es')).toEqual([])
+  })
+
+  // Two attempts that never part are one phrase said twice, which findRepeatedPhrases owns.
+  // Requiring divergence is what keeps the two detectors from reporting the same finding.
+  test('does not fire when the two readings never diverge', () => {
+    const windows = [window(0, 16_000, 'reciben un poema mio reciben un poema mio')]
+    expect(findRestarts(windows, 'es')).toEqual([])
+    expect(findRepeatedPhrases(windows, 'es').repeated.length).toBeGreaterThan(0)
+  })
+
+  test('needs a content word in the shared prefix', () => {
+    // "de la" is two stopwords, so the shared prefix carries nothing to restart, whatever the
+    // two attempts diverge into.
+    expect(findRestarts([window(0, 16_000, 'de la casa de la mesa')], 'es')).toEqual([])
   })
 })
 
