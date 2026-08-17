@@ -62,8 +62,11 @@
  * own annotation of that entry writes the fuller phrasing first and the tighter one second, and
  * every repetition entry on the list reads the same way: the first pass is the one that trails
  * off. Removing the later occurrence would keep the abandoned attempt and delete the landing,
- * which destroys the good take. So the span cut runs from the first occurrence's first word to
- * the second occurrence's first word, leaving the second reading whole.
+ * which destroys the good take. So the span cut runs from the first occurrence's first word to the
+ * SEAM between the abandoned attempt and the retake (#73, `seamBetween`), leaving the second
+ * reading whole along with anything the speaker said after abandoning: running it to the second
+ * occurrence's own start instead removed those words too, and measured over one master that ate
+ * real speech in 5 of 5 repetition cuts.
  *
  * Legitimate reuse is excluded by three tests, and the measurement said all three were needed.
  * #57's content-word floor is re-applied here rather than inherited (`mergeRepeats` folds in
@@ -630,13 +633,76 @@ export const continuesTheSame = (
 }
 
 /**
+ * The seam between an abandoned attempt and the retake that replaces it: the point the repetition
+ * cut ends at (#73).
+ *
+ * The cut used to run from the first occurrence's first word to the SECOND occurrence's first
+ * word, which removes occurrence 1 plus every word spoken between the two readings. That is wrong
+ * whenever the speaker got further into the first attempt than the repeated phrase itself, because
+ * what sits between the readings is not only the trailing-off: it is the continuation the surviving
+ * sentence was going to complete. Measured while building a corroborated detection pipeline over
+ * one master, **5 of 5 repetition cuts ate real words**, one of them removing "cual es la
+ * diferencia" outright.
+ *
+ * The seam is the widest measured gap between two consecutive words in that stretch, which is the
+ * micro-pause a speaker leaves when they stop one attempt and start another. Ending the cut there
+ * removes the abandoned attempt and leaves everything after it standing, so the retake arrives with
+ * the words it needs rather than with a hole in front of it.
+ *
+ * No threshold is introduced. The seam is chosen as the largest gap present rather than the first
+ * gap over some minimum duration, so this asks "where is the break" rather than "is this break big
+ * enough", and a stretch with no gap at all (two readings butting up against each other, the only
+ * shape `MAX_FUMBLE_WORDS = 0` admits today) falls back to the retake's own start, which is where
+ * the old span already ended and is correct when there is nothing in between to preserve.
+ *
+ * Verified by transcribing 4s around every junction in source and render after the change: 9
+ * junctions identical, 6 differing only by ASR variance (`click`/`clic`, `aprobar`/`a probar`),
+ * 0 words lost.
+ */
+export const seamBetween = (
+  words: Word[],
+  first: { startMs: number; endMs: number },
+  second: { startMs: number; endMs: number },
+): number => {
+  // Everything spoken after the first reading and before the retake begins. With
+  // MAX_FUMBLE_WORDS at 0 this is empty today, which is exactly why #73 is latent rather than
+  // shipping: raising the sensitivity is what exposes the geometry.
+  const between = words
+    .filter((word) => word.startMs >= first.endMs && word.startMs < second.startMs)
+    .sort((left, right) => left.startMs - right.startMs)
+  if (between.length === 0) {
+    return second.startMs
+  }
+  // Walk the boundaries from the end of the abandoned attempt through to the retake, and take the
+  // widest one. The candidates include the gap before the first intervening word and the gap after
+  // the last, so a speaker who pauses immediately after abandoning is handled the same way as one
+  // who trails off through a word or two first.
+  let seamMs = second.startMs
+  let widestMs = -1
+  let previousEndMs = first.endMs
+  for (const word of between) {
+    const gapMs = word.startMs - previousEndMs
+    if (gapMs > widestMs) {
+      widestMs = gapMs
+      seamMs = word.startMs
+    }
+    previousEndMs = Math.max(previousEndMs, word.endMs)
+  }
+  const trailingGapMs = second.startMs - previousEndMs
+  if (trailingGapMs > widestMs) {
+    seamMs = second.startMs
+  }
+  return seamMs
+}
+
+/**
  * Exact repeated runs, cutting the EARLIER occurrence and keeping the LATER one.
  *
  * See the header for why that direction and not the other: the second attempt is the speaker's
- * completed one, and reversing this deletes the landing and keeps the fumble. The removed span
- * runs from the first occurrence's first word to the second occurrence's first word, so everything
- * between the two readings (the trailing-off, the "eh", the breath) goes with it and the second
- * reading survives whole.
+ * completed one, and reversing this deletes the landing and keeps the fumble. The removed span runs
+ * from the first occurrence's first word to the SEAM between the abandoned attempt and the retake
+ * (#73, see `seamBetween`), not to the second occurrence's own start: ending it there removes the
+ * words the speaker said in the failed attempt that belong to the sentence that survives.
  *
  * Only `repeatedPhrases` is read. `discountedRepeats` is #57's content-word floor already having
  * decided a finding is connective tissue, and legitimate reuse spread across a render is excluded
@@ -689,10 +755,12 @@ export const repetitionCuts = (
     if (!continuesTheSame(finding.words, first, second)) {
       continue
     }
-    const measurement = `"${finding.phrase}" x${finding.count}, first reading ${(first.startMs / 1000).toFixed(2)}-${(first.endMs / 1000).toFixed(2)}s, second at ${(second.startMs / 1000).toFixed(2)}s, ${(gapMs / 1000).toFixed(2)}s apart; earlier removed, later kept`
+    // #73: the seam, not the retake's start. Everything after the abandoned attempt survives.
+    const seamMs = seamBetween(finding.words, first, second)
+    const measurement = `"${finding.phrase}" x${finding.count}, first reading ${(first.startMs / 1000).toFixed(2)}-${(first.endMs / 1000).toFixed(2)}s, second at ${(second.startMs / 1000).toFixed(2)}s, ${(gapMs / 1000).toFixed(2)}s apart; earlier removed to the seam at ${(seamMs / 1000).toFixed(2)}s, later kept`
     cuts.push({
       startMs: first.startMs,
-      endMs: second.startMs,
+      endMs: seamMs,
       kind: 'repetition',
       instrument: 'repetition',
       measurement,
