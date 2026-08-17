@@ -2,6 +2,12 @@
 
 Notable changes to `@crafter/vcut`. Entries say what changed and, where it is not obvious, what measurement led to it.
 
+## Unreleased
+
+### Fixed
+
+- **`repeatedPhrases` required a repetition to straddle two transcript lines, and found 0 of 12 known repetitions in production (#71).** `semantic.ts` skipped any run it had already seen inside the current line, on the reading that a stutter the transcript kept is one line saying a thing once, badly. That reading assumed a repetition spans lines, and whisper does not transcribe that way: measured across 639 windows over the full 417s of a real recording at seven widths from 4s to 32s, it returns **one cue per window 83% of the time** at the shipped 16s sweep width, so most repeats live inside a single line and were structurally unreachable. The detector found **0 of 12** known repetitions at every width, and the cause was never the window size. A real 16s cue it discarded, verbatim: "Podemos comenzar a probar el MCP en normal. Entonces, para usarlo, simplemente lo taggeamos, arroba normal. Entonces, para usarlo, lo taggeamos." Occurrences inside a line are now counted, which takes recall to **10 of 12** with false positives going 0 to 8, every one of them carrying 2 or more content words, so `MIN_CONTENT_WORDS` is still doing its own job and no threshold moved. The narrower guard the old rule was actually reaching for is kept: occurrences are counted non-overlapping, so "eh eh eh eh" is one hesitation seen through two sliding probes rather than two sayings of it. `count` now reports occurrences rather than lines, which is also what `survivingRepeats` needs, since it compares that number against occurrences in the rendered master's own text. `verify.ts`'s own `findRepeatedPhrases` never had this defect: it scans a window's raw text and already counts within it.
+
 ## 0.25.0
 
 ### Added

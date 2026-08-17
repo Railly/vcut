@@ -474,10 +474,41 @@ describe('repeatedPhrases', () => {
     expect(repeated.map((entry) => entry.phrase)).toContain('un honor grande')
   })
 
-  // A stutter the transcript kept is one line saying a thing once, badly. Counting it as a
-  // repetition would put an entry in front of a reader for every hesitation in the file.
-  test('does not report a line as repeating itself', () => {
-    expect(repeatedPhrases([line(0, 'un honor grande un honor grande')]).repeated).toEqual([])
+  // #71 reversed this. It used to assert that a line never repeats itself, on the reading that a
+  // stutter the transcript kept is one line saying a thing once, badly. Measured on real material
+  // that assertion cost the detector everything it was for: whisper returns one cue per window 83%
+  // of the time at the shipped 16s sweep width, so a repetition mostly lives INSIDE one line, and
+  // requiring it to straddle two found 0 of 12 known repetitions across 639 windows at every width
+  // from 4s to 32s. A line saying "un honor grande" twice is the defect, not a hesitation.
+  test('reports a phrase a single line says twice (#71)', () => {
+    const { repeated } = repeatedPhrases([line(0, 'un honor grande un honor grande')])
+    const entry = repeated.find((item) => item.phrase === 'un honor grande')
+    expect(entry?.count).toBe(2)
+    expect(entry?.lineIndexes).toEqual([0])
+  })
+
+  // The issue's own evidence, verbatim from a 16s cue whisper transcribed correctly and the
+  // detector discarded: one cue, one line, the restart plainly in it.
+  test('finds the repeat in the single 16s cue #71 measured', () => {
+    const { repeated } = repeatedPhrases([
+      line(
+        0,
+        'Podemos comenzar a probar el MCP en normal. Entonces, para usarlo, simplemente lo taggeamos, arroba normal. Entonces, para usarlo, lo taggeamos.',
+      ),
+    ])
+    expect(repeated.map((entry) => entry.phrase)).toContain('entonces para usarlo')
+  })
+
+  // What the old rule was actually right about, kept by counting non-overlapping occurrences
+  // instead of by refusing intra-line repeats wholesale: "eh eh eh eh" contains the run "eh eh eh"
+  // at index 0 and again at index 1, which is one hesitation seen through two sliding probes, not
+  // two sayings of it.
+  test('counts a run built from repeated tokens once per non-overlapping occurrence', () => {
+    const { repeated, discounted } = repeatedPhrases([line(0, 'bueno eh eh eh eh bueno')])
+    // One occurrence, so it never becomes a finding at all: nothing to report and nothing to
+    // discount, which is the hesitation case the old rule was reaching for.
+    expect(repeated).toEqual([])
+    expect(discounted.map((entry) => entry.phrase)).not.toContain('eh eh eh')
   })
 })
 

@@ -731,6 +731,53 @@ export type DiscountedRepeat = {
   reason: string
 }
 
+// The words of one line, normalised the way a repeat has to be compared: case and punctuation are
+// delivery, not words. Same shape verify.ts's own `normalise` produces for the identical question.
+const lineWords = (text: string): string[] =>
+  text
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .split(/\s+/)
+    .filter((word) => word.length > 0)
+
+// How many times a run occurs in one line's words, counting non-overlapping occurrences only.
+// Overlap matters for runs built from repeated tokens: "a a a a" contains the run "a a a" at index
+// 0 and again at index 1, which is one stutter seen through two probes rather than two sayings of
+// it. verify.ts's `countNonOverlapping` already settled this for its own window scan and this is
+// the same rule applied to a line.
+const runOccurrences = (words: string[], start: number, runLength: number): number => {
+  const run = words.slice(start, start + runLength)
+  let count = 0
+  let index = 0
+  while (index + runLength <= words.length) {
+    if (run.every((word, offset) => words[index + offset] === word)) {
+      count += 1
+      index += runLength
+      continue
+    }
+    index += 1
+  }
+  return count
+}
+
+// #71: a repetition used to have to straddle two transcript lines to be counted, because a run
+// already seen inside the current line was skipped. Measured across 639 windows over 417s of real
+// material at seven widths from 4s to 32s, that found 0 of 12 known repetitions at every width, and
+// the cause was not the window: whisper returns ONE cue per window 83% of the time at the shipped
+// 16s width, so most repeats live inside a single line and were structurally invisible. A real cue
+// the detector discarded, verbatim: "Podemos comenzar a probar el MCP en normal. Entonces, para
+// usarlo, simplemente lo taggeamos, arroba normal. Entonces, para usarlo, lo taggeamos."
+//
+// Counting occurrences rather than lines takes that to 10 of 12, with false positives going 0 to 8,
+// every one of them at 2+ content words, so MIN_CONTENT_WORDS is still doing its own job. The old
+// rule was written against a different failure ("a stutter the transcript already collapsed"), and
+// non-overlapping counting is the narrower guard that actually addresses it: a stutter seen through
+// two overlapping probes counts once, while a phrase genuinely said twice counts twice.
+//
+// `count` is therefore occurrences, not lines, which is also what `survivingRepeats` needs: it
+// compares this number against occurrences of the phrase in the rendered master's own text, and the
+// old line-count made a phrase said twice inside one line read as answered by a render that still
+// said it twice.
 export const repeatedPhrases = (
   lines: Line[],
   lang?: string,
@@ -739,47 +786,44 @@ export const repeatedPhrases = (
   discounted: DiscountedRepeat[]
 } => {
   const stopwords = stopwordsFor(lang)
-  const seen = new Map<string, number[]>()
+  const seen = new Map<string, { count: number; lineIndexes: number[] }>()
   lines.forEach((line, index) => {
-    const words = line.text
-      .toLowerCase()
-      .replace(/[^\p{L}\p{N}\s]/gu, ' ')
-      .split(/\s+/)
-      .filter((word) => word.length > 0)
+    const words = lineWords(line.text)
     const local = new Set<string>()
     for (let start = 0; start + RUN_LENGTH <= words.length; start += 1) {
       const run = words.slice(start, start + RUN_LENGTH).join(' ')
-      // A run repeating inside one line still counts once for that line, so a line is never
-      // reported as repeating itself through a stutter the transcript already collapsed.
+      // Once per run per line: the occurrences inside this line are counted in one pass rather than
+      // re-counted by every probe that slides over them.
       if (local.has(run)) {
         continue
       }
       local.add(run)
-      const where = seen.get(run) ?? []
-      where.push(index)
-      seen.set(run, where)
+      const entry = seen.get(run) ?? { count: 0, lineIndexes: [] }
+      entry.count += runOccurrences(words, start, RUN_LENGTH)
+      entry.lineIndexes.push(index)
+      seen.set(run, entry)
     }
   })
   const entries = [...seen.entries()]
-    .filter(([, where]) => where.length > 1)
+    .filter(([, entry]) => entry.count > 1)
     .sort(
       ([leftPhrase, left], [rightPhrase, right]) =>
-        right.length - left.length || leftPhrase.localeCompare(rightPhrase),
+        right.count - left.count || leftPhrase.localeCompare(rightPhrase),
     )
   const repeated: Array<{ phrase: string; count: number; lineIndexes: number[] }> = []
   const discounted: DiscountedRepeat[] = []
-  for (const [phrase, where] of entries) {
+  for (const [phrase, { count, lineIndexes }] of entries) {
     const contentWords = contentWordCount(phrase, stopwords)
     if (contentWords < MIN_CONTENT_WORDS) {
       discounted.push({
         phrase,
-        count: where.length,
-        lineIndexes: where,
+        count,
+        lineIndexes,
         reason: `${contentWords} content word${contentWords === 1 ? '' : 's'}, below the ${MIN_CONTENT_WORDS} needed to read as a candidate retake rather than connective tissue`,
       })
       continue
     }
-    repeated.push({ phrase, count: where.length, lineIndexes: where })
+    repeated.push({ phrase, count, lineIndexes })
   }
   return { repeated, discounted }
 }
