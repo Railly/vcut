@@ -372,6 +372,51 @@ export const findRepeatedPhrases = (
 const OPENER_LENGTH = 2
 
 /**
+ * The restart defect (#72): a speaker who backs up mid-clause and starts the phrase over with a
+ * different destination. "abrimos la guia para vincular, abrimos la opcion para vincular" at ~91.5s
+ * of one recording is the shape exactly, and six of that material's annotated defects share it.
+ *
+ * It is invisible to every RUN_LENGTH scan in this codebase, and not because the width is wrong.
+ * Normalised, the only runs occurring twice there are the BIGRAMS `abrimos la` and `para vincular`;
+ * no trigram repeats at all, so `findRepeatedPhrases` returns zero findings on the real text.
+ *
+ * Why this is a separate structural check and not `RUN_LENGTH = 2`. Dropping the width wholesale
+ * takes false positives from 8 to 64, nearly all of them connectives, and the content-word floor
+ * that rescues the 3-word scan cannot rescue this one. Measured on the issue's OWN named strings:
+ * the real restart prefixes score 0, 1, 1, 1, 1, 2, 2 content words (`es muy` 0, `abrimos la` 1,
+ * `para vincular` 1, `la ia` 1, `para simplemente` 1, `ia tendria` 2, `voy a iterar` 2) and the
+ * false positives it names score 0, 1, 1 (`para que` 0, `voy a` 1, `de normal` 1). The two
+ * distributions overlap completely, so no floor on a 2-word run separates them. Scoring the grown
+ * span or the shared prefix plus both destinations was measured too and does not separate them
+ * either: `voy a mostrar / cerrar` scores 3, higher than two of the real restarts.
+ *
+ * So this takes the same escape `findStackedOpeners` already took for the identical problem (a
+ * 2-word unit that is noise anywhere, made safe by structure rather than by a lexicon): not "these
+ * two words recur somewhere", but "the speaker said them, went somewhere, and said them again
+ * before getting as far as they had gone the first time". Three requirements, all structural:
+ *
+ * 1. The shared prefix repeats and then DIVERGES. `growMatch` already computes that divergence
+ *    index as its own loop exit condition and discards it; for this class that index is the answer.
+ *    Two attempts that never diverge are one phrase said twice, which `findRepeatedPhrases` owns.
+ * 2. The abandoned attempt is shorter than the prefix the two attempts share. This is the
+ *    "backed up" part and it is what excludes reuse: a speaker who completes a clause and reuses
+ *    its opening later leaves the whole completed clause in between. No constant is picked here,
+ *    the bound is the repeat's own width, the same self-referential shape `MAX_RETAKE_GAP_MS`
+ *    derives from the sweep's own window rather than inventing a number.
+ * 3. The prefix carries at least one content word, so a pair of bare connectives repeating
+ *    ("para que ... para que") is not a restart on structure alone.
+ *
+ * Measured against the issue's own cases: fires on "la ia tendria / la ia tendria acceso" and
+ * "para simplemente cifrar / para simplemente detectar", stays silent on all three false positives
+ * it names (`para que`, `voy a`, `de normal`) and on the `le damos clic a Create / a Sign in`
+ * reuse `auto-cut.ts` explicitly forbids cutting. It does NOT fire on "abrimos la guia para
+ * vincular / abrimos la opcion para vincular", whose abandoned attempt (3 words) runs longer than
+ * its shared prefix (2 words); catching that one needs a bound this evidence cannot justify, and
+ * the honest boundary is stated here rather than fitted. See the changelog entry for #72.
+ */
+const RESTART_PROBE_LENGTH = 2
+
+/**
  * The stacked-filler defect: two consecutive sentences inside one window that open on the exact
  * same short run of words. "Y bueno, eso es todo. Y bueno, ya para cerrar" is this shape
  * precisely: findRepeatedPhrases' 3-word run does not fire here (the run diverges at the third
@@ -410,6 +455,75 @@ export const findStackedOpeners = (windows: Window[]): RepeatedPhrase[] => {
     }
   }
   return result.sort((left, right) => left.windowStartMs - right.windowStartMs)
+}
+
+/**
+ * Restarts found by scanning each window's own text (#72). See RESTART_PROBE_LENGTH for the
+ * measurement that decided the three requirements and for what this deliberately does not catch.
+ *
+ * Reported as a `RepeatedPhrase` carrying the shared prefix, so it merges through `mergeRepeats`
+ * with the other two detectors and reaches the gate and `commit` by the path that already exists,
+ * rather than as a fourth list every consumer has to learn about.
+ */
+export const findRestarts = (windows: Window[], lang?: string): RepeatedPhrase[] => {
+  const stopwords = stopwordsFor(lang)
+  const found: RepeatedPhrase[] = []
+  for (const window of windows) {
+    const words = normalise(window.text).split(' ').filter(Boolean)
+    const positions = new Map<string, number[]>()
+    for (let start = 0; start + RESTART_PROBE_LENGTH <= words.length; start += 1) {
+      const run = words.slice(start, start + RESTART_PROBE_LENGTH).join(' ')
+      const where = positions.get(run) ?? []
+      where.push(start)
+      positions.set(run, where)
+    }
+    const seen = new Set<string>()
+    for (const where of positions.values()) {
+      for (let index = 0; index < where.length - 1; index += 1) {
+        const left = where[index]
+        const right = where[index + 1]
+        if (left === undefined || right === undefined) {
+          continue
+        }
+        // Grow forward only, to the divergence index. Growing left as well would fold this into
+        // the span `findRepeatedPhrases` already reports; what identifies a restart is where the
+        // two attempts PART, which is exactly where this loop stops.
+        let end = left + RESTART_PROBE_LENGTH
+        let matchEnd = right + RESTART_PROBE_LENGTH
+        while (end < right && matchEnd < words.length && words[end] === words[matchEnd]) {
+          end += 1
+          matchEnd += 1
+        }
+        const diverges = end < right && matchEnd < words.length && words[end] !== words[matchEnd]
+        if (!diverges) {
+          continue
+        }
+        const prefix = words.slice(left, end)
+        // The abandoned attempt: what the speaker got through before backing up. Shorter than the
+        // prefix means they never got as far as they had already agreed on, which is a restart;
+        // longer means the first attempt completed something, which is reuse.
+        const abandoned = right - end
+        if (abandoned >= prefix.length) {
+          continue
+        }
+        if (!prefix.some((word) => contentWordCount(word, stopwords) > 0)) {
+          continue
+        }
+        const phrase = prefix.join(' ')
+        if (seen.has(phrase)) {
+          continue
+        }
+        seen.add(phrase)
+        found.push({
+          phrase,
+          count: 2,
+          windowStartMs: window.startMs,
+          windowEndMs: window.endMs,
+        })
+      }
+    }
+  }
+  return found.sort((left, right) => left.windowStartMs - right.windowStartMs)
 }
 
 // A stretched vowel or an unfinished word at the very edge of what a window heard: the last
@@ -692,7 +806,11 @@ export const runVerifyWindows = async (
       ? undefined
       : parseSrt(readFileSync(cachedTranscriptPath, 'utf8')).words
 
-  const mergedRepeats = mergeRepeats(phrases.repeated, findStackedOpeners(windows))
+  const mergedRepeats = mergeRepeats(
+    phrases.repeated,
+    findStackedOpeners(windows),
+    findRestarts(windows, lang),
+  )
   const repeated =
     cachedWords === undefined ? mergedRepeats : corroborateRepeats(mergedRepeats, cachedWords)
   const truncated = findTruncatedEdges(windows)
