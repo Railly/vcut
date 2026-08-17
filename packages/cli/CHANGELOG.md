@@ -2,7 +2,7 @@
 
 Notable changes to `@crafter/vcut`. Entries say what changed and, where it is not obvious, what measurement led to it.
 
-## Unreleased
+## 0.26.0
 
 ### Added
 
