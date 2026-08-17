@@ -1,6 +1,14 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { createHash } from 'node:crypto'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { run } from '../src/exec.ts'
@@ -827,6 +835,49 @@ describe.if(hasFfmpeg)('runRender progress streaming', () => {
     })
     expect(result.status).toBe('rendered')
     expect(lines).toHaveLength(0)
+  })
+
+  // Issue #66: commit renders a round, folds its deterministic cuts into the EDL, and renders
+  // again over the same path. The existing-output guard refused the second render, so master.wav
+  // never carried the auto-cuts while edl.json said it did. The guard stays for every other
+  // caller; only a caller that means it opts out.
+  test('a second render over the same path is refused by default', async () => {
+    const outputPath = join(workDir, 'twice-guarded.wav')
+    const options = { mode: 'preview' as const, dryRun: false, audioOnly: true, quiet: true }
+    const first = await runRender(fixtureEdl(outputPath), { ...options, outputPath })
+    expect(existsSync(first.outputPath)).toBe(true)
+    expect(runRender(fixtureEdl(outputPath), { ...options, outputPath })).rejects.toThrow(
+      'output already exists',
+    )
+  })
+
+  test('allowExisting lets the same round render again over its own output', async () => {
+    const outputPath = join(workDir, 'twice-allowed.wav')
+    const options = { mode: 'preview' as const, dryRun: false, audioOnly: true, quiet: true }
+    await runRender(fixtureEdl(outputPath), { ...options, outputPath })
+    const second = await runRender(fixtureEdl(outputPath), {
+      ...options,
+      outputPath,
+      allowExisting: true,
+    })
+    expect(second.status).toBe('rendered')
+    expect(existsSync(outputPath)).toBe(true)
+  })
+
+  // The reason allowExisting is safe: ffmpeg writes to a temp sibling and only a render that
+  // passes probeOutput is renamed into place. A second render that fails leaves the first one
+  // standing rather than a hole where the good file was.
+  test('a failed second render leaves the first file intact', async () => {
+    const outputPath = join(workDir, 'twice-failed.wav')
+    const options = { mode: 'preview' as const, dryRun: false, audioOnly: true, quiet: true }
+    await runRender(fixtureEdl(outputPath), { ...options, outputPath })
+    const before = statSync(outputPath)
+    const broken = fixtureEdl(outputPath)
+    broken.sources[0].path = join(workDir, 'this-source-does-not-exist.mp4')
+    expect(runRender(broken, { ...options, outputPath, allowExisting: true })).rejects.toThrow()
+    const after = statSync(outputPath)
+    expect(after.size).toBe(before.size)
+    expect(readdirSync(workDir).filter((name) => name.includes('.partial-'))).toHaveLength(0)
   })
 })
 
